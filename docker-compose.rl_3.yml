@@ -1,0 +1,118 @@
+version: "3.8"
+services:
+  # Game Server Cluster 1
+  terraforming-mars-1:
+    container_name: tm-server-1
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - tm-db-1:/usr/src/app/db
+    networks:
+      - rl-network
+  # Game Server Cluster
+  terraforming-mars-2:
+    container_name: tm-server-2
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
+    restart: unless-stopped
+    ports: 
+      - "8082:8080"
+    environment: 
+      - NODE_ENV=production
+    volumes: 
+      - tm-db-2:/usr/src/app/db
+    networks: 
+      - rl-network
+
+  terraforming-mars-3:
+    container_name: tm-server-3
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
+    restart: unless-stopped
+    ports: 
+      - "8083:8080"
+    environment: 
+      - NODE_ENV=production
+    volumes: 
+      - tm-db-3:/usr/src/app/db
+    networks: 
+      - rl-network
+
+
+  # RL Environment Controller
+  rl-coordinator:
+    build: ./rl-environment
+    container_name: rl-coordinator
+    restart: unless-stopped
+    ports:
+      - "5000:5000"  # API for external monitoring
+      - "6006:6006"  # TensorBoard
+    environment:
+        - GAME_SERVERS=tm-server-1:8080,tm-server-2:8080,tm-server-3:8080
+        - PUBLIC_TM_MAP=tm-server-1:8080=http://localhost:8081,tm-server-2:8080=http://localhost:8082,tm-server-3:8080=http://localhost:8083
+        - GENERATIONS=10
+        - POPULATION_SIZE=16
+        - TOURNAMENT_SIZE=4
+        - GAMES_PER_EVAL=1
+        - TOURNAMENT_CONCURRENCY=6
+        - REDIS_URL=redis://redis:6379
+        - POSTGRES_URL=postgresql://postgres:password@postgres:5432/rl_metrics
+        - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083
+        - INTERNAL_TM_URL=http://tm-server-1:8080,http://tm-server-2:8080,http://tm-server-3:8080
+        - TM_CARD_METADATA_PATH=/app/card_metadata.json
+
+    volumes:
+      - ./rl-environment:/app
+      - ./rl-models:/app/rl-models
+      - ./rl-logs:/app/logs
+      - ./card_metadata.json:/app/card_metadata.json:ro
+    depends_on:
+      - terraforming-mars-1
+      - terraforming-mars-2
+      - terraforming-mars-3
+      - redis
+      - postgres
+    networks:
+      - rl-network
+
+  # Redis for game state caching and job queue
+  redis:
+    image: redis:7-alpine
+    container_name: rl-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - rl-network
+
+  # PostgreSQL for metrics and tournament results
+  postgres:
+    image: postgres:15-alpine
+    container_name: rl-postgres
+    environment:
+      - POSTGRES_DB=rl_metrics
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - rl-network
+
+volumes:
+  tm-db-1:
+  tm-db-2:
+  tm-db-3:
+  postgres-data:
+
+networks:
+  rl-network:
+    driver: bridge

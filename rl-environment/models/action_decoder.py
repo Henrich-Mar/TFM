@@ -64,7 +64,9 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                     if option_type == 'selectCard' and 'Standard projects' in option_title:
                         selected_idx = i
                         # Adjust action_index for the standard project selection
-                        action_index = action_index - 100
+                        # Instead of just subtracting 100, we need to map to the actual project index
+                        project_index = action_index - 100
+                        action_index = project_index
                         break
                 else:
                     # If no standard projects option found, default to first option
@@ -205,7 +207,11 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         except Exception:
             option_title_l = ''
 
-        if action_index is not None and 200 <= action_index < 300:
+        # For standard projects, we need to pass the project index to the sub-option
+        if selected_option.get('type', '') == 'selectCard' and 'Standard projects' in option_title_l:
+            # action_index already contains the project index, so we don't need to change sub_action_index
+            pass
+        elif action_index is not None and 200 <= action_index < 300:
             opt_type = selected_option.get('type', '')
             if opt_type in ['projectCard', 'selectProjectCardToPlay']:
                 sub_action_index = 0
@@ -569,14 +575,22 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             return {'type': 'pass'}
             
         card_idx = action_index if action_index is not None else 0
-        # Skip disabled projects automatically
-        enabled_indices = [i for i, c in enumerate(cards) if not c.get('isDisabled', False)]
-        if not enabled_indices:
+        enabled_cards = [(i, card) for i, card in enumerate(cards) if not card.get('isDisabled', False)]
+        if not enabled_cards:
+            enabled_cards = [(i, card) for i, card in enumerate(cards)]
+            
+        if not enabled_cards:
             return {'type': 'pass'}
-        if card_idx not in enabled_indices:
-            card_idx = enabled_indices[0]
-        card = cards[card_idx]
+            
+        # Select the appropriate card based on action_index
+        if card_idx < len(enabled_cards):
+            selected_index, card = enabled_cards[card_idx]
+        else:
+            # Default to first available project
+            selected_index, card = enabled_cards[0]
+        
         name = (card.get('name') or '')
+
         # Some servers accept selectCard form; others may want a projectCard with inline payment.
         # Prefer selectCard by default; fallback to projectCard if paymentOptions provided.
         if waiting_for.get('paymentOptions'):
@@ -841,11 +855,14 @@ class ActionDecoder:
                         for j, _ in enumerate(cards):
                             available_actions.append(self.action_types['PLAY_CARD'] + j)
                     elif option_type == 'selectCard' and 'Standard projects' in option_title:
-                        # Standard projects - add individual project actions
+                        # Standard projects - add individual project actions for all ENABLED projects
                         cards = option.get('cards', [])
                         for j, card in enumerate(cards):
+                            # Only add enabled projects to available actions
                             if not card.get('isDisabled', False):
                                 available_actions.append(self.action_types['STANDARD_PROJECT'] + j)
+                            # But also add a fallback for the selection mechanism
+                            available_actions.append(self.action_types['SELECT_OPTION'] + i)
                     elif option_type == 'or' and 'Fund an award' in option_title:
                         # Fund awards - add individual award actions
                         award_options = option.get('options', [])
@@ -1115,18 +1132,42 @@ class ActionDecoder:
             'type': 'amount',
             'amount': amount
         }
+    def _should_build_greenery(self, player_state: Dict[str, Any]) -> bool:
+        """Strategic greenery placement logic"""
+        player = player_state.get('thisPlayer', {})
+        game = player_state.get('game', {})
+        
+        # Build greenery if:
+        # 1. Oxygen is low and we have plants
+        # 2. We have plant production
+        # 3. It's early game
+        oxygen = game.get('oxygenLevel', 0)
+        plants = player.get('plants', 0)
+        plant_prod = player.get('plantProduction', 0)
+        generation = game.get('generation', 1)
     
-    def _create_standard_project_action(self, project_idx: int) -> Dict[str, Any]:
-        """Create standard project action"""
-        if project_idx < len(self.standard_projects):
-            project = self.standard_projects[project_idx]
+        return (oxygen < 8 and plants >= 8) or (plant_prod > 0 and generation < 8)
+    
+    
+    def _create_standard_project_action(self, project_idx: int, player_state: Dict[str, Any]) -> Dict[str, Any]:
+        """Create standard project action with strategic selection"""
+        player = player_state.get('thisPlayer', {})
+    
+        # Strategic project selection based on game state
+        if self._should_build_greenery(player_state):
+            project = 'Greenery'
+        elif self._should_build_city(player_state):
+            project = 'City'
+        elif self._should_build_power_plant(player_state):
+            project = 'Power Plant:SP'
         else:
-            project = self.standard_projects[0]
+            # Default to first available
+            project = self.standard_projects[project_idx % len(self.standard_projects)]
         
         return {
             'type': 'standardProject',
             'project': project,
-            'payment': {'megaCredits': 0}  # Simplified payment
+            'payment': self._calculate_optimal_payment(player_state, project)
         }
     
     def _create_pass_action(self) -> Dict[str, Any]:

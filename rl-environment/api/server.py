@@ -393,26 +393,6 @@ async def dashboard():
     """
     return HTMLResponse(content=html_content)
 
-@app.get("/parse-end-screen")
-async def parse_end_screen_endpoint(url: str):
-    """Fetch and parse an end screen HTML given a full URL to /the-end?id=..."""
-    if coordinator is None:
-        raise HTTPException(status_code=503, detail="Coordinator not initialized")
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url) as r:
-                if r.status != 200:
-                    raise HTTPException(status_code=r.status, detail=f"Failed to fetch end screen: {r.status}")
-                html = await r.text()
-        from parsers.end_screen_parser import parse_end_screen
-        parsed = parse_end_screen(html)
-        return parsed
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to parse end screen: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 async def start_api_server(coordinator_instance):
     """Start the API server with coordinator reference"""
     global coordinator

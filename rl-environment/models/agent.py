@@ -19,7 +19,6 @@ from .state_encoder import StateEncoder
 from .action_decoder import ActionDecoder
 import random
 import aiohttp
-from parsers.end_screen_parser import parse_end_screen
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +184,8 @@ class RLAgent:
         except Exception as e:
             logger.error(f"Error making move for agent {self.id[:8]}: {e}", exc_info=True)
     
-    async def _get_action_from_network(self, state_vector: np.ndarray, player_state: Dict[str, Any], force_random: bool = False) -> Optional[Dict[str, Any]]:
+    async def _get_action_from_network(self, state_vector: np.ndarray, 
+                                    player_state: Dict[str, Any], force_random: bool = False) -> Optional[Dict[str, Any]]:
         """Get action from neural network"""
         try:
             # Convert to tensor
@@ -334,7 +334,7 @@ class RLAgent:
             elif action_idx == sell_patents_action:
                 masked_probs[action_idx] *= 0.5  # Reduce sell patents probability to encourage diversity
             elif action_idx >= 100 and action_idx < 200:  # Standard projects
-                masked_probs[action_idx] *= 1.5  # Increase standard project probability
+                masked_probs[action_idx] *= 1.2  # Increase standard project probability
             elif action_idx == 700:  # Convert plants
                 masked_probs[action_idx] *= 1.3  # Increase convert plants probability
             elif action_idx == 701:  # Convert heat
@@ -347,9 +347,9 @@ class RLAgent:
                 elif option_idx == 4:  # Pass option (index 4 in the OR structure)
                     masked_probs[action_idx] *= 0.6  # Reduce pass option
                 elif option_idx == 3:  # Standard projects option (index 3 in the OR structure)
-                    masked_probs[action_idx] *= 1.8  # Strongly encourage standard projects
+                    masked_probs[action_idx] *= 1.3  # Strongly encourage standard projects
                 elif option_idx == 2:  # Fund award option (index 2 in the OR structure)
-                    masked_probs[action_idx] *= 1.4  # Encourage award funding
+                    masked_probs[action_idx] *= 1.2  # Encourage award funding
                 elif option_idx == 1:  # Play project card option (index 1 in the OR structure)
                     masked_probs[action_idx] *= 1.6  # Encourage playing project cards
                 elif option_idx == 0:  # Play card action option (index 0 in the OR structure)
@@ -413,33 +413,7 @@ class RLAgent:
             except Exception as _:
                 pass
 
-            # If not available yet, attempt HTML parse (works only if HTML is pre-rendered)
-            if vp == 0 and our_player:
-                try:
-                    public_base = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')
-                    end_url = f"{public_base}/the-end?id={our_player_id}"
-                    logger.info(f"Agent {self.id[:8]} end-screen URL: {end_url}")
-                    # Attempt parsing via separate request only as a fallback
-                    internal_base = getattr(game_instance, 'base_url', os.getenv('INTERNAL_TM_URL', public_base))
-                    async with game_instance.session.get(f"{internal_base}/the-end", params={'id': our_player_id}) as r:
-                        if r.status == 200:
-                            html = await r.text()
-                            parsed = parse_end_screen(html)
-                            try:
-                                winner = parsed.get('winner')
-                                parsed_names = [p.get('name') for p in parsed.get('players', [])]
-                                logger.info(f"Agent {self.id[:8]} parsed end-screen winner={winner}, players={parsed_names}")
-                            except Exception:
-                                pass
-                            players = parsed.get('players', [])
-                            sorted_players = sorted(players, key=lambda p: int(p.get('total', 0) or 0), reverse=True)
-                            for idx, p in enumerate(sorted_players, start=1):
-                                if p.get('name') == player_name:
-                                    vp = int(p.get('total', 0) or 0)
-                                    rank = idx
-                                    break
-                except Exception:
-                    pass
+
 
             # Final fallback to whatever is available in the final state
             if our_player and vp == 0:

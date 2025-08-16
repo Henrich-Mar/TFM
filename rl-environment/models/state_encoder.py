@@ -2,7 +2,7 @@
 State Encoder - Converts game state to neural network input
 """
 import numpy as np
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 import os
 import json
 import logging
@@ -83,21 +83,68 @@ class StateEncoder:
             # Return zero vector as fallback
             return np.zeros(self.state_size, dtype=np.float32)
     
+    
+
     def _encode_global_parameters(self, game_state: Dict[str, Any]) -> List[float]:
-        """Encode global terraforming parameters"""
-        oxygen = game_state.get('oxygenLevel', 0) / 14.0  # Max 14%
-        # Temperature range is [-30, +8] → width 38; normalize to [0, 1]
-        temperature = (game_state.get('temperature', -30) + 30) / 38.0
-        venus = game_state.get('venusScaleLevel', 0) / 30.0  # Max 30
-        generation = game_state.get('generation', 1) / 14.0  # Typical max 14
-        logger.info(f"Oxygen: {oxygen}, Temperature: {temperature}, Venus: {venus}, Generation: {generation}")
-        
-        return [oxygen, temperature, venus, generation]
+        """Encode global terraforming parameters and Moon parameters with proper discrete value handling"""
+        # Oxygen: discrete values [0, 2, 4, 6, 8, 10, 12, 14] - 8 possible values
+        oxygen_level = game_state.get('oxygenLevel', 0)
+        # Convert to categorical index (0-7)
+        oxygen_index = oxygen_level // 2
+        oxygen = float(oxygen_index) / 7.0  # Normalize categorical index
+
+        # Temperature: discrete values from -30 to 8 in 2-step increments
+        # [-30, -28, -26, ..., 0, ..., 6, 8] - 20 possible values
+        temp_level = game_state.get('temperature', -30)
+        # Convert to categorical index (0-19)
+        temp_index = (temp_level + 30) // 2
+        temperature = float(temp_index) / 19.0  # Normalize categorical index
+
+        # Venus: discrete values from 0 to 30 in 2-step increments
+        # [0, 2, 4, ..., 28, 30] - 16 possible values
+        venus_level = game_state.get('venusScaleLevel', 0)
+        # Convert to categorical index (0-15)
+        venus_index = venus_level // 2
+        venus = float(venus_index) / 15.0  # Normalize categorical index
+
+        # Generation: typically 1-14
+        generation = game_state.get('generation', 1) / 14.0
+
+        # Moon parameters: logisticsRate, miningRate, habitatRate (each 0-8, raised by one)
+        moon = game_state.get('moon', {})
+        logistics_rate = moon.get('logisticsRate', 0)
+        mining_rate = moon.get('miningRate', 0)
+        habitat_rate = moon.get('habitatRate', 0)
+        # Each is 0-8, so normalize by dividing by 8.0
+        logistics_norm = float(logistics_rate) / 8.0
+        mining_norm = float(mining_rate) / 8.0
+        habitat_norm = float(habitat_rate) / 8.0
+
+        logger.info(
+            f"Oxygen: {oxygen} (level {oxygen_level}, index {oxygen_index}), "
+            f"Temperature: {temperature} (level {temp_level}, index {temp_index}), "
+            f"Venus: {venus} (level {venus_level}, index {venus_index}), "
+            f"Moon: logistics {logistics_norm} (raw {logistics_rate}), "
+            f"mining {mining_norm} (raw {mining_rate}), "
+            f"habitat {habitat_norm} (raw {habitat_rate})"
+            f"Generation: {generation}, "
+        )
+
+        return [
+            oxygen,
+            temperature,
+            venus,
+            generation,
+            logistics_norm,
+            mining_norm,
+            habitat_norm,
+        ]
+
     
     def _encode_player_resources(self, player: Dict[str, Any]) -> List[float]:
         """Encode player resource counts"""
         # Reasonable maximums; TR uses (TR - 20) with max ≈ 43 (from 20 → 63)
-        max_resources = [200, 100, 100, 100, 100, 100, 43, 100]
+        max_resources = [300, 100, 100, 100, 100, 100, 90, 100]
         resources = [
             player.get('megaCredits', 0),
             player.get('steel', 0),
@@ -303,8 +350,9 @@ class StateEncoder:
         return encoding
     
     def _encode_board_state(self, game_state: Dict[str, Any]) -> List[float]:
-        """Encode board state"""
+        """Encode board state with spatial reasoning"""
         encoding = [0.0] * 100
+        
         # Ocean tiles
         ocean_count = game_state.get('oceans', 0)
         encoding[0] = ocean_count / 9.0  # Max 9 oceans
@@ -337,7 +385,84 @@ class StateEncoder:
         encoding[4] = min(available_land / 50.0, 1.0)
         encoding[5] = min(available_ocean / 9.0, 1.0)
         
+        # Add spatial reasoning features
+        city_positions = []
+        greenery_positions = []
+        ocean_positions = []
+        
+        for space in spaces:
+            if space.get('tileType') == 'CITY':
+                city_positions.append(self._get_space_coordinates(space))
+            elif space.get('tileType') == 'GREENERY':
+                greenery_positions.append(self._get_space_coordinates(space))
+            elif space.get('tileType') == 'OCEAN':
+                ocean_positions.append(self._get_space_coordinates(space))
+        
+        # Encode spatial patterns
+        encoding[50] = self._calculate_city_clustering(city_positions)
+        encoding[51] = self._calculate_greenery_spread(greenery_positions)
+        encoding[52] = self._calculate_ocean_coverage(ocean_positions)
+        
         return encoding
+
+    def _get_space_coordinates(self, space: Dict[str, Any]) -> Tuple[int, int]:
+        """Extract coordinates from space ID"""
+        space_id = space.get('id', '')
+        # Parse coordinates from space ID (e.g., "01" -> (0,1))
+        try:
+            x = int(space_id[0]) if len(space_id) > 0 else 0
+            y = int(space_id[1]) if len(space_id) > 1 else 0
+            return (x, y)
+        except:
+            return (0, 0)
+    
+    def _calculate_city_clustering(self, city_positions: List[Tuple[int, int]]) -> float:
+        """Calculate city clustering score"""
+        if len(city_positions) < 2:
+            return 0.0
+        
+        # Calculate average distance between cities
+        total_distance = 0
+        count = 0
+        for i in range(len(city_positions)):
+            for j in range(i + 1, len(city_positions)):
+                x1, y1 = city_positions[i]
+                x2, y2 = city_positions[j]
+                distance = ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
+                total_distance += distance
+                count += 1
+        
+        if count == 0:
+            return 0.0
+        
+        avg_distance = total_distance / count
+        # Normalize: closer cities = higher clustering score
+        return max(0.0, 1.0 - avg_distance / 10.0)
+    
+    def _calculate_greenery_spread(self, greenery_positions: List[Tuple[int, int]]) -> float:
+        """Calculate greenery spread score"""
+        if len(greenery_positions) < 2:
+            return 0.0
+        
+        # Calculate how well greenery is spread across the board
+        x_coords = [pos[0] for pos in greenery_positions]
+        y_coords = [pos[1] for pos in greenery_positions]
+        
+        x_range = max(x_coords) - min(x_coords) if x_coords else 0
+        y_range = max(y_coords) - min(y_coords) if y_coords else 0
+        
+        # Normalize spread (wider spread = higher score)
+        return min(1.0, (x_range + y_range) / 20.0)
+    
+    def _calculate_ocean_coverage(self, ocean_positions: List[Tuple[int, int]]) -> float:
+        """Calculate ocean coverage score"""
+        if not ocean_positions:
+            return 0.0
+        
+        # Calculate how well oceans are distributed
+        # This is a simplified version - you might want to implement
+        # more sophisticated ocean placement analysis
+        return min(1.0, len(ocean_positions) / 9.0)
     
     def _encode_game_phase(self, game_state: Dict[str, Any]) -> List[float]:
         """Encode current game phase and timing"""
@@ -372,10 +497,10 @@ class StateEncoder:
                 base_idx = opponent_idx * 20
                 
                 # Basic opponent info
-                encoding[base_idx] = min(player.get('megaCredits', 0) / 100.0, 1.0)
+                encoding[base_idx] = min(player.get('megaCredits', 0) / 300, 1.0)
                 # TR normalized similar to self: (TR - 20) / 43, clamped to [0, 1]
                 opp_tr = max(player.get('terraformRating', 20) - 20, 0)
-                encoding[base_idx + 1] = min(opp_tr / 43.0, 1.0)
+                encoding[base_idx + 1] = min(opp_tr / 80.0, 1.0)
                 encoding[base_idx + 2] = min(len(player.get('tableau', [])) / 20.0, 1.0)
                 encoding[base_idx + 3] = min(player.get('victoryPointsBreakdown', {}).get('total', 0) / 50.0, 1.0)
                 

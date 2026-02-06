@@ -163,7 +163,7 @@ class StateEncoder:
     
     def _encode_player_production(self, player: Dict[str, Any]) -> List[float]:
         """Encode player production values"""
-        max_production = [50, 20, 20, 20, 20, 20, 10, 10]  # Reasonable maximums
+        max_production = [100, 30, 30, 30, 30, 30]  # Reasonable maximums
         
         prod_values = [
             player.get('megaCreditProduction', 0),
@@ -171,9 +171,7 @@ class StateEncoder:
             player.get('titaniumProduction', 0),
             player.get('plantProduction', 0),
             player.get('energyProduction', 0),
-            player.get('heatProduction', 0),
-            0,  # Card draw production (not available)
-            0   # Science tags or similar (not available)
+            player.get('heatProduction', 0)
         ]
         logger.info(f"Production: {prod_values} for player {player.get('id')}")
         # Normalize and handle negative production

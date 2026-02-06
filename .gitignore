@@ -2,3 +2,5 @@
 /rl-models
 __pycache__
 *.log
+/rl-logs/*
+/rl-logs/rl-coordinator.log.3

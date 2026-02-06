@@ -7,8 +7,9 @@ import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import json
+import os
 from datetime import datetime
-import random
+from copy import deepcopy
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,7 @@ class GameServerCluster:
         self.session = None
         # Optional cross-component scratchpad for latest game URLs
         self.recent_games: List[Dict[str, str]] = []
+        self.base_game_options = self._load_game_options()
         
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(
@@ -132,6 +134,91 @@ class GameServerCluster:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
             await self.session.close()
+
+    def _default_game_options(self) -> Dict[str, Any]:
+        return {
+            'altVenusBoard': False,
+            'aresExtremeVariant': False,
+            'bannedCards': [],
+            'board': "random all",
+            'ceosDraftVariant': False,
+            'customCeos': [],
+            'customColoniesList': [],
+            'customCorporationsList': [],
+            'customPreludes': [],
+            'draftVariant': True,
+            'escapeVelocityBonusSeconds': 2,
+            'escapeVelocityMode': False,
+            'expansions': {
+                'ares': False,
+                'ceo': False,
+                'colonies': False,
+                'community': False,
+                'corpera': False,
+                'moon': False,
+                'pathfinders': False,
+                'prelude': True,
+                'prelude2': False,
+                'promo': False,
+                'starwars': False,
+                'turmoil': False,
+                'underworld': False,
+                'venus': False,
+            },
+            'fastModeOption': False,
+            'includeFanMA': False,
+            'includedCards': [],
+            'initialDraft': False,
+            'modularMA': False,
+            'moonStandardProjectVariant': False,
+            'moonStandardProjectVariant1': False,
+            'politicalAgendasExtension': "Standard",
+            'preludeDraftVariant': True,
+            'randomFirstPlayer': True,
+            'randomMA': "No randomization",
+            'removeNegativeGlobalEventsOption': False,
+            'requiresMoonTrackCompletion': False,
+            'requiresVenusTrackCompletion': False,
+            'seed': "12345",
+            'showOtherPlayersVP': False,
+            'showTimers': True,
+            'shuffleMapOption': True,
+            'solarPhaseOption': True,
+            'soloTR': False,
+            'startingCeos': 0,
+            'startingCorporations': 2,
+            'startingPreludes': 4,
+            'twoCorpsVariant': False,
+            'undoOption': False,
+        }
+
+    def _load_game_options(self) -> Dict[str, Any]:
+        options_path = os.getenv('GAME_OPTIONS_FILE')
+        if not options_path:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            options_path = os.path.join(base_dir, 'game_options.base_prelude.json')
+        try:
+            with open(options_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                logger.warning("GAME_OPTIONS_FILE did not contain a JSON object. Using defaults.")
+                return self._default_game_options()
+            return data
+        except FileNotFoundError:
+            logger.warning(f"GAME_OPTIONS_FILE not found at {options_path}. Using defaults.")
+            return self._default_game_options()
+        except Exception as e:
+            logger.warning(f"Failed to load GAME_OPTIONS_FILE from {options_path}: {e}. Using defaults.")
+            return self._default_game_options()
+
+    def _merge_options(self, base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+        merged = deepcopy(base)
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = {**merged[key], **value}
+            else:
+                merged[key] = value
+        return merged
     
     async def health_check(self) -> Dict[str, bool]:
         """Check health of all game servers"""
@@ -181,73 +268,19 @@ class GameServerCluster:
                 timeout=aiohttp.ClientTimeout(total=60)
             )
         
-        # Prepare game creation request with detailed options
-        create_request = {
-            'altVenusBoard': False,
-            'aresExtremeVariant': False,
-            'bannedCards': [],
-            'board': "random all",
-            'ceosDraftVariant': False,
-            'customCeos': [],
-            'customColoniesList': [],
-            'customCorporationsList': [],
-            'customPreludes': [],
-            'draftVariant': True,
-            'escapeVelocityBonusSeconds': 2,
-            'escapeVelocityMode': False,
-            'expansions': {
-                'ares': False,
-                'ceo': False,
-                'colonies': False,
-                'community': False,
-                'corpera': False,
-                'moon': True,
-                'pathfinders': False,
-                'prelude': True,
-                'prelude2': True,
-                'promo': False,
-                'starwars': False,
-                'turmoil': False,
-                'underworld': False,
-                'venus': True,
-            },
-            'fastModeOption': False,
-            'includeFanMA': False,
-            'includedCards': [],
-            'initialDraft': False,
-            'modularMA': False,
-            'moonStandardProjectVariant': False,
-            'moonStandardProjectVariant1': False,
-            'players': [
-                {
-                    'name': name,
-                    'color': ['red', 'blue', 'green', 'yellow'][i % 4],
-                    'beginner': False,
-                    'handicap': 0,
-                    'first': False
-                }
-                for i, name in enumerate(player_names)
-            ],
-            'politicalAgendasExtension': "Standard",
-            'preludeDraftVariant': True,
-            'randomFirstPlayer': True,
-            'randomMA': "No randomization",
-            'removeNegativeGlobalEventsOption': False,
-            'requiresMoonTrackCompletion': True,
-            'requiresVenusTrackCompletion': True,
-            'seed': random.random(),
-            'showOtherPlayersVP': False,
-            'showTimers': True,
-            'shuffleMapOption': True,
-            'solarPhaseOption': True,
-            'soloTR': False,
-            'startingCeos': 3,
-            'startingCorporations': 2,
-            'startingPreludes': 4,
-            'twoCorpsVariant': False,
-            'undoOption': False,
-            **game_options
-        }
+        # Prepare game creation request with a preset + runtime overrides.
+        base_options = self.base_game_options or self._default_game_options()
+        create_request = self._merge_options(base_options, game_options or {})
+        create_request['players'] = [
+            {
+                'name': name,
+                'color': ['red', 'blue', 'green', 'yellow'][i % 4],
+                'beginner': False,
+                'handicap': 0,
+                'first': False
+            }
+            for i, name in enumerate(player_names)
+        ]
         
         try:
             base_url = f"http://{server.host}:{server.port}"

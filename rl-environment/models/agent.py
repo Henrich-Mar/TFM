@@ -147,7 +147,7 @@ class RLAgent:
             if policy_action:
                 logger.info(f"Agent {self.id[:8]} attempting policy action: {policy_action}")
                 if await game_instance.send_player_input(player_id, policy_action):
-                    logger.info(f"Agent {self.id[:8]} policy action succeeded")
+                    logger.info(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
                     # await asyncio.sleep(2)  # Slow down agent: wait 2 seconds after move
                     return  # Success
                 else:
@@ -157,6 +157,7 @@ class RLAgent:
 
             # 2. Try up to 3 different random actions
             available_actions = self.action_decoder.get_available_actions(player_state)
+            available_actions = self._filter_pass_actions(available_actions, player_state)
             if not available_actions:
                 # If no actions are available, just pass.
                 await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
@@ -183,6 +184,31 @@ class RLAgent:
 
         except Exception as e:
             logger.error(f"Error making move for agent {self.id[:8]}: {e}", exc_info=True)
+
+    def _filter_pass_actions(self, available_actions: List[int], player_state: Dict[str, Any]) -> List[int]:
+        if not available_actions:
+            return available_actions
+        pass_base = self.action_decoder.action_types.get('PASS', 900)
+        non_pass_actions = [a for a in available_actions if a < pass_base]
+        if not non_pass_actions:
+            return available_actions
+
+        waiting_for = player_state.get('waitingFor', {}) if player_state else {}
+        if waiting_for.get('type') == 'or':
+            options = waiting_for.get('options', [])
+            select_option_base = self.action_decoder.action_types.get('SELECT_OPTION', 200)
+            filtered = list(non_pass_actions)
+            for i, option in enumerate(options):
+                title = option.get('title', '')
+                if isinstance(title, dict):
+                    title = title.get('message', '')
+                if 'pass' in str(title).lower():
+                    pass_action = select_option_base + i
+                    if pass_action in filtered:
+                        filtered.remove(pass_action)
+            return filtered if filtered else available_actions
+
+        return non_pass_actions
     
     async def _get_action_from_network(self, state_vector: np.ndarray, 
                                     player_state: Dict[str, Any], force_random: bool = False) -> Optional[Dict[str, Any]]:
@@ -200,6 +226,7 @@ class RLAgent:
             
             # Get available actions
             available_actions = self.action_decoder.get_available_actions(player_state)
+            available_actions = self._filter_pass_actions(available_actions, player_state)
             
             if not available_actions:
                 return None
@@ -229,7 +256,7 @@ class RLAgent:
                 else:
                     action_types.append(f"OTHER({action_idx})")
             
-            logger.debug(f"Available actions: {action_types}")
+            logger.info(f"Available actions: {action_types}")
             
             # Optional: adjust weights for OR menus based on option titles to avoid passing
             action_weight_adjustments = None
@@ -334,7 +361,7 @@ class RLAgent:
             elif action_idx == sell_patents_action:
                 masked_probs[action_idx] *= 0.5  # Reduce sell patents probability to encourage diversity
             elif action_idx >= 100 and action_idx < 200:  # Standard projects
-                masked_probs[action_idx] *= 1.2  # Increase standard project probability
+                masked_probs[action_idx] *= 1.5  # Increase standard project probability
             elif action_idx == 700:  # Convert plants
                 masked_probs[action_idx] *= 1.3  # Increase convert plants probability
             elif action_idx == 701:  # Convert heat
@@ -345,7 +372,7 @@ class RLAgent:
                 if option_idx == 5:  # Sell patents option (index 5 in the OR structure)
                     masked_probs[action_idx] *= 0.4  # Strongly reduce sell patents option
                 elif option_idx == 4:  # Pass option (index 4 in the OR structure)
-                    masked_probs[action_idx] *= 0.6  # Reduce pass option
+                    masked_probs[action_idx] *= 0.5  # Reduce pass option
                 elif option_idx == 3:  # Standard projects option (index 3 in the OR structure)
                     masked_probs[action_idx] *= 1.3  # Strongly encourage standard projects
                 elif option_idx == 2:  # Fund award option (index 2 in the OR structure)

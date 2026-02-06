@@ -6,10 +6,11 @@ import os
 
 import asyncio
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import random
 
 from tournament_manager import TournamentManager
 from agent_evolution import EvolutionManager
@@ -59,6 +60,10 @@ class RLCoordinator:
         self.recent_games: List[Dict[str, str]] = []  # {game_id, url}
         # Track recent end screens for dashboard
         self.recent_end_screens: List[Dict[str, List[str]]] = []  # {game_id, end_screens}
+        # Pause functionality
+        self.paused = False
+        self.pause_event = asyncio.Event()
+        self.pause_event.set()  # Initially not paused
         
     async def initialize(self):
         """Initialize the RL system"""
@@ -82,6 +87,9 @@ class RLCoordinator:
         logger.info("Starting evolution cycle...")
         
         for generation in range(self.config.generations):
+            # Check for pause
+            await self.pause_event.wait()
+            
             self.current_generation = generation
             logger.info(f"=== Generation {generation + 1}/{self.config.generations} ===")
             
@@ -196,6 +204,69 @@ class RLCoordinator:
                 json.dump(cfg, f, indent=2)
         
         logger.info(f"Saved top {num_to_save} agents from generation {generation}")
+
+    async def run_debug_game(self, agent_ids: List[str] = None) -> Dict[str, Any]:
+        """Run a single debug game with 4 agents for easy debugging"""
+        logger.info("Starting debug game...")
+        
+        # Use provided agents or select first 4 from population
+        if agent_ids:
+            selected_agents = [agent for agent in self.population if agent.id in agent_ids]
+            if len(selected_agents) < 4:
+                # Pad with random agents if needed
+                while len(selected_agents) < 4:
+                    selected_agents.append(random.choice(self.population))
+        else:
+            # Use first 4 agents from population
+            selected_agents = self.population[:4]
+            if len(selected_agents) < 4:
+                logger.error(f"Not enough agents in population ({len(self.population)}). Need at least 4.")
+                return {"error": "Not enough agents in population"}
+        
+        # Limit to exactly 4 agents
+        selected_agents = selected_agents[:4]
+        
+        logger.info(f"Running debug game with agents: {[agent.id[:8] for agent in selected_agents]}")
+        
+        try:
+            # Create a single game
+            game_result = await self.tournament_manager._run_single_game(selected_agents, "debug_game")
+            
+            # Record the game URL
+            try:
+                public_base = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')
+                game_url = f"{public_base}/game?id={game_result.game_id}"
+                self.recent_games.append({"game_id": game_result.game_id, "url": game_url})
+            except Exception as e:
+                logger.warning(f"Failed to record game URL: {e}")
+            
+            return {
+                "success": True,
+                "game_id": game_result.game_id,
+                "game_url": game_url if 'game_url' in locals() else None,
+                "agents": [agent.id[:8] for agent in selected_agents],
+                "result": self.tournament_manager._game_result_to_dict(game_result)
+            }
+            
+        except Exception as e:
+            logger.error(f"Debug game failed: {e}")
+            return {"error": str(e)}
+    
+    def pause_training(self):
+        """Pause the training process"""
+        self.paused = True
+        self.pause_event.clear()
+        logger.info("Training paused")
+    
+    def resume_training(self):
+        """Resume the training process"""
+        self.paused = False
+        self.pause_event.set()
+        logger.info("Training resumed")
+    
+    def is_paused(self) -> bool:
+        """Check if training is currently paused"""
+        return self.paused
 
 async def main():
     """Main entry point"""

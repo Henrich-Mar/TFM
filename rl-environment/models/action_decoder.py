@@ -8,7 +8,7 @@ import random
 import os
 import json
 
-# logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # --- Action Response Builder for Terraforming Mars RL Agent ---
 def build_response_for_input(waiting_for, action_index=None, player_state=None):
@@ -55,6 +55,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             elif action_index >= 100 and action_index < 200:
                 # This is a direct standard project selection (100-199 range)
                 # Find which option contains the standard projects
+                logger.info(f"Standard project selection action_index: {action_index}")
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
                     option_title = option.get('title', '')
@@ -67,6 +68,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                         # Instead of just subtracting 100, we need to map to the actual project index
                         project_index = action_index - 100
                         action_index = project_index
+                        logger.info(f"Standard project selection action_index: {action_index}")
                         break
                 else:
                     # If no standard projects option found, default to first option
@@ -120,6 +122,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                     # If no sell patents option found, default to first option
                     selected_idx = 0
             elif action_index >= 0 and action_index < 100:
+                logger.info(f"Project card selection action_index: {action_index}")
                 # This is a direct project card selection (0-99 range)
                 # Find which option contains the project cards
                 for i, option in enumerate(options):
@@ -154,6 +157,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             selected_idx = i
                             # Adjust action_index for the sub-option
                             action_index = action_index - current_action_count
+                            logger.info(f"Standard project selection action_index: {action_index}")
                             break
                         current_action_count += len(cards)
                     elif option_type == 'selectCard' and 'Standard projects' in option.get('title', ''):
@@ -161,6 +165,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                         if current_action_count <= action_index < current_action_count + len(cards):
                             selected_idx = i
                             action_index = action_index - current_action_count
+                            logger.info(f"Standard project selection action_index: {action_index}")
                             break
                         current_action_count += len(cards)
                     elif option_type == 'or' and 'Fund an award' in option.get('title', ''):
@@ -168,26 +173,31 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                         if current_action_count <= action_index < current_action_count + len(award_options):
                             selected_idx = i
                             action_index = action_index - current_action_count
+                            logger.info(f"Award selection action_index: {action_index}")
                             break
                         current_action_count += len(award_options)
                     elif option_type == 'selectCard' and 'Convert Plants' in option.get('title', ''):
                         if action_index == current_action_count:
                             selected_idx = i
+                            logger.info(f"Convert plants action_index: {action_index}")
                             break
                         current_action_count += 1
                     elif option_type == 'selectCard' and 'Convert Heat' in option.get('title', ''):
                         if action_index == current_action_count:
                             selected_idx = i
+                            logger.info(f"Convert heat action_index: {action_index}")
                             break
                         current_action_count += 1
                     elif option_type == 'selectCard' and 'Sell patents' in option.get('title', ''):
                         if action_index == current_action_count:
                             selected_idx = i
+                            logger.info(f"Sell patents action_index: {action_index}")
                             break
                         current_action_count += 1
                     else:
                         if current_action_count == action_index:
                             selected_idx = i
+                            logger.info(f"Other action_index: {action_index}")
                             break
                         current_action_count += 1
         
@@ -220,7 +230,24 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 or 'standard projects' in option_title_l
                 or 'sell patents' in option_title_l
             ):
-                sub_action_index = 0
+                # For standard projects selected via SELECT_OPTION, extract the project index
+                if 'standard projects' in option_title_l and action_index >= 200:
+                    # Map the SELECT_OPTION index back to the project index
+                    # SELECT_OPTION_STANDARD_PROJECTS is at base 200, so action_index 200+ maps to project 0+
+                    # But we need to be more careful about the mapping
+                    # If action_index is exactly 203 (SELECT_OPTION_STANDARD_PROJECTS), we should select a random project
+                    # or use some other mechanism to select a specific project
+                    if action_index == 203:  # SELECT_OPTION_STANDARD_PROJECTS
+                        sub_action_index = 0
+                        logger.info(f"Standard project selection via SELECT_OPTION: action_index={action_index}, defaulting to project 0")
+                    else:
+                        # For other action indices, try to map to a project index
+                        # This is a fallback for cases where we have more specific action indices
+                        sub_action_index = action_index - 200
+                        logger.info(f"Standard project selection via SELECT_OPTION: action_index={action_index}, project_index={sub_action_index}")
+                else:
+                    sub_action_index = 0
+                logger.info(f"Standard project selection action_index: {action_index}")
 
         # Recursively build the response for the selected option
         sub_response = build_response_for_input(selected_option, sub_action_index, player_state)
@@ -857,12 +884,26 @@ class ActionDecoder:
                     elif option_type == 'selectCard' and 'Standard projects' in option_title:
                         # Standard projects - add individual project actions for all ENABLED projects
                         cards = option.get('cards', [])
-                        for j, card in enumerate(cards):
-                            # Only add enabled projects to available actions
-                            if not card.get('isDisabled', False):
-                                available_actions.append(self.action_types['STANDARD_PROJECT'] + j)
-                            # But also add a fallback for the selection mechanism
+                        logger.debug(f"Processing standard projects: {len(cards)} cards")
+                        # Get enabled cards first, fallback to all cards if none are enabled
+                        enabled_cards = [(j, card) for j, card in enumerate(cards) if not card.get('isDisabled', False)]
+                        if not enabled_cards:
+                            enabled_cards = [(j, card) for j, card in enumerate(cards)]
+                        
+                        # Add specific project actions for all available projects
+                        has_specific_actions = False
+                        for j, card in enabled_cards:
+                            available_actions.append(self.action_types['STANDARD_PROJECT'] + j)
+                            has_specific_actions = True
+                            logger.debug(f"Added STANDARD_PROJECT action {self.action_types['STANDARD_PROJECT'] + j} for card {card.get('name', 'Unknown')}")
+                        
+                        # Only add fallback for the selection mechanism if no specific actions are available
+                        if not has_specific_actions:
                             available_actions.append(self.action_types['SELECT_OPTION'] + i)
+                            logger.debug(f"Added SELECT_OPTION fallback {self.action_types['SELECT_OPTION'] + i} for standard projects")
+                        
+                        # Log for debugging
+                        logger.debug(f"Standard projects: {len(cards)} cards, {len(enabled_cards)} enabled, {has_specific_actions} specific actions")
                     elif option_type == 'or' and 'Fund an award' in option_title:
                         # Fund awards - add individual award actions
                         award_options = option.get('options', [])

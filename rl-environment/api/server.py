@@ -3,9 +3,10 @@ API Server for monitoring RL training progress
 """
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 import asyncio
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import aiohttp
 import uvicorn
 
@@ -15,6 +16,9 @@ app = FastAPI(title="Terraforming Mars RL Monitor", version="1.0.0")
 
 # Global reference to coordinator (set when starting server)
 coordinator = None
+
+class DebugGameRequest(BaseModel):
+    agent_ids: Optional[List[str]] = None
 
 @app.get("/")
 async def root():
@@ -171,13 +175,49 @@ async def get_server_status():
 
 @app.post("/control/pause")
 async def pause_training():
-    """Pause training (not implemented yet)"""
-    return {"message": "Pause functionality not implemented yet"}
+    """Pause training"""
+    if coordinator is None:
+        raise HTTPException(status_code=503, detail="Coordinator not initialized")
+    
+    coordinator.pause_training()
+    return {"message": "Training paused", "paused": True}
 
 @app.post("/control/resume")
 async def resume_training():
-    """Resume training (not implemented yet)"""
-    return {"message": "Resume functionality not implemented yet"}
+    """Resume training"""
+    if coordinator is None:
+        raise HTTPException(status_code=503, detail="Coordinator not initialized")
+    
+    coordinator.resume_training()
+    return {"message": "Training resumed", "paused": False}
+
+@app.get("/control/status")
+async def get_training_status():
+    """Get current training status"""
+    if coordinator is None:
+        raise HTTPException(status_code=503, detail="Coordinator not initialized")
+    
+    return {
+        "paused": coordinator.is_paused(),
+        "current_generation": coordinator.current_generation,
+        "population_size": len(coordinator.population)
+    }
+
+@app.post("/debug/game")
+async def run_debug_game(request: DebugGameRequest):
+    """Run a single debug game with 4 agents"""
+    if coordinator is None:
+        raise HTTPException(status_code=503, detail="Coordinator not initialized")
+    
+    if len(coordinator.population) < 4:
+        raise HTTPException(status_code=400, detail="Need at least 4 agents in population")
+    
+    result = await coordinator.run_debug_game(request.agent_ids)
+    
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+    
+    return result
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
@@ -230,6 +270,17 @@ async def dashboard():
                     <h3>🏆 Tournaments</h3>
                     <div id="tournament-stats">Loading...</div>
                 </div>
+                
+                <div class="card">
+                    <h3>⏸️ Training Control</h3>
+                    <div id="training-control">
+                        <button id="pause-btn" onclick="pauseTraining()">⏸️ Pause</button>
+                        <button id="resume-btn" onclick="resumeTraining()">▶️ Resume</button>
+                        <button id="debug-btn" onclick="runDebugGame()">🐛 Debug Game</button>
+                        <div id="control-status">Loading...</div>
+                    </div>
+                </div>
+                
                 <div class="card">
                     <h3>🧭 Recent Games</h3>
                     <div id="recent-games">Loading...</div>
@@ -378,14 +429,93 @@ async def dashboard():
                 }
             }
             
+            async function loadControlStatus() {
+                try {
+                    const response = await fetch('/control/status');
+                    const data = await response.json();
+                    
+                    const statusDiv = document.getElementById('control-status');
+                    const pauseBtn = document.getElementById('pause-btn');
+                    const resumeBtn = document.getElementById('resume-btn');
+                    
+                    if (data.paused) {
+                        statusDiv.innerHTML = '<div class="metric-label status-bad">⏸️ Training Paused</div>';
+                        pauseBtn.disabled = true;
+                        resumeBtn.disabled = false;
+                    } else {
+                        statusDiv.innerHTML = '<div class="metric-label status-good">▶️ Training Running</div>';
+                        pauseBtn.disabled = false;
+                        resumeBtn.disabled = true;
+                    }
+                } catch (error) {
+                    console.error('Failed to load control status:', error);
+                }
+            }
+            
+            async function pauseTraining() {
+                try {
+                    const response = await fetch('/control/pause', { method: 'POST' });
+                    if (response.ok) {
+                        loadControlStatus();
+                    } else {
+                        alert('Failed to pause training');
+                    }
+                } catch (error) {
+                    console.error('Failed to pause training:', error);
+                    alert('Failed to pause training');
+                }
+            }
+            
+            async function resumeTraining() {
+                try {
+                    const response = await fetch('/control/resume', { method: 'POST' });
+                    if (response.ok) {
+                        loadControlStatus();
+                    } else {
+                        alert('Failed to resume training');
+                    }
+                } catch (error) {
+                    console.error('Failed to resume training:', error);
+                    alert('Failed to resume training');
+                }
+            }
+            
+            async function runDebugGame() {
+                try {
+                    const debugBtn = document.getElementById('debug-btn');
+                    debugBtn.disabled = true;
+                    debugBtn.textContent = '🐛 Creating...';
+                    
+                    const response = await fetch('/debug/game', { method: 'POST' });
+                    const result = await response.json();
+                    
+                    if (response.ok && result.success) {
+                        alert(`Debug game created! Game ID: ${result.game_id}\\nGame URL: ${result.game_url || 'N/A'}`);
+                        // Refresh stats to show the new game
+                        loadStats();
+                    } else {
+                        alert(`Failed to create debug game: ${result.error || 'Unknown error'}`);
+                    }
+                } catch (error) {
+                    console.error('Failed to create debug game:', error);
+                    alert('Failed to create debug game');
+                } finally {
+                    const debugBtn = document.getElementById('debug-btn');
+                    debugBtn.disabled = false;
+                    debugBtn.textContent = '🐛 Debug Game';
+                }
+            }
+            
             // Load data on page load
             loadStats();
             loadPopulation();
+            loadControlStatus(); // Load control status on page load
             
             // Auto-refresh every 30 seconds
             setInterval(() => {
                 loadStats();
                 loadPopulation();
+                loadControlStatus(); // Refresh control status periodically
             }, 30000);
         </script>
     </body>

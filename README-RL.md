@@ -129,6 +129,10 @@ GAMES_PER_EVAL=20          # Games per evaluation
 GAME_SERVERS=tm-server-1:8080,tm-server-2:8080,tm-server-3:8080
 REDIS_URL=redis://redis:6379
 POSTGRES_URL=postgresql://postgres:password@postgres:5432/rl_metrics
+
+# Self-play policy learning (on top of evolution)
+SELF_PLAY_LEARNING=1        # 1=enable in-game policy/value updates, 0=disable
+SELF_PLAY_REWARD_SCALE=1.0  # Scales terminal reward before policy update
 ```
 
 ### Agent Hyperparameters

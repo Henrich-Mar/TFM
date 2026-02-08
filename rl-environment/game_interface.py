@@ -29,6 +29,35 @@ class GameInstance:
         self.player_ids: Dict[str, str] = {}  # player_name -> player_id
         self.base_url = f"http://{server.host}:{server.port}"
         self.spectator_id: Optional[str] = None
+
+    def _resolve_public_base(self) -> str:
+        """Resolve external URL for this game server."""
+        mapping_str = os.getenv('PUBLIC_TM_MAP', '')
+        public_map: Dict[str, str] = {}
+        if mapping_str:
+            try:
+                for pair in mapping_str.split(','):
+                    if not pair or '=' not in pair:
+                        continue
+                    k, v = pair.split('=', 1)
+                    public_map[k.strip()] = v.strip()
+            except Exception:
+                logger.warning("Failed to parse PUBLIC_TM_MAP; falling back to PUBLIC_TM_URL")
+        server_key = f"{self.server.host}:{self.server.port}"
+        public_base = public_map.get(server_key)
+        if not public_base:
+            pub = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')
+            public_base = pub.split(',')[0] if ',' in pub else pub
+        return str(public_base).rstrip('/')
+
+    def get_public_game_url(self) -> str:
+        return f"{self._resolve_public_base()}/game?id={self.game_id}"
+
+    def get_public_player_api_url(self, player_id: str) -> str:
+        return f"{self._resolve_public_base()}/api/player?id={player_id}"
+
+    def get_internal_player_api_url(self, player_id: str) -> str:
+        return f"{self.base_url}/api/player?id={player_id}"
         
     async def join_player(self, player_name: str) -> str:
         """Join a player to the game and return player ID"""
@@ -81,7 +110,23 @@ class GameInstance:
                     return True
                 else:
                     response_text = await response.text()
-                    logger.error(f"Failed to send input for player {player_id}. Status: {response.status}, Response: {response_text}")
+                    try:
+                        payload_preview = json.dumps(input_data, ensure_ascii=True, separators=(',', ':'))
+                    except Exception:
+                        payload_preview = str(input_data)
+                    if len(payload_preview) > 800:
+                        payload_preview = payload_preview[:800] + "...(truncated)"
+                    logger.error(
+                        "Failed to send input for player %s. Status: %s, Response: %s, "
+                        "Input: %s, GameURL: %s, PlayerAPI(public): %s, PlayerAPI(internal): %s",
+                        player_id,
+                        response.status,
+                        response_text,
+                        payload_preview,
+                        self.get_public_game_url(),
+                        self.get_public_player_api_url(player_id),
+                        self.get_internal_player_api_url(player_id),
+                    )
                     return False
         except Exception as e:
             logger.error(f"Failed to send input for player {player_id}: {e}")

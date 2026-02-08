@@ -10,6 +10,14 @@ import json
 
 logger = logging.getLogger(__name__)
 
+def _title_text(value: Any) -> str:
+    """Normalize title payloads from server into plain text for matching."""
+    if isinstance(value, dict):
+        return str(value.get('message', '') or '')
+    if isinstance(value, str):
+        return value
+    return ''
+
 # --- Action Response Builder for Terraforming Mars RL Agent ---
 def build_response_for_input(waiting_for, action_index=None, player_state=None):
     """
@@ -29,22 +37,23 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         
         # Map action_index to the correct option based on action ranges
         selected_idx = 0
+        selected_via_option_range = False
         if action_index is not None:
             # Check if this is a SELECT_OPTION range action (200+)
-            if action_index >= 200:
+            if 200 <= action_index < 300:
                 # Map SELECT_OPTION range back to option index
                 selected_idx = action_index - 200
-                # Don't reset action_index for sub-option handling - let the sub-option handle it
+                selected_via_option_range = True
+                # This action chooses the OR option itself, not an inner sub-index.
+                action_index = None
             elif action_index >= 600 and action_index < 700:
                 # This is a direct award selection (600+ range)
                 # Find which option contains the award selection
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
-                    option_title = option.get('title', '')
-                    if isinstance(option_title, dict):
-                        option_title = option_title.get('message', '')
+                    option_title = _title_text(option.get('title', ''))
                     
-                    if option_type == 'or' and 'Fund an award' in option_title:
+                    if option_type == 'or' and 'fund an award' in option_title.lower():
                         selected_idx = i
                         # Adjust action_index for the award selection
                         action_index = action_index - 600
@@ -58,11 +67,9 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 logger.info(f"Standard project selection action_index: {action_index}")
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
-                    option_title = option.get('title', '')
-                    if isinstance(option_title, dict):
-                        option_title = option_title.get('message', '')
+                    option_title = _title_text(option.get('title', ''))
                     
-                    if option_type == 'selectCard' and 'Standard projects' in option_title:
+                    if option_type in ['selectCard', 'card'] and 'standard projects' in option_title.lower():
                         selected_idx = i
                         # Adjust action_index for the standard project selection
                         # Instead of just subtracting 100, we need to map to the actual project index
@@ -78,11 +85,9 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 # Find which option contains the convert plants action
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
-                    option_title = option.get('title', '')
-                    if isinstance(option_title, dict):
-                        option_title = option_title.get('message', '')
+                    option_title = _title_text(option.get('title', ''))
                     
-                    if option_type == 'selectCard' and 'Convert Plants' in option_title:
+                    if option_type in ['selectCard', 'card'] and 'convert plants' in option_title.lower():
                         selected_idx = i
                         action_index = 0  # Convert plants doesn't need sub-index
                         break
@@ -94,11 +99,9 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 # Find which option contains the convert heat action
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
-                    option_title = option.get('title', '')
-                    if isinstance(option_title, dict):
-                        option_title = option_title.get('message', '')
+                    option_title = _title_text(option.get('title', ''))
                     
-                    if option_type == 'selectCard' and 'Convert Heat' in option_title:
+                    if option_type in ['selectCard', 'card'] and 'convert heat' in option_title.lower():
                         selected_idx = i
                         action_index = 0  # Convert heat doesn't need sub-index
                         break
@@ -110,11 +113,9 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 # Find which option contains the sell patents action
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
-                    option_title = option.get('title', '')
-                    if isinstance(option_title, dict):
-                        option_title = option_title.get('message', '')
+                    option_title = _title_text(option.get('title', ''))
                     
-                    if option_type == 'selectCard' and 'Sell patents' in option_title:
+                    if option_type in ['selectCard', 'card'] and 'sell patents' in option_title.lower():
                         selected_idx = i
                         action_index = 0  # Sell patents doesn't need sub-index
                         break
@@ -125,33 +126,37 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 logger.info(f"Project card selection action_index: {action_index}")
                 # This is a direct project card selection (0-99 range)
                 # Find which option contains the project cards
+                matched = False
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
-                    option_title = option.get('title', '')
-                    if isinstance(option_title, dict):
-                        option_title = option_title.get('message', '')
+                    option_title = _title_text(option.get('title', ''))
                     
-                    if option_type == 'selectProjectCardToPlay':
+                    if option_type in ['selectProjectCardToPlay', 'projectCard']:
                         selected_idx = i
                         # action_index is already correct for card selection
+                        matched = True
                         break
-                    elif option_type == 'selectCard' and 'Standard projects' in option_title:
+                    elif option_type in ['selectCard', 'card'] and 'standard projects' in option_title.lower():
                         # Check if this is a standard project card
                         cards = option.get('cards', [])
                         if action_index < len(cards):
                             selected_idx = i
                             # Adjust action_index for the standard project selection
                             action_index = action_index
+                            matched = True
                             break
-                else:
-                    # If no matching option found, default to first option
-                    selected_idx = 0
+                if not matched:
+                    # No card-like option matched; treat low index as plain OR option index.
+                    if 0 <= action_index < len(options):
+                        selected_idx = int(action_index)
+                    else:
+                        selected_idx = 0
             else:
                 # Determine which option this action_index corresponds to
                 current_action_count = 0
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
-                    if option_type == 'selectProjectCardToPlay':
+                    if option_type in ['selectProjectCardToPlay', 'projectCard']:
                         cards = option.get('cards', [])
                         if current_action_count <= action_index < current_action_count + len(cards):
                             selected_idx = i
@@ -160,7 +165,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             logger.info(f"Standard project selection action_index: {action_index}")
                             break
                         current_action_count += len(cards)
-                    elif option_type == 'selectCard' and 'Standard projects' in option.get('title', ''):
+                    elif option_type in ['selectCard', 'card'] and 'standard projects' in _title_text(option.get('title', '')).lower():
                         cards = option.get('cards', [])
                         if current_action_count <= action_index < current_action_count + len(cards):
                             selected_idx = i
@@ -168,7 +173,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             logger.info(f"Standard project selection action_index: {action_index}")
                             break
                         current_action_count += len(cards)
-                    elif option_type == 'or' and 'Fund an award' in option.get('title', ''):
+                    elif option_type == 'or' and 'fund an award' in _title_text(option.get('title', '')).lower():
                         award_options = option.get('options', [])
                         if current_action_count <= action_index < current_action_count + len(award_options):
                             selected_idx = i
@@ -176,19 +181,19 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             logger.info(f"Award selection action_index: {action_index}")
                             break
                         current_action_count += len(award_options)
-                    elif option_type == 'selectCard' and 'Convert Plants' in option.get('title', ''):
+                    elif option_type in ['selectCard', 'card'] and 'convert plants' in _title_text(option.get('title', '')).lower():
                         if action_index == current_action_count:
                             selected_idx = i
                             logger.info(f"Convert plants action_index: {action_index}")
                             break
                         current_action_count += 1
-                    elif option_type == 'selectCard' and 'Convert Heat' in option.get('title', ''):
+                    elif option_type in ['selectCard', 'card'] and 'convert heat' in _title_text(option.get('title', '')).lower():
                         if action_index == current_action_count:
                             selected_idx = i
                             logger.info(f"Convert heat action_index: {action_index}")
                             break
                         current_action_count += 1
-                    elif option_type == 'selectCard' and 'Sell patents' in option.get('title', ''):
+                    elif option_type in ['selectCard', 'card'] and 'sell patents' in _title_text(option.get('title', '')).lower():
                         if action_index == current_action_count:
                             selected_idx = i
                             logger.info(f"Sell patents action_index: {action_index}")
@@ -201,7 +206,10 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             break
                         current_action_count += 1
         
-        selected_idx = max(0, min(selected_idx, len(options) - 1))
+        if len(options) == 0:
+            return {'type': 'option'}
+        if selected_idx < 0 or selected_idx >= len(options):
+            selected_idx = 0
         selected_option = options[selected_idx] if options else {}
         
         # logger.info(f"Selected option {selected_idx}: {selected_option.get('type', 'unknown')} with title: {selected_option.get('title', 'unknown')}")
@@ -217,8 +225,11 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         except Exception:
             option_title_l = ''
 
+        # For explicit SELECT_OPTION picks, avoid leaking outer action index into nested input parsing.
+        if selected_via_option_range:
+            sub_action_index = None
         # For standard projects, we need to pass the project index to the sub-option
-        if selected_option.get('type', '') == 'selectCard' and 'Standard projects' in option_title_l:
+        elif selected_option.get('type', '') in ['selectCard', 'card'] and 'standard projects' in option_title_l:
             # action_index already contains the project index, so we don't need to change sub_action_index
             pass
         elif action_index is not None and 200 <= action_index < 300:
@@ -307,13 +318,14 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         min_cards = waiting_for.get('min', 1)
         max_cards = waiting_for.get('max', len(cards))
         n = len(cards)
-        title = waiting_for.get('title', '')
-        if isinstance(title, dict):
-            title = title.get('message', '')
-        title = title.lower() if isinstance(title, str) else ''
+        title = _title_text(waiting_for.get('title', '')).lower()
         button_label = waiting_for.get('buttonLabel', '').lower()
         show_only_learner = waiting_for.get('showOnlyInLearnerMode', False)
         select_blue = waiting_for.get('selectBlueCardAction', False)
+        if 'convert plants' in title:
+            return {'type': 'convertPlants'}
+        if 'convert heat' in title:
+            return {'type': 'convertHeat'}
         # Treat Play flows as action (not selection). Selection covers keep/buy/choose/select screens.
         is_selection = (
             'prelude' in title
@@ -325,15 +337,18 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         )
         # Special-case: Standard projects shown as 'card' type requires a selection list of names
         if 'standard project' in title:
-            idx = action_index if (action_index is not None and 0 <= action_index < n) else 0
-            chosen = [cards[idx]['name']] if n > 0 else []
+            enabled_cards = [c for c in cards if not c.get('isDisabled', False)]
+            if not enabled_cards:
+                return {'type': 'pass'}
+            idx = action_index if (action_index is not None and 0 <= action_index < len(enabled_cards)) else 0
+            chosen = [enabled_cards[idx]['name']]
             return {'type': 'card', 'cards': chosen}
         # Special-case: Sell patents sometimes appears as 'card' type
         if 'sell patent' in title:
             if not cards:
                 return {'type': 'pass'}
             card_names = [c['name'] for c in cards]
-            return {'type': 'sellPatents', 'cards': card_names}
+            return {'type': 'card', 'cards': card_names}
         if is_selection:
             # Use bitmask logic for card selection (buy/keep/prelude phase)
             if min_cards == 1 and max_cards == 1:
@@ -595,7 +610,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
         else:
             return {'type': 'pass'}
-    elif input_type == 'selectCard' and 'Standard projects' in (waiting_for.get('title', '') or ''):
+    elif input_type == 'selectCard' and 'standard projects' in _title_text(waiting_for.get('title', '')).lower():
         # Handle standard project selection
         cards = waiting_for.get('cards', [])
         if not cards:
@@ -603,9 +618,6 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             
         card_idx = action_index if action_index is not None else 0
         enabled_cards = [(i, card) for i, card in enumerate(cards) if not card.get('isDisabled', False)]
-        if not enabled_cards:
-            enabled_cards = [(i, card) for i, card in enumerate(cards)]
-            
         if not enabled_cards:
             return {'type': 'pass'}
             
@@ -624,13 +636,13 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             payment = _build_payment_with_options(player_state, card, waiting_for.get('paymentOptions', {}))
             return {'type': 'projectCard', 'card': name, 'payment': payment}
         return {'type': 'card', 'cards': [name]}
-    elif input_type == 'selectCard' and 'Convert Plants' in waiting_for.get('title', ''):
+    elif input_type == 'selectCard' and 'convert plants' in _title_text(waiting_for.get('title', '')).lower():
         # Handle convert plants action
         return {'type': 'convertPlants'}
-    elif input_type == 'selectCard' and 'Convert Heat' in waiting_for.get('title', ''):
+    elif input_type == 'selectCard' and 'convert heat' in _title_text(waiting_for.get('title', '')).lower():
         # Handle convert heat action
         return {'type': 'convertHeat'}
-    elif input_type == 'selectCard' and 'Sell patents' in waiting_for.get('title', ''):
+    elif input_type == 'selectCard' and 'sell patents' in _title_text(waiting_for.get('title', '')).lower():
         # Handle sell patents action
         cards = waiting_for.get('cards', [])
         if not cards:
@@ -638,7 +650,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         
         # Select all cards to sell (maximize money gain)
         card_names = [card['name'] for card in cards]
-        return {'type': 'sellPatents', 'cards': card_names}
+        return {'type': 'card', 'cards': card_names}
     else:
         # Fallback: return a pass/option action
         return {'type': 'option'}
@@ -862,62 +874,59 @@ class ActionDecoder:
             # Handle all known input types
             if input_type == 'or':
                 options = waiting_for.get('options', [])
-                # logger.info(f"OR options available: {[opt.get('type', 'unknown') for opt in options]}")
-                
-                # For OR input types, we'll use a simpler approach:
-                # Map each option to a SELECT_OPTION range action
+                player = player_state.get('thisPlayer', {}) if player_state else {}
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
-                    option_title = option.get('title', '')
-                    if isinstance(option_title, dict):
-                        option_title = option_title.get('message', '')
-                    
-                    # Map to SELECT_OPTION range for consistent handling
-                    available_actions.append(self.action_types['SELECT_OPTION'] + i)
-                    
-                    # Also add specific action ranges for sub-options that need them
-                    if option_type == 'selectProjectCardToPlay' or option_type == 'projectCard':
-                        # Project cards to play - add individual card actions
+                    option_title_l = _title_text(option.get('title', '')).lower()
+                    allow_select_option = True
+                    added_concrete_action = False
+
+                    if option_type in ['selectProjectCardToPlay', 'projectCard']:
+                        # Prefer concrete card actions instead of generic OR selection.
                         cards = option.get('cards', [])
-                        for j, _ in enumerate(cards):
-                            available_actions.append(self.action_types['PLAY_CARD'] + j)
-                    elif option_type == 'selectCard' and 'Standard projects' in option_title:
-                        # Standard projects - add individual project actions for all ENABLED projects
+                        affordable_indices = []
+                        for j, card in enumerate(cards):
+                            if player_state and _can_afford_card(player, card):
+                                affordable_indices.append(j)
+                        candidate_indices = affordable_indices if affordable_indices else list(range(len(cards)))
+                        if candidate_indices:
+                            for j in candidate_indices:
+                                available_actions.append(self.action_types['PLAY_CARD'] + j)
+                            added_concrete_action = True
+                        else:
+                            allow_select_option = False
+                    elif option_type in ['selectCard', 'card'] and 'standard project' in option_title_l:
                         cards = option.get('cards', [])
-                        logger.debug(f"Processing standard projects: {len(cards)} cards")
-                        # Get enabled cards first, fallback to all cards if none are enabled
-                        enabled_cards = [(j, card) for j, card in enumerate(cards) if not card.get('isDisabled', False)]
-                        if not enabled_cards:
-                            enabled_cards = [(j, card) for j, card in enumerate(cards)]
-                        
-                        # Add specific project actions for all available projects
-                        has_specific_actions = False
-                        for j, card in enabled_cards:
-                            available_actions.append(self.action_types['STANDARD_PROJECT'] + j)
-                            has_specific_actions = True
-                            logger.debug(f"Added STANDARD_PROJECT action {self.action_types['STANDARD_PROJECT'] + j} for card {card.get('name', 'Unknown')}")
-                        
-                        # Only add fallback for the selection mechanism if no specific actions are available
-                        if not has_specific_actions:
-                            available_actions.append(self.action_types['SELECT_OPTION'] + i)
-                            logger.debug(f"Added SELECT_OPTION fallback {self.action_types['SELECT_OPTION'] + i} for standard projects")
-                        
-                        # Log for debugging
-                        logger.debug(f"Standard projects: {len(cards)} cards, {len(enabled_cards)} enabled, {has_specific_actions} specific actions")
-                    elif option_type == 'or' and 'Fund an award' in option_title:
-                        # Fund awards - add individual award actions
+                        enabled_indices = [j for j, card in enumerate(cards) if not card.get('isDisabled', False)]
+                        if enabled_indices:
+                            for j in enabled_indices:
+                                available_actions.append(self.action_types['STANDARD_PROJECT'] + j)
+                            added_concrete_action = True
+                        else:
+                            # Option shown but no enabled projects: avoid selecting it.
+                            allow_select_option = False
+                    elif option_type == 'or' and 'fund an award' in option_title_l:
                         award_options = option.get('options', [])
                         for j, _ in enumerate(award_options):
-                            available_actions.append(600 + j)  # Award funding actions
-                    elif option_type == 'selectCard' and 'Convert Plants' in option_title:
-                        # Convert plants action
+                            available_actions.append(600 + j)
+                        added_concrete_action = len(award_options) > 0
+                    elif option_type in ['selectCard', 'card'] and 'convert plants' in option_title_l:
                         available_actions.append(700)
-                    elif option_type == 'selectCard' and 'Convert Heat' in option_title:
-                        # Convert heat action
+                        added_concrete_action = True
+                    elif option_type in ['selectCard', 'card'] and 'convert heat' in option_title_l:
                         available_actions.append(701)
-                    elif option_type == 'selectCard' and 'Sell patents' in option_title:
-                        # Sell patents action
-                        available_actions.append(702)
+                        added_concrete_action = True
+                    elif option_type in ['selectCard', 'card'] and 'sell patents' in option_title_l:
+                        if option.get('cards', []):
+                            available_actions.append(702)
+                            added_concrete_action = True
+                        else:
+                            allow_select_option = False
+
+                    # Keep SELECT_OPTION only when we do not have a concrete safer index,
+                    # or when this option is simple and does not require sub-selection.
+                    if not added_concrete_action and allow_select_option:
+                        available_actions.append(self.action_types['SELECT_OPTION'] + i)
             elif input_type == 'option':
                 options = waiting_for.get('options', [])
                 for i, _ in enumerate(options):
@@ -927,23 +936,31 @@ class ActionDecoder:
                 can_pass = waiting_for.get('canPass', False)
                 
                 # Filter out unaffordable cards in play-card scenarios
-                title = waiting_for.get('title', '')
-                if isinstance(title, dict):
-                    title = title.get('message', '')
-                title = title.lower() if isinstance(title, str) else ''
+                title = _title_text(waiting_for.get('title', '')).lower()
                 button_label = waiting_for.get('buttonLabel', '').lower()
                 select_blue = waiting_for.get('selectBlueCardAction', False)
+                if 'convert plants' in title:
+                    available_actions.append(700)
+                elif 'convert heat' in title:
+                    available_actions.append(701)
+                elif 'sell patents' in title:
+                    if cards:
+                        available_actions.append(702)
+                elif 'standard project' in title:
+                    enabled_cards = [(i, card) for i, card in enumerate(cards) if not card.get('isDisabled', False)]
+                    for i, _ in enabled_cards:
+                        available_actions.append(self.action_types['STANDARD_PROJECT'] + i)
                 
                 # Check if this is a card purchase/selection scenario vs playing cards
                 is_selection = (
                     'prelude' in title
                     or 'select' in title
-                    or button_label in ['keep', 'buy', 'select', 'choose', 'take action', 'discard']
+                    or button_label in ['keep', 'buy', 'select', 'choose', 'take action', 'discard', 'confirm', 'ok']
                     or waiting_for.get('showOnlyInLearnerMode', False)
                     or select_blue
                 )
                 
-                if not is_selection and player_state:
+                if not available_actions and not is_selection and player_state:
                     # For playing cards, check affordability
                     player = player_state.get('thisPlayer', {})
                     affordable_cards = []
@@ -959,14 +976,37 @@ class ActionDecoder:
                         # No affordable cards, just add all and let payment logic handle it
                         for i, _ in enumerate(cards):
                             available_actions.append(self.action_types['PLAY_CARD'] + i)
-                else:
+                elif not available_actions:
                     # For selection scenarios, include all cards
                     for i, _ in enumerate(cards):
                         available_actions.append(self.action_types['PLAY_CARD'] + i)
                         
                 if can_pass:
                     available_actions.append(self.action_types['PASS'])
-            elif input_type == 'projectCard':
+            elif input_type == 'selectCard':
+                cards = waiting_for.get('cards', [])
+                can_pass = waiting_for.get('canPass', False)
+                title = _title_text(waiting_for.get('title', '')).lower()
+                if 'standard project' in title:
+                    enabled_cards = [(i, card) for i, card in enumerate(cards) if not card.get('isDisabled', False)]
+                    for i, _ in enabled_cards:
+                        available_actions.append(self.action_types['STANDARD_PROJECT'] + i)
+                elif 'convert plants' in title:
+                    available_actions.append(700)
+                elif 'convert heat' in title:
+                    available_actions.append(701)
+                elif 'sell patents' in title:
+                    if cards:
+                        available_actions.append(702)
+                else:
+                    enabled_indices = [i for i, card in enumerate(cards) if not card.get('isDisabled', False)]
+                    if not enabled_indices:
+                        enabled_indices = list(range(len(cards)))
+                    for i in enabled_indices:
+                        available_actions.append(self.action_types['PLAY_CARD'] + i)
+                if can_pass:
+                    available_actions.append(self.action_types['PASS'])
+            elif input_type in ['projectCard', 'selectProjectCardToPlay']:
                 cards = waiting_for.get('cards', [])
                 can_pass = waiting_for.get('canPass', False)
                 
@@ -1053,6 +1093,9 @@ class ActionDecoder:
             else:
                 # logger.warning(f"Unknown input_type '{input_type}' in get_available_actions. Defaulting to PASS.")
                 available_actions.append(self.action_types['PASS'])
+            if available_actions:
+                # Deduplicate while preserving order to reduce repeated retries.
+                available_actions = list(dict.fromkeys(available_actions))
             if not available_actions:
                 available_actions.append(self.action_types['PASS'])
         except Exception as e:

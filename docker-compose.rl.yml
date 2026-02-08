@@ -31,6 +31,13 @@ services:
       - REDIS_URL=redis://redis:6379
       - POSTGRES_URL=postgresql://postgres:password@postgres:5432/rl_metrics
       - TM_CARD_METADATA_PATH=/app/card_metadata.json
+      - SELF_PLAY_LEARNING=1
+      - SELF_PLAY_REWARD_SCALE=1.0
+      - TM_FAST_MODE_OPTION=0
+      - AGENT_POLL_INTERVAL_SEC=0.6
+      - AGENT_POST_MOVE_SLEEP_SEC=1.2
+      - AGENT_FAILURE_PAUSE_SEC=0.5
+      - AGENT_STUCK_LOG_COOLDOWN_SEC=4.0
     volumes:
       - ./rl-environment:/app
       - ./rl-models:/app/rl-models

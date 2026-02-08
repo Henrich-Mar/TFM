@@ -525,7 +525,9 @@ class StateEncoder:
             # Input type encoding
             type_map = {
                 'card': 0, 'or': 1, 'selectSpace': 2, 'selectPayment': 3,
-                'selectOption': 4, 'selectAmount': 5, 'selectPlayer': 6
+                'selectOption': 4, 'selectAmount': 5, 'selectPlayer': 6,
+                'selectCard': 7, 'projectCard': 8, 'selectProjectCardToPlay': 9,
+                'initialCards': 10, 'payment': 11, 'space': 12
             }
             
             if input_type in type_map:
@@ -563,9 +565,32 @@ class StateEncoder:
                     if 'fund an award' in title or 'fund award' in title:
                         encoding[26] = 1.0
                         encoding[27] = (i + 1) / 10.0
+                    if 'play project card' in title:
+                        encoding[28] = 1.0
+                        encoding[29] = (i + 1) / 10.0
+                    if 'convert plants' in title:
+                        encoding[30] = 1.0
+                        encoding[31] = (i + 1) / 10.0
+                    if 'convert heat' in title:
+                        encoding[32] = 1.0
+                        encoding[33] = (i + 1) / 10.0
+                    if 'perform an action' in title or 'take action' in title:
+                        encoding[34] = 1.0
+                        encoding[35] = (i + 1) / 10.0
             elif input_type == 'card':
                 cards = waiting_for.get('cards', [])
                 encoding[11] = min(len(cards) / 20.0, 1.0)
+            elif input_type in ['selectCard', 'projectCard', 'selectProjectCardToPlay']:
+                cards = waiting_for.get('cards', [])
+                encoding[36] = min(len(cards) / 20.0, 1.0)
+            elif input_type in ['selectSpace', 'space']:
+                spaces = waiting_for.get('availableSpaces', waiting_for.get('spaces', []))
+                encoding[37] = min(len(spaces) / 40.0, 1.0)
+            elif input_type in ['selectAmount', 'amount']:
+                min_amount = float(waiting_for.get('min', 0) or 0)
+                max_amount = float(waiting_for.get('max', 0) or 0)
+                encoding[38] = min(min_amount / 20.0, 1.0)
+                encoding[39] = min(max_amount / 20.0, 1.0)
         logger.info(f"Action context: {encoding} for player {player_state.get('id')}")
         return encoding
     

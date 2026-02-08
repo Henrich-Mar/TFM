@@ -9,6 +9,7 @@ import asyncio
 import logging
 import json
 import os
+import time
 from typing import Dict, Any, List, Optional, Tuple
 import uuid
 from dataclasses import dataclass, asdict
@@ -32,6 +33,11 @@ class AgentConfig:
     epsilon: float = 0.05  # Reduced for more policy-driven behavior
     temperature: float = 1.2  # Slightly increased for more exploration
     max_thinking_time: float = 5.0  # Max seconds to think per move
+    train_from_self_play: bool = True
+    value_loss_coef: float = 0.5
+    entropy_coef: float = 0.005
+    max_grad_norm: float = 1.0
+    max_episode_steps: int = 512
 
 class TerraformingMarsNetwork(nn.Module):
     def __init__(self, config: AgentConfig):
@@ -90,9 +96,17 @@ class RLAgent:
         self.state_encoder = StateEncoder()
         self.action_decoder = ActionDecoder()
         
-        # Training data
-        self.replay_buffer = []
-        self.current_episode_data = []
+        # Self-play learning configuration (env overrides)
+        self.train_from_self_play = (
+            self.config.train_from_self_play and os.getenv("SELF_PLAY_LEARNING", "1") != "0"
+        )
+        self.self_play_reward_scale = float(os.getenv("SELF_PLAY_REWARD_SCALE", "1.0"))
+        self.training_lock = asyncio.Lock()
+        self.poll_interval_sec = float(os.getenv("AGENT_POLL_INTERVAL_SEC", "0.2"))
+        self.post_move_sleep_sec = float(os.getenv("AGENT_POST_MOVE_SLEEP_SEC", "0.0"))
+        self.failure_pause_sec = float(os.getenv("AGENT_FAILURE_PAUSE_SEC", "0.0"))
+        self.stuck_log_cooldown_sec = float(os.getenv("AGENT_STUCK_LOG_COOLDOWN_SEC", "5.0"))
+        self._last_stuck_log_by_player: Dict[str, float] = {}
         
         # Performance tracking
         self.games_played = 0
@@ -101,10 +115,18 @@ class RLAgent:
         
     async def play_game(self, game_instance: GameInstance, player_name: str):
         """Play a complete game"""
+        episode_steps: List[Tuple[np.ndarray, int]] = []
         try:
             # Join the game
             player_id = await game_instance.join_player(player_name)
             logger.info(f"Agent {self.id[:8]} joined game as {player_name} (ID: {player_id})")
+            logger.info(
+                "Agent %s debug links: game=%s player_api(public)=%s player_api(internal)=%s",
+                self.id[:8],
+                game_instance.get_public_game_url(),
+                game_instance.get_public_player_api_url(player_id),
+                game_instance.get_internal_player_api_url(player_id),
+            )
             
             # Game loop
             while True:
@@ -118,21 +140,68 @@ class RLAgent:
                 # If we are waiting for input, make a move.
                 # Otherwise, we wait for our turn.
                 if player_state.get('waitingFor'):
-                    await self._make_move(game_instance, player_id, player_state)
+                    await self._make_move(game_instance, player_id, player_state, episode_steps)
                 
                 # Wait before polling again to avoid busy-waiting
-                await asyncio.sleep(0.2)
+                await self._sleep_if_needed(self.poll_interval_sec)
             
             # Record game completion
             self.games_played += 1
             final_state = await game_instance.get_final_state()
-            await self._record_game_result(final_state, player_name, game_instance)
+            game_outcome = await self._record_game_result(final_state, player_name, game_instance)
+
+            # Sparse-reward policy/value update from self-play trajectory
+            if self.train_from_self_play and game_outcome.get("completed", False):
+                reward = self._compute_terminal_reward(
+                    game_outcome.get("rank", 4),
+                    game_outcome.get("vp", 0),
+                )
+                reward *= self.self_play_reward_scale
+                await self._train_from_episode(episode_steps, reward)
             
         except Exception as e:
             logger.error(f"Agent {self.id[:8]} failed during game: {e}")
             raise
+
+    async def _sleep_if_needed(self, seconds: float):
+        delay = max(0.0, float(seconds or 0.0))
+        if delay > 0.0:
+            await asyncio.sleep(delay)
+
+    def _log_stuck_context(self, game_instance: GameInstance, player_id: str, player_state: Dict[str, Any], reason: str):
+        now = time.monotonic()
+        last = self._last_stuck_log_by_player.get(player_id, 0.0)
+        if (now - last) < max(0.0, self.stuck_log_cooldown_sec):
+            return
+        self._last_stuck_log_by_player[player_id] = now
+
+        waiting_for = player_state.get('waitingFor', {}) if player_state else {}
+        waiting_type = waiting_for.get('type', 'unknown')
+        try:
+            waiting_preview = json.dumps(waiting_for, ensure_ascii=True, separators=(',', ':'))
+        except Exception:
+            waiting_preview = str(waiting_for)
+        if len(waiting_preview) > 1200:
+            waiting_preview = waiting_preview[:1200] + "...(truncated)"
+
+        logger.warning(
+            "Agent %s stuck (%s). waitingFor.type=%s, GameURL=%s, PlayerAPI(public)=%s, PlayerAPI(internal)=%s, waitingFor=%s",
+            self.id[:8],
+            reason,
+            waiting_type,
+            game_instance.get_public_game_url(),
+            game_instance.get_public_player_api_url(player_id),
+            game_instance.get_internal_player_api_url(player_id),
+            waiting_preview,
+        )
     
-    async def _make_move(self, game_instance: GameInstance, player_id: str, player_state: Dict[str, Any]):
+    async def _make_move(
+        self,
+        game_instance: GameInstance,
+        player_id: str,
+        player_state: Dict[str, Any],
+        episode_steps: List[Tuple[np.ndarray, int]],
+    ):
         """Make a single move in the game, with robust fallbacks."""
         try:
             state_vector = self.state_encoder.encode(player_state)
@@ -143,44 +212,58 @@ class RLAgent:
             logger.info(f"Agent {self.id[:8]} making move for input type: {waiting_type}")
 
             # 1. Try a policy-driven action
-            policy_action = await self._get_action_from_network(state_vector, player_state, force_random=False)
+            policy_action, policy_action_idx, sampled_from_policy = await self._get_action_from_network(
+                state_vector, player_state, force_random=False
+            )
+            tried_action_indices = set()
             if policy_action:
                 logger.info(f"Agent {self.id[:8]} attempting policy action: {policy_action}")
                 if await game_instance.send_player_input(player_id, policy_action):
                     logger.info(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
-                    # await asyncio.sleep(2)  # Slow down agent: wait 2 seconds after move
+                    if sampled_from_policy and policy_action_idx is not None:
+                        if len(episode_steps) < self.config.max_episode_steps:
+                            episode_steps.append((state_vector.astype(np.float32), int(policy_action_idx)))
+                    await self._sleep_if_needed(self.post_move_sleep_sec)
                     return  # Success
                 else:
+                    if policy_action_idx is not None:
+                        tried_action_indices.add(int(policy_action_idx))
                     logger.warning(f"Agent {self.id[:8]} policy action was rejected by game")
+                    self._log_stuck_context(game_instance, player_id, player_state, "policy_action_rejected")
+                    await self._sleep_if_needed(self.failure_pause_sec)
 
             logger.warning(f"Policy action failed for agent {self.id[:8]}. Trying random actions.")
 
-            # 2. Try up to 3 different random actions
+            # 2. Try a broader set of alternative actions, excluding already-rejected choices.
             available_actions = self.action_decoder.get_available_actions(player_state)
             available_actions = self._filter_pass_actions(available_actions, player_state)
+            available_actions = [a for a in available_actions if int(a) not in tried_action_indices]
             if not available_actions:
                 # If no actions are available, just pass.
+                self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions")
                 await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
-                # await asyncio.sleep(2)  # Slow down agent: wait 10 seconds after move
+                await self._sleep_if_needed(self.post_move_sleep_sec)
                 return
-                
+                 
             random.shuffle(available_actions)
-            
-            for i in range(min(3, len(available_actions))):
+            max_attempts = min(len(available_actions), 12)
+             
+            for i in range(max_attempts):
                 random_action_idx = available_actions[i]
                 random_action = self.action_decoder.decode_action(random_action_idx, player_state)
-                
+                 
                 if random_action:
                     if await game_instance.send_player_input(player_id, random_action):
                         logger.info(f"Random action succeeded for agent {self.id[:8]}.")
-                        # await asyncio.sleep(2)  # Slow down agent: wait 10 seconds after move
+                        await self._sleep_if_needed(self.post_move_sleep_sec)
                         return  # Success
 
             logger.warning(f"All random actions failed for agent {self.id[:8]}. Passing.")
+            self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed")
 
             # 3. If all else fails, pass
             await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
-            # await asyncio.sleep(2)  # Slow down agent: wait 10 seconds after move
+            await self._sleep_if_needed(self.post_move_sleep_sec)
 
         except Exception as e:
             logger.error(f"Error making move for agent {self.id[:8]}: {e}", exc_info=True)
@@ -211,7 +294,7 @@ class RLAgent:
         return non_pass_actions
     
     async def _get_action_from_network(self, state_vector: np.ndarray, 
-                                    player_state: Dict[str, Any], force_random: bool = False) -> Optional[Dict[str, Any]]:
+                                    player_state: Dict[str, Any], force_random: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool]:
         """Get action from neural network"""
         try:
             # Convert to tensor
@@ -227,24 +310,29 @@ class RLAgent:
             # Get available actions
             available_actions = self.action_decoder.get_available_actions(player_state)
             available_actions = self._filter_pass_actions(available_actions, player_state)
-            
+            waiting_for = player_state.get('waitingFor', {})
+             
             if not available_actions:
-                return None
-                
+                return None, None, False
+                 
             # Log available action types for debugging
             action_types = []
+            option_titles = waiting_for.get('options', []) if waiting_for.get('type') == 'or' else []
             for action_idx in available_actions:
                 if action_idx < 100:
                     action_types.append(f"PLAY_CARD({action_idx})")
                 elif action_idx < 200:
                     action_types.append(f"STANDARD_PROJECT({action_idx-100})")
-                elif action_idx >= 200 and action_idx < 210:  # SELECT_OPTION range
+                elif action_idx >= 200 and action_idx < 300:  # SELECT_OPTION range
                     option_idx = action_idx - 200
-                    option_names = ["CARD_ACTION", "PLAY_PROJECT_CARD", "FUND_AWARD", "STANDARD_PROJECTS", "PASS", "SELL_PATENTS"]
-                    if option_idx < len(option_names):
-                        action_types.append(f"SELECT_OPTION_{option_names[option_idx]}({action_idx})")
-                    else:
-                        action_types.append(f"SELECT_OPTION_{option_idx}({action_idx})")
+                    option_name = str(option_idx)
+                    if option_idx < len(option_titles):
+                        title = option_titles[option_idx].get('title', '')
+                        if isinstance(title, dict):
+                            title = title.get('message', '')
+                        title = str(title).strip()
+                        option_name = title if title else option_titles[option_idx].get('type', option_name)
+                    action_types.append(f"SELECT_OPTION_{option_name}({action_idx})")
                 elif action_idx == 700:
                     action_types.append("CONVERT_PLANTS")
                 elif action_idx == 701:
@@ -257,10 +345,9 @@ class RLAgent:
                     action_types.append(f"OTHER({action_idx})")
             
             logger.info(f"Available actions: {action_types}")
-            
+             
             # Optional: adjust weights for OR menus based on option titles to avoid passing
             action_weight_adjustments = None
-            waiting_for = player_state.get('waitingFor', {})
             if waiting_for and waiting_for.get('type') == 'or':
                 options = waiting_for.get('options', [])
                 adjustments = {}
@@ -296,7 +383,7 @@ class RLAgent:
                 pass
 
             # Sample action based on policy
-            action_index = self._sample_action(
+            action_index, sampled_from_policy = self._sample_action(
                 policy_probs.squeeze(),
                 available_actions,
                 force_random=force_random,
@@ -316,19 +403,21 @@ class RLAgent:
                     pass_actions = [a for a in available_actions if a >= 900]  # PASS action base
                     if pass_actions:
                         pass_action_index = pass_actions[0]
+                        action_index = pass_action_index
+                        sampled_from_policy = False
                         action_input = self.action_decoder.decode_action(pass_action_index, player_state)
             
-            return action_input
+            return action_input, action_index, sampled_from_policy
             
         except Exception as e:
             logger.error(f"Error getting action from network: {e}")
-            return None
+            return None, None, False
     
-    def _sample_action(self, policy_probs: torch.Tensor, available_actions: List[int], force_random: bool = False, action_weight_adjustments: Optional[Dict[int, float]] = None) -> int:
+    def _sample_action(self, policy_probs: torch.Tensor, available_actions: List[int], force_random: bool = False, action_weight_adjustments: Optional[Dict[int, float]] = None) -> Tuple[int, bool]:
         """Sample action from policy, restricted to available actions"""
         # Reduce epsilon-greedy for more policy-driven behavior
         if force_random or np.random.random() < max(0.05, self.config.epsilon * 0.5):
-            return np.random.choice(available_actions)
+            return np.random.choice(available_actions), False
 
         # Mask unavailable actions
         masked_probs = torch.zeros_like(policy_probs)
@@ -366,21 +455,9 @@ class RLAgent:
                 masked_probs[action_idx] *= 1.3  # Increase convert plants probability
             elif action_idx == 701:  # Convert heat
                 masked_probs[action_idx] *= 1.3  # Increase convert heat probability
-            elif action_idx >= select_option_base and action_idx < select_option_base + 10:  # SELECT_OPTION range
-                # Encourage diverse option selection, but avoid always picking the same option
-                option_idx = action_idx - select_option_base
-                if option_idx == 5:  # Sell patents option (index 5 in the OR structure)
-                    masked_probs[action_idx] *= 0.4  # Strongly reduce sell patents option
-                elif option_idx == 4:  # Pass option (index 4 in the OR structure)
-                    masked_probs[action_idx] *= 0.5  # Reduce pass option
-                elif option_idx == 3:  # Standard projects option (index 3 in the OR structure)
-                    masked_probs[action_idx] *= 1.3  # Strongly encourage standard projects
-                elif option_idx == 2:  # Fund award option (index 2 in the OR structure)
-                    masked_probs[action_idx] *= 1.2  # Encourage award funding
-                elif option_idx == 1:  # Play project card option (index 1 in the OR structure)
-                    masked_probs[action_idx] *= 1.6  # Encourage playing project cards
-                elif option_idx == 0:  # Play card action option (index 0 in the OR structure)
-                    masked_probs[action_idx] *= 1.5  # Encourage playing card actions
+            elif action_idx >= select_option_base and action_idx < select_option_base + 100:  # SELECT_OPTION range
+                # Keep option actions near-neutral; contextual boosts are applied via titles.
+                masked_probs[action_idx] *= 1.0
         
         # Apply contextual adjustments (e.g., OR menu titles)
         if action_weight_adjustments:
@@ -393,15 +470,15 @@ class RLAgent:
 
         # Sample from policy
         try:
-            return torch.multinomial(masked_probs, 1).item()
+            return torch.multinomial(masked_probs, 1).item(), True
         except RuntimeError:
             # Fallback to non-pass action if possible
             non_pass_actions = [a for a in available_actions if a < pass_action_base]
             if non_pass_actions:
-                return np.random.choice(non_pass_actions)
-            return np.random.choice(available_actions)
+                return np.random.choice(non_pass_actions), False
+            return np.random.choice(available_actions), False
     
-    async def _record_game_result(self, final_state: Dict[str, Any], player_name: str, game_instance: GameInstance):
+    async def _record_game_result(self, final_state: Dict[str, Any], player_name: str, game_instance: GameInstance) -> Dict[str, Any]:
         """Record the result of a completed game"""
         try:
             # Find our player in the final state
@@ -453,9 +530,79 @@ class RLAgent:
             if int(rank) == 1:
                 self.wins += 1
             logger.info(f"Agent {self.id[:8]} finished rank {rank} with {vp} VP")
+            return {"completed": True, "rank": int(rank), "vp": int(vp)}
         
         except Exception as e:
             logger.error(f"Error recording game result: {e}")
+            return {"completed": False, "rank": 4, "vp": 0}
+
+    def _compute_terminal_reward(self, rank: int, vp: int) -> float:
+        """Convert game outcome into a bounded terminal reward for policy updates."""
+        rank_rewards = {
+            1: 1.0,
+            2: 0.25,
+            3: -0.25,
+            4: -1.0,
+        }
+        rank_reward = rank_rewards.get(int(rank), -1.0)
+        vp_reward = float(np.clip((float(vp) - 50.0) / 50.0, -1.0, 1.0)) * 0.5
+        return rank_reward + vp_reward
+
+    async def _train_from_episode(self, episode_steps: List[Tuple[np.ndarray, int]], terminal_reward: float):
+        """Policy/value update from one self-play episode with terminal reward."""
+        if not episode_steps:
+            return
+
+        # Protect optimizer/network updates when the same agent appears in concurrent games.
+        async with self.training_lock:
+            steps = episode_steps[-max(1, self.config.max_episode_steps):]
+            states = torch.from_numpy(np.stack([s for s, _ in steps], axis=0)).float()
+            actions = torch.tensor([a for _, a in steps], dtype=torch.long)
+
+            # Sparse reward: back-propagate terminal signal through discounted returns.
+            running_return = float(terminal_reward)
+            returns = []
+            for _ in range(len(steps)):
+                returns.append(running_return)
+                running_return *= float(self.config.discount_factor)
+            returns.reverse()
+            returns_t = torch.tensor(returns, dtype=torch.float32)
+            if returns_t.numel() > 1:
+                returns_t = (returns_t - returns_t.mean()) / (returns_t.std() + 1e-6)
+
+            self.network.train()
+            policy_logits, values = self.network(states)
+            policy_logits = policy_logits / max(float(self.config.temperature), 1e-3)
+            log_probs = F.log_softmax(policy_logits, dim=-1)
+            chosen_log_probs = log_probs.gather(1, actions.unsqueeze(1)).squeeze(1)
+
+            probs = torch.exp(log_probs)
+            entropy = -(probs * log_probs).sum(dim=-1).mean()
+            values = values.squeeze(-1)
+
+            advantages = returns_t - values.detach()
+            if advantages.numel() > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-6)
+
+            policy_loss = -(chosen_log_probs * advantages).mean()
+            value_loss = F.mse_loss(values, returns_t)
+            total_loss = (
+                policy_loss
+                + float(self.config.value_loss_coef) * value_loss
+                - float(self.config.entropy_coef) * entropy
+            )
+
+            self.optimizer.zero_grad(set_to_none=True)
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), float(self.config.max_grad_norm))
+            self.optimizer.step()
+            self.network.eval()
+
+            logger.info(
+                f"Agent {self.id[:8]} self-play update: "
+                f"steps={len(steps)}, reward={terminal_reward:.3f}, "
+                f"policy_loss={policy_loss.item():.4f}, value_loss={value_loss.item():.4f}"
+            )
     
     def get_fitness_score(self) -> float:
         """Calculate fitness score for evolutionary selection"""

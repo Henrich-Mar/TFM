@@ -161,6 +161,8 @@ class TournamentManager:
         start_time = datetime.now()
         
         try:
+            fast_mode_env = str(os.getenv('TM_FAST_MODE_OPTION', '1')).strip().lower()
+            fast_mode_option = fast_mode_env in ('1', 'true', 'yes', 'on')
             # Get available game server
             game_instance = await self.game_cluster.create_game(
                 game_id=provisional_id,
@@ -169,11 +171,12 @@ class TournamentManager:
                     'soloMode': False,
                     'randomMA': 'No randomization',
                     'showTimers': False,
-                    'fastModeOption': True,
+                    'fastModeOption': fast_mode_option,
                     'removeNegativeGlobalEventsOption': True,
                     'undoOption': False
                 }
             )
+            logger.info("Game %s created with fastModeOption=%s", game_instance.game_id, fast_mode_option)
             # Record a visitable URL for this game id in coordinator.recent_games:
             try:
                 public_base = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')

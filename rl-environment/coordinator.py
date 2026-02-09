@@ -3,10 +3,12 @@ RL Coordinator - Manages tournaments, agent evolution, and training
 """
 import sys
 import os
+import glob
+import uuid
 
 import asyncio
 import logging
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Set
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -19,6 +21,7 @@ from models.agent import RLAgent
 from metrics.tracker import MetricsTracker
 from api.server import start_api_server
 from logging_setup import setup_logging
+from scoring import calculate_selection_score
 
 # Configure logging with rotation (env toggles)
 LOG_DIR = os.getenv('RL_LOG_DIR', '/app/rl-logs')
@@ -60,6 +63,8 @@ class RLCoordinator:
         self.recent_games: List[Dict[str, str]] = []  # {game_id, url}
         # Track recent end screens for dashboard
         self.recent_end_screens: List[Dict[str, List[str]]] = []  # {game_id, end_screens}
+        # Keep background tasks alive (e.g., human-vs-AI matches started from dashboard)
+        self.background_tasks: Set[asyncio.Task] = set()
         # Pause functionality
         self.paused = False
         self.pause_event = asyncio.Event()
@@ -149,17 +154,12 @@ class RLCoordinator:
             for game_result in tournament_result['games']:
                 for player_result in game_result['players']:
                     agent_id = player_result['agent_id']
-                    
-                    # Points based on ranking
-                    ranking_points = [100, 75, 50, 25][player_result['rank'] - 1]
-                    
-                    # Victory points bonus
-                    vp_bonus = player_result['victory_points'] * 0.5
-                    
-                    # Completion bonus (for not timing out/crashing)
-                    completion_bonus = 10 if player_result['completed'] else -50
-                    
-                    total_score = ranking_points + vp_bonus + completion_bonus
+
+                    total_score = calculate_selection_score(
+                        rank=player_result.get('rank', 4),
+                        victory_points=player_result.get('victory_points', 0),
+                        completed=player_result.get('completed', False),
+                    )
                     agent_scores[agent_id] += total_score
                     agent_games[agent_id] += 1
         
@@ -251,6 +251,167 @@ class RLCoordinator:
         except Exception as e:
             logger.error(f"Debug game failed: {e}")
             return {"error": str(e)}
+
+    def _track_background_task(self, task: asyncio.Task):
+        """Track fire-and-forget task lifecycle to avoid premature GC and surface errors."""
+        self.background_tasks.add(task)
+
+        def _on_done(done_task: asyncio.Task):
+            self.background_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except Exception as e:
+                logger.error(f"Background task failed: {e}")
+
+        task.add_done_callback(_on_done)
+
+    def _default_models_root(self) -> str:
+        env_path = os.getenv("RL_MODELS_DIR")
+        if env_path:
+            return env_path
+        candidates = [
+            "/app/rl-models",
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "rl-models")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rl-models")),
+        ]
+        for candidate in candidates:
+            if os.path.isdir(candidate):
+                return candidate
+        return candidates[0]
+
+    @staticmethod
+    def _checkpoint_fitness_from_name(path: str) -> float:
+        base = os.path.basename(path)
+        try:
+            return float(base.split("_fitness_")[-1].replace(".pth", ""))
+        except Exception:
+            return -1.0
+
+    def _available_generations(self, models_root: str) -> List[int]:
+        generations: List[int] = []
+        for path in glob.glob(os.path.join(models_root, "generation_*")):
+            base = os.path.basename(path)
+            try:
+                generations.append(int(base.split("_", 1)[1]))
+            except Exception:
+                continue
+        return sorted(set(generations))
+
+    def _all_generation_checkpoints(self, models_root: str, generation: int) -> List[str]:
+        pattern = os.path.join(models_root, f"generation_{generation}", "agent_*_fitness_*.pth")
+        return sorted(glob.glob(pattern), key=self._checkpoint_fitness_from_name, reverse=True)
+
+    def _checkpoint_for_agent_index(self, models_root: str, generation: int, agent_index: int) -> Optional[str]:
+        pattern = os.path.join(models_root, f"generation_{generation}", f"agent_{int(agent_index)}_fitness_*.pth")
+        matches = sorted(glob.glob(pattern), key=self._checkpoint_fitness_from_name, reverse=True)
+        return matches[0] if matches else None
+
+    async def _monitor_human_vs_ai_game(self, game_instance: Any, bot_agents: List[RLAgent], bot_names: List[str]):
+        """Run bot tasks to completion while a human plays, then cleanup and collect links."""
+        try:
+            bot_tasks = [
+                asyncio.create_task(agent.play_game(game_instance, bot_name))
+                for agent, bot_name in zip(bot_agents, bot_names)
+            ]
+            await asyncio.gather(*bot_tasks, return_exceptions=True)
+            final_state = await game_instance.get_final_state()
+            end_screens: List[str] = []
+            for player in final_state.get('players', []):
+                player_id = player.get('id')
+                if player_id:
+                    public_base = game_instance.get_public_game_url().split("/game?id=", 1)[0]
+                    end_screens.append(f"{public_base}/the-end?id={player_id}")
+            if end_screens:
+                self.recent_end_screens.append({"game_id": game_instance.game_id, "end_screens": end_screens})
+        except Exception as e:
+            logger.warning(f"Human-vs-AI monitor task ended with error: {e}")
+        finally:
+            try:
+                await game_instance.cleanup()
+            except Exception:
+                pass
+
+    async def run_human_vs_generation_game(
+        self,
+        generation: Optional[int] = None,
+        random_generation: bool = True,
+        human_name: str = "You",
+        bot_count: int = 3,
+        agent_indices: Optional[List[int]] = None,
+        seed: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Start a game with one human and bots loaded from saved checkpoints."""
+        models_root = self._default_models_root()
+        rng = random.Random(seed)
+
+        if generation is None:
+            if not random_generation:
+                return {"error": "generation must be provided when random_generation is false"}
+            generations = self._available_generations(models_root)
+            if not generations:
+                return {"error": f"No generations found under {models_root}"}
+            generation = rng.choice(generations)
+
+        generation = int(generation)
+        all_checkpoints = self._all_generation_checkpoints(models_root, generation)
+        if not all_checkpoints:
+            return {"error": f"No checkpoints found for generation {generation} under {models_root}"}
+
+        selected_checkpoints: List[str] = []
+        if agent_indices:
+            for idx in agent_indices:
+                ckpt = self._checkpoint_for_agent_index(models_root, generation, int(idx))
+                if ckpt is None:
+                    return {
+                        "error": f"No checkpoint found for generation {generation}, agent index {idx}"
+                    }
+                selected_checkpoints.append(ckpt)
+        else:
+            take = min(bot_count, len(all_checkpoints))
+            selected_checkpoints.extend(rng.sample(all_checkpoints, k=take))
+
+        while len(selected_checkpoints) < bot_count:
+            selected_checkpoints.append(rng.choice(all_checkpoints))
+        selected_checkpoints = selected_checkpoints[:bot_count]
+
+        bot_agents: List[RLAgent] = []
+        for ckpt in selected_checkpoints:
+            agent = RLAgent()
+            agent.load_model(ckpt)
+            # Dashboard test games should be inference-only.
+            agent.train_from_self_play = False
+            bot_agents.append(agent)
+
+        bot_names = [f"AI_{agent.id[:8]}" for agent in bot_agents]
+        player_names = [human_name] + bot_names
+        game_instance = await self.game_cluster.create_game(
+            game_id=str(uuid.uuid4()),
+            player_names=player_names,
+            game_options={
+                'soloMode': False,
+                'fastModeOption': False,
+                'removeNegativeGlobalEventsOption': True,
+                'undoOption': False,
+            }
+        )
+        human_player_id = await game_instance.join_player(human_name)
+        game_url = game_instance.get_public_game_url()
+        player_url = game_instance.get_public_player_url(human_player_id)
+        self.recent_games.append({"game_id": game_instance.game_id, "url": game_url})
+
+        monitor_task = asyncio.create_task(self._monitor_human_vs_ai_game(game_instance, bot_agents, bot_names))
+        self._track_background_task(monitor_task)
+
+        return {
+            "success": True,
+            "game_id": game_instance.game_id,
+            "generation": generation,
+            "game_url": game_url,
+            "player_url": player_url,
+            "human_name": human_name,
+            "bot_names": bot_names,
+            "checkpoints": selected_checkpoints,
+        }
     
     def pause_training(self):
         """Pause the training process"""

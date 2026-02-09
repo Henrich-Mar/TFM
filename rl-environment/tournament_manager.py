@@ -80,7 +80,10 @@ class TournamentManager:
         
         try:
             # Create all possible 4-player combinations from tournament agents
-            game_combinations = self._create_game_combinations(tournament.agents)
+            game_combinations = self._create_game_combinations(
+                tournament.agents,
+                tournament.games_per_matchup,
+            )
             
             # Run games with controlled concurrency (configurable via env)
             try:
@@ -118,33 +121,37 @@ class TournamentManager:
             'games': [self._game_result_to_dict(game) for game in games],
             'duration_seconds': duration,
             'completed_games': len(games),
-            'total_planned_games': len(self._create_game_combinations(tournament.agents))
+            'total_planned_games': len(game_combinations)
         }
         
         logger.info(f"Tournament {tournament.id} completed: {len(games)} games in {duration:.1f}s")
         return tournament_result
     
-    def _create_game_combinations(self, agents: List[RLAgent]) -> List[List[RLAgent]]:
+    def _create_game_combinations(self, agents: List[RLAgent], games_per_matchup: int = 1) -> List[List[RLAgent]]:
         """Create 4-player game combinations from tournament agents"""
         import itertools
-        
+
+        repeats = max(1, int(games_per_matchup))
         combinations = []
-        
-        # If we have exactly 4 agents, play multiple games with same lineup
+
+        # If we have exactly 4 agents, repeat the same lineup.
         if len(agents) == 4:
-            combinations = [agents] * 3  # Play 3 games with same agents
-        
+            combinations = [list(agents) for _ in range(repeats)]
+
         # If more than 4, create different combinations
         elif len(agents) > 4:
-            for combo in itertools.combinations(agents, 4):
-                combinations.append(list(combo))
-        
+            base_combinations = [list(combo) for combo in itertools.combinations(agents, 4)]
+            for combo in base_combinations:
+                for _ in range(repeats):
+                    combinations.append(list(combo))
+
         # If less than 4, duplicate agents
         else:
-            while len(agents) < 4:
-                agents.append(random.choice(agents))
-            combinations = [agents]
-        
+            padded_agents = list(agents)
+            while len(padded_agents) < 4:
+                padded_agents.append(random.choice(agents))
+            combinations = [list(padded_agents) for _ in range(repeats)]
+
         return combinations
     
     async def _run_single_game_with_semaphore(self, 

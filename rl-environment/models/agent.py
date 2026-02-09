@@ -18,6 +18,7 @@ from collections import deque
 from game_interface import GameInstance
 from .state_encoder import StateEncoder
 from .action_decoder import ActionDecoder
+from scoring import calculate_terminal_reward
 import random
 import aiohttp
 
@@ -112,6 +113,22 @@ class RLAgent:
         self.games_played = 0
         self.total_victory_points = 0
         self.wins = 0
+        self.decision_stats: Dict[str, Any] = {
+            'total_decisions': 0,
+            'policy_attempts': 0,
+            'policy_successes': 0,
+            'policy_rejections': 0,
+            'policy_sampled_actions': 0,
+            'epsilon_random_actions': 0,
+            'fallback_decisions': 0,
+            'fallback_random_attempts': 0,
+            'fallback_random_successes': 0,
+            'fallback_passes': 0,
+            'no_available_actions': 0,
+            'sum_available_actions': 0,
+            'available_action_observations': 0,
+            'action_type_counts': {}
+        }
         
     async def play_game(self, game_instance: GameInstance, player_name: str):
         """Play a complete game"""
@@ -155,6 +172,7 @@ class RLAgent:
                 reward = self._compute_terminal_reward(
                     game_outcome.get("rank", 4),
                     game_outcome.get("vp", 0),
+                    game_outcome.get("completed", False),
                 )
                 reward *= self.self_play_reward_scale
                 await self._train_from_episode(episode_steps, reward)
@@ -205,6 +223,7 @@ class RLAgent:
         """Make a single move in the game, with robust fallbacks."""
         try:
             state_vector = self.state_encoder.encode(player_state)
+            self._bump_decision_stat('total_decisions')
             
             # Log what we're waiting for
             waiting_for = player_state.get('waitingFor', {})
@@ -217,8 +236,16 @@ class RLAgent:
             )
             tried_action_indices = set()
             if policy_action:
+                self._bump_decision_stat('policy_attempts')
+                if sampled_from_policy:
+                    self._bump_decision_stat('policy_sampled_actions')
+                else:
+                    self._bump_decision_stat('epsilon_random_actions')
                 logger.info(f"Agent {self.id[:8]} attempting policy action: {policy_action}")
                 if await game_instance.send_player_input(player_id, policy_action):
+                    self._bump_decision_stat('policy_successes')
+                    if policy_action_idx is not None:
+                        self._record_action_choice(int(policy_action_idx))
                     logger.info(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
                     if sampled_from_policy and policy_action_idx is not None:
                         if len(episode_steps) < self.config.max_episode_steps:
@@ -226,6 +253,7 @@ class RLAgent:
                     await self._sleep_if_needed(self.post_move_sleep_sec)
                     return  # Success
                 else:
+                    self._bump_decision_stat('policy_rejections')
                     if policy_action_idx is not None:
                         tried_action_indices.add(int(policy_action_idx))
                     logger.warning(f"Agent {self.id[:8]} policy action was rejected by game")
@@ -233,6 +261,7 @@ class RLAgent:
                     await self._sleep_if_needed(self.failure_pause_sec)
 
             logger.warning(f"Policy action failed for agent {self.id[:8]}. Trying random actions.")
+            self._bump_decision_stat('fallback_decisions')
 
             # 2. Try a broader set of alternative actions, excluding already-rejected choices.
             available_actions = self.action_decoder.get_available_actions(player_state)
@@ -240,6 +269,9 @@ class RLAgent:
             available_actions = [a for a in available_actions if int(a) not in tried_action_indices]
             if not available_actions:
                 # If no actions are available, just pass.
+                self._bump_decision_stat('no_available_actions')
+                self._bump_decision_stat('fallback_passes')
+                self._record_action_choice(int(self.action_decoder.action_types.get('PASS', 900)))
                 self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions")
                 await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
                 await self._sleep_if_needed(self.post_move_sleep_sec)
@@ -253,12 +285,17 @@ class RLAgent:
                 random_action = self.action_decoder.decode_action(random_action_idx, player_state)
                  
                 if random_action:
+                    self._bump_decision_stat('fallback_random_attempts')
                     if await game_instance.send_player_input(player_id, random_action):
+                        self._bump_decision_stat('fallback_random_successes')
+                        self._record_action_choice(int(random_action_idx))
                         logger.info(f"Random action succeeded for agent {self.id[:8]}.")
                         await self._sleep_if_needed(self.post_move_sleep_sec)
                         return  # Success
 
             logger.warning(f"All random actions failed for agent {self.id[:8]}. Passing.")
+            self._bump_decision_stat('fallback_passes')
+            self._record_action_choice(int(self.action_decoder.action_types.get('PASS', 900)))
             self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed")
 
             # 3. If all else fails, pass
@@ -292,6 +329,32 @@ class RLAgent:
             return filtered if filtered else available_actions
 
         return non_pass_actions
+
+    def _bump_decision_stat(self, key: str, amount: int = 1):
+        self.decision_stats[key] = int(self.decision_stats.get(key, 0)) + int(amount)
+
+    def _categorize_action(self, action_index: int) -> str:
+        pass_base = int(self.action_decoder.action_types.get('PASS', 900))
+        if action_index >= pass_base:
+            return 'pass'
+        if action_index < 100:
+            return 'play_card'
+        if action_index < 200:
+            return 'standard_project'
+        if action_index < 300:
+            return 'select_option'
+        if action_index == 700:
+            return 'convert_plants'
+        if action_index == 701:
+            return 'convert_heat'
+        if action_index == 702:
+            return 'sell_patents'
+        return 'other'
+
+    def _record_action_choice(self, action_index: int):
+        counts = self.decision_stats.setdefault('action_type_counts', {})
+        category = self._categorize_action(int(action_index))
+        counts[category] = int(counts.get(category, 0)) + 1
     
     async def _get_action_from_network(self, state_vector: np.ndarray, 
                                     player_state: Dict[str, Any], force_random: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool]:
@@ -311,7 +374,9 @@ class RLAgent:
             available_actions = self.action_decoder.get_available_actions(player_state)
             available_actions = self._filter_pass_actions(available_actions, player_state)
             waiting_for = player_state.get('waitingFor', {})
-             
+            self._bump_decision_stat('available_action_observations')
+            self._bump_decision_stat('sum_available_actions', len(available_actions))
+              
             if not available_actions:
                 return None, None, False
                  
@@ -536,17 +601,9 @@ class RLAgent:
             logger.error(f"Error recording game result: {e}")
             return {"completed": False, "rank": 4, "vp": 0}
 
-    def _compute_terminal_reward(self, rank: int, vp: int) -> float:
+    def _compute_terminal_reward(self, rank: int, vp: int, completed: bool = True) -> float:
         """Convert game outcome into a bounded terminal reward for policy updates."""
-        rank_rewards = {
-            1: 1.0,
-            2: 0.25,
-            3: -0.25,
-            4: -1.0,
-        }
-        rank_reward = rank_rewards.get(int(rank), -1.0)
-        vp_reward = float(np.clip((float(vp) - 50.0) / 50.0, -1.0, 1.0)) * 0.5
-        return rank_reward + vp_reward
+        return calculate_terminal_reward(rank=rank, victory_points=vp, completed=completed)
 
     async def _train_from_episode(self, episode_steps: List[Tuple[np.ndarray, int]], terminal_reward: float):
         """Policy/value update from one self-play episode with terminal reward."""
@@ -615,6 +672,55 @@ class RLAgent:
         # Fitness combines average VP and win rate
         fitness = avg_vp * 0.7 + win_rate * 100 * 0.3
         return fitness
+
+    def get_behavior_stats(self) -> Dict[str, Any]:
+        """Return action-decision telemetry used by the monitoring dashboard."""
+        total_decisions = int(self.decision_stats.get('total_decisions', 0))
+        policy_attempts = int(self.decision_stats.get('policy_attempts', 0))
+        policy_successes = int(self.decision_stats.get('policy_successes', 0))
+        policy_rejections = int(self.decision_stats.get('policy_rejections', 0))
+        policy_sampled_actions = int(self.decision_stats.get('policy_sampled_actions', 0))
+        epsilon_random_actions = int(self.decision_stats.get('epsilon_random_actions', 0))
+        fallback_decisions = int(self.decision_stats.get('fallback_decisions', 0))
+        fallback_random_attempts = int(self.decision_stats.get('fallback_random_attempts', 0))
+        fallback_random_successes = int(self.decision_stats.get('fallback_random_successes', 0))
+        fallback_passes = int(self.decision_stats.get('fallback_passes', 0))
+        no_available_actions = int(self.decision_stats.get('no_available_actions', 0))
+        sum_available_actions = int(self.decision_stats.get('sum_available_actions', 0))
+        available_action_observations = int(self.decision_stats.get('available_action_observations', 0))
+
+        def _ratio(numerator: int, denominator: int) -> float:
+            return float(numerator) / float(denominator) if denominator > 0 else 0.0
+
+        action_counts = dict(self.decision_stats.get('action_type_counts', {}))
+        total_recorded_actions = sum(int(v) for v in action_counts.values())
+        action_mix = {
+            key: _ratio(int(value), total_recorded_actions)
+            for key, value in action_counts.items()
+        }
+
+        return {
+            'total_decisions': total_decisions,
+            'policy_attempts': policy_attempts,
+            'policy_successes': policy_successes,
+            'policy_rejections': policy_rejections,
+            'policy_sampled_actions': policy_sampled_actions,
+            'epsilon_random_actions': epsilon_random_actions,
+            'fallback_decisions': fallback_decisions,
+            'fallback_random_attempts': fallback_random_attempts,
+            'fallback_random_successes': fallback_random_successes,
+            'fallback_passes': fallback_passes,
+            'no_available_actions': no_available_actions,
+            'avg_available_actions': _ratio(sum_available_actions, available_action_observations),
+            'policy_success_rate': _ratio(policy_successes, policy_attempts),
+            'policy_sample_rate': _ratio(policy_sampled_actions, total_decisions),
+            'epsilon_random_rate': _ratio(epsilon_random_actions, total_decisions),
+            'fallback_decision_rate': _ratio(fallback_decisions, total_decisions),
+            'fallback_random_success_rate': _ratio(fallback_random_successes, fallback_random_attempts),
+            'fallback_pass_rate': _ratio(fallback_passes, total_decisions),
+            'action_counts': action_counts,
+            'action_mix': action_mix,
+        }
     
     def mutate(self, mutation_rate: float = 0.1):
         """Mutate network weights for evolutionary training"""
@@ -671,7 +777,14 @@ class RLAgent:
     
     def load_model(self, path: str):
         """Load model from disk"""
-        checkpoint = torch.load(path, map_location='cpu')
+        # PyTorch 2.6 changed torch.load default to weights_only=True.
+        # Our checkpoints include optimizer/config metadata, so we need full unpickling
+        # for trusted local artifacts.
+        try:
+            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        except TypeError:
+            # Backward compatibility for torch versions without weights_only argument.
+            checkpoint = torch.load(path, map_location='cpu')
         
         self.network.load_state_dict(checkpoint['network_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

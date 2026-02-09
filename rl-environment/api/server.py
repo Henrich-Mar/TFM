@@ -4,10 +4,8 @@ API Server for monitoring RL training progress
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import asyncio
 import logging
 from typing import Dict, Any, Optional, List
-import aiohttp
 import uvicorn
 
 logger = logging.getLogger(__name__)
@@ -19,6 +17,101 @@ coordinator = None
 
 class DebugGameRequest(BaseModel):
     agent_ids: Optional[List[str]] = None
+
+
+class HumanVsGenerationRequest(BaseModel):
+    generation: Optional[int] = None
+    random_generation: bool = True
+    human_name: str = "You"
+    bot_count: int = 3
+    agent_indices: Optional[List[int]] = None
+    seed: Optional[int] = None
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    return float(numerator) / float(denominator) if float(denominator) > 0 else 0.0
+
+
+def _safe_mean(values: List[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _summarize_values(values: List[float]) -> Dict[str, float]:
+    if not values:
+        return {"min": 0.0, "mean": 0.0, "max": 0.0}
+    return {
+        "min": min(values),
+        "mean": _safe_mean(values),
+        "max": max(values),
+    }
+
+
+def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
+    totals = {
+        "total_decisions": 0,
+        "policy_attempts": 0,
+        "policy_successes": 0,
+        "policy_rejections": 0,
+        "policy_sampled_actions": 0,
+        "epsilon_random_actions": 0,
+        "fallback_decisions": 0,
+        "fallback_random_attempts": 0,
+        "fallback_random_successes": 0,
+        "fallback_passes": 0,
+        "no_available_actions": 0,
+    }
+    action_counts: Dict[str, int] = {}
+    avg_available_actions_samples: List[float] = []
+    epsilon_values: List[float] = []
+    temperature_values: List[float] = []
+    learning_rate_values: List[float] = []
+
+    for agent in population:
+        try:
+            stats = agent.get_behavior_stats()
+        except Exception:
+            stats = {}
+
+        for key in totals.keys():
+            totals[key] += int(stats.get(key, 0))
+
+        for key, value in dict(stats.get("action_counts", {})).items():
+            action_counts[key] = int(action_counts.get(key, 0)) + int(value)
+
+        if "avg_available_actions" in stats:
+            avg_available_actions_samples.append(float(stats.get("avg_available_actions", 0.0)))
+
+        cfg = getattr(agent, "config", None)
+        if cfg is not None:
+            epsilon_values.append(float(getattr(cfg, "epsilon", 0.0)))
+            temperature_values.append(float(getattr(cfg, "temperature", 0.0)))
+            learning_rate_values.append(float(getattr(cfg, "learning_rate", 0.0)))
+
+    total_recorded_actions = sum(action_counts.values())
+    action_mix = {
+        key: _safe_ratio(value, total_recorded_actions)
+        for key, value in sorted(action_counts.items(), key=lambda item: item[1], reverse=True)
+    }
+
+    return {
+        **totals,
+        "policy_success_rate": _safe_ratio(totals["policy_successes"], totals["policy_attempts"]),
+        "policy_sample_rate": _safe_ratio(totals["policy_sampled_actions"], totals["total_decisions"]),
+        "epsilon_random_rate": _safe_ratio(totals["epsilon_random_actions"], totals["total_decisions"]),
+        "fallback_decision_rate": _safe_ratio(totals["fallback_decisions"], totals["total_decisions"]),
+        "fallback_random_success_rate": _safe_ratio(
+            totals["fallback_random_successes"], totals["fallback_random_attempts"]
+        ),
+        "fallback_pass_rate": _safe_ratio(totals["fallback_passes"], totals["total_decisions"]),
+        "avg_available_actions": _safe_mean(avg_available_actions_samples),
+        "action_counts": action_counts,
+        "action_mix": action_mix,
+        "hyperparameters": {
+            "epsilon": _summarize_values(epsilon_values),
+            "temperature": _summarize_values(temperature_values),
+            "learning_rate": _summarize_values(learning_rate_values),
+        },
+    }
 
 @app.get("/")
 async def root():
@@ -52,13 +145,21 @@ async def get_stats():
         evolution_stats = coordinator.evolution_manager.get_evolution_stats()
         
         # Population stats
+        eval_fitness_scores = []
+        for agent in coordinator.population:
+            eval_score = coordinator.last_eval_fitness.get(agent.id) if hasattr(coordinator, 'last_eval_fitness') else None
+            eval_fitness_scores.append(float(eval_score) if eval_score is not None else float(agent.get_fitness_score()))
+
         population_stats = {
             "size": len(coordinator.population),
             "current_generation": coordinator.current_generation,
             "total_games_played": sum(agent.games_played for agent in coordinator.population),
             "best_fitness": max(agent.get_fitness_score() for agent in coordinator.population) if coordinator.population else 0,
-            "avg_fitness": sum(agent.get_fitness_score() for agent in coordinator.population) / len(coordinator.population) if coordinator.population else 0
+            "avg_fitness": sum(agent.get_fitness_score() for agent in coordinator.population) / len(coordinator.population) if coordinator.population else 0,
+            "best_eval_fitness": max(eval_fitness_scores) if eval_fitness_scores else 0,
+            "avg_eval_fitness": _safe_mean(eval_fitness_scores),
         }
+        behavior_stats = _aggregate_behavior_stats(coordinator.population)
         
         # Gather recent tournament/game end screens (shallow aggregation)
         recent_end_screens = []
@@ -91,6 +192,7 @@ async def get_stats():
 
         return {
             "population": population_stats,
+            "behavior": behavior_stats,
             "servers": server_stats,
             "evolution": evolution_stats,
             "tournaments": {
@@ -116,13 +218,23 @@ async def get_population():
     population_data = []
     for agent in coordinator.population:
         agent_data = agent.get_config()
+        cfg = agent_data.get("config", {})
+        behavior_stats = agent.get_behavior_stats() if hasattr(agent, "get_behavior_stats") else {}
         # Show both lifetime fitness (agent.get_fitness_score) and last eval fitness used for selection
         last_eval = coordinator.last_eval_fitness.get(agent.id) if hasattr(coordinator, 'last_eval_fitness') else None
         agent_data.update({
             "fitness_score": agent.get_fitness_score(),
             "last_eval_fitness": last_eval if last_eval is not None else agent.get_fitness_score(),
             "win_rate": agent.wins / agent.games_played if agent.games_played > 0 else 0,
-            "avg_vp": agent.total_victory_points / agent.games_played if agent.games_played > 0 else 0
+            "avg_vp": agent.total_victory_points / agent.games_played if agent.games_played > 0 else 0,
+            "learning_rate": float(cfg.get("learning_rate", 0.0)),
+            "epsilon": float(cfg.get("epsilon", 0.0)),
+            "temperature": float(cfg.get("temperature", 0.0)),
+            "behavior": behavior_stats,
+            "policy_success_rate": float(behavior_stats.get("policy_success_rate", 0.0)),
+            "epsilon_random_rate": float(behavior_stats.get("epsilon_random_rate", 0.0)),
+            "fallback_pass_rate": float(behavior_stats.get("fallback_pass_rate", 0.0)),
+            "total_decisions": int(behavior_stats.get("total_decisions", 0)),
         })
         population_data.append(agent_data)
     
@@ -219,9 +331,33 @@ async def run_debug_game(request: DebugGameRequest):
     
     return result
 
+
+@app.post("/play/human-vs-generation")
+async def play_human_vs_generation(request: HumanVsGenerationRequest):
+    """Start a game with one human and saved-generation AI opponents."""
+    if coordinator is None:
+        raise HTTPException(status_code=503, detail="Coordinator not initialized")
+    if request.bot_count < 1 or request.bot_count > 3:
+        raise HTTPException(status_code=400, detail="bot_count must be between 1 and 3")
+    if not request.random_generation and request.generation is None:
+        raise HTTPException(status_code=400, detail="generation is required when random_generation=false")
+
+    result = await coordinator.run_human_vs_generation_game(
+        generation=request.generation,
+        random_generation=request.random_generation,
+        human_name=request.human_name,
+        bot_count=request.bot_count,
+        agent_indices=request.agent_indices,
+        seed=request.seed,
+    )
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
-    """Simple HTML dashboard for monitoring"""
+    """HTML dashboard focused on RL behavior and training diagnostics."""
     html_content = """
     <!DOCTYPE html>
     <html>
@@ -230,293 +366,823 @@ async def dashboard():
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-            body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-            .container { max-width: 1200px; margin: 0 auto; }
-            .card { background: white; padding: 20px; margin: 10px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-            .metric { text-align: center; padding: 15px; background: #f8f9fa; border-radius: 4px; margin: 5px; }
-            .metric-value { font-size: 2em; font-weight: bold; color: #007bff; }
-            .metric-label { color: #666; font-size: 0.9em; }
-            .status-good { color: #28a745; }
-            .status-bad { color: #dc3545; }
-            button { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; }
-            button:hover { background: #0056b3; }
-            #refresh { position: fixed; top: 20px; right: 20px; }
+            :root {
+                --bg: #f3f5f7;
+                --panel: #ffffff;
+                --ink: #1b2330;
+                --muted: #5c697a;
+                --accent: #0b6e4f;
+                --warn: #ad6a00;
+                --danger: #b02a37;
+                --border: #dbe2ea;
+            }
+
+            * { box-sizing: border-box; }
+
+            body {
+                margin: 0;
+                background: radial-gradient(1200px 400px at 80% -10%, #e8f5f0 0%, var(--bg) 55%);
+                color: var(--ink);
+                font-family: "Segoe UI", "Trebuchet MS", Tahoma, sans-serif;
+            }
+
+            .shell {
+                max-width: 1360px;
+                margin: 0 auto;
+                padding: 24px 18px 40px;
+            }
+
+            .topbar {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 14px;
+            }
+
+            h1, h2, h3 {
+                margin: 0;
+                font-weight: 700;
+            }
+
+            .subtitle {
+                margin-top: 6px;
+                color: var(--muted);
+                font-size: 14px;
+            }
+
+            .actions {
+                display: flex;
+                gap: 8px;
+                flex-wrap: wrap;
+            }
+
+            button {
+                border: 1px solid #0a4f3a;
+                background: var(--accent);
+                color: white;
+                padding: 10px 12px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-weight: 600;
+            }
+
+            button.secondary {
+                background: #0f4c81;
+                border-color: #0f4c81;
+            }
+
+            button.warn {
+                background: #9b4400;
+                border-color: #9b4400;
+            }
+
+            button:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+
+            .status-line {
+                margin-top: 8px;
+                color: var(--muted);
+                font-size: 13px;
+            }
+
+            .grid {
+                display: grid;
+                gap: 14px;
+            }
+
+            .grid.cols-3 {
+                grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            }
+
+            .grid.cols-2 {
+                grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+            }
+
+            .card {
+                background: var(--panel);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 14px;
+                box-shadow: 0 3px 10px rgba(10, 25, 40, 0.05);
+            }
+
+            .metric-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+                gap: 8px;
+                margin-top: 10px;
+            }
+
+            .metric {
+                border: 1px solid var(--border);
+                border-radius: 9px;
+                padding: 8px;
+                background: #f8fafc;
+            }
+
+            .metric-value {
+                font-size: 24px;
+                font-weight: 700;
+                color: var(--ink);
+            }
+
+            .metric-label {
+                font-size: 12px;
+                color: var(--muted);
+                margin-top: 2px;
+            }
+
+            .metric-sub {
+                margin-top: 3px;
+                font-size: 12px;
+                color: var(--muted);
+            }
+
+            .good {
+                color: var(--accent);
+                font-weight: 700;
+            }
+
+            .bad {
+                color: var(--danger);
+                font-weight: 700;
+            }
+
+            .hint-list {
+                margin: 10px 0 0 18px;
+                padding: 0;
+                color: var(--ink);
+                line-height: 1.38;
+                font-size: 14px;
+            }
+
+            .hint-list li { margin-bottom: 7px; }
+
+            .mono { font-family: Consolas, "Courier New", monospace; }
+
+            .kv-table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 8px;
+                font-size: 14px;
+            }
+
+            .kv-table th,
+            .kv-table td {
+                padding: 7px 8px;
+                border-bottom: 1px solid var(--border);
+            }
+
+            .kv-table th {
+                text-align: left;
+                color: var(--muted);
+                font-weight: 600;
+                white-space: nowrap;
+            }
+
+            .kv-table td { text-align: right; }
+
+            .bar-list { margin-top: 8px; }
+
+            .bar-row {
+                display: grid;
+                grid-template-columns: 110px 1fr 64px;
+                align-items: center;
+                gap: 8px;
+                margin: 6px 0;
+            }
+
+            .bar-name {
+                color: var(--muted);
+                font-size: 12px;
+                text-transform: capitalize;
+            }
+
+            .bar-track {
+                height: 10px;
+                border-radius: 8px;
+                background: #e4ecf3;
+                overflow: hidden;
+            }
+
+            .bar-fill {
+                height: 100%;
+                background: linear-gradient(90deg, #0b6e4f, #18a06f);
+            }
+
+            .bar-value {
+                text-align: right;
+                font-size: 12px;
+                color: var(--muted);
+                font-variant-numeric: tabular-nums;
+            }
+
+            .trend-wrap {
+                margin-top: 10px;
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                background: #fcfdff;
+                padding: 6px;
+                overflow-x: auto;
+            }
+
+            .legend {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                font-size: 12px;
+                color: var(--muted);
+                margin-top: 6px;
+            }
+
+            .dot {
+                display: inline-block;
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                margin-right: 4px;
+                vertical-align: middle;
+            }
+
+            .list {
+                margin: 8px 0 0 18px;
+                padding: 0;
+            }
+
+            .list li { margin-bottom: 4px; }
+
+            .table-wrap {
+                overflow-x: auto;
+                margin-top: 10px;
+            }
+
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                min-width: 980px;
+                font-size: 13px;
+            }
+
+            th,
+            td {
+                border-bottom: 1px solid var(--border);
+                padding: 8px;
+                text-align: right;
+                font-variant-numeric: tabular-nums;
+            }
+
+            th {
+                background: #f4f8fb;
+                color: var(--muted);
+                font-weight: 600;
+            }
+
+            td.left,
+            th.left { text-align: left; }
+
+            .empty {
+                color: var(--muted);
+                font-size: 14px;
+                margin-top: 8px;
+            }
+
+            @media (max-width: 760px) {
+                .bar-row {
+                    grid-template-columns: 90px 1fr 56px;
+                }
+            }
         </style>
     </head>
     <body>
-        <div class="container">
-            <h1>🚀 Terraforming Mars RL Training Dashboard</h1>
-            
-            <button id="refresh" onclick="location.reload()">🔄 Refresh</button>
-            
-            <div class="grid">
-                <div class="card">
-                    <h3>📊 Training Progress</h3>
-                    <div id="training-stats">Loading...</div>
+        <div class="shell">
+            <div class="topbar">
+                <div>
+                    <h1>Terraforming Mars RL Dashboard</h1>
+                    <div class="subtitle">Use behavior telemetry to detect when agents are exploring too much, failing policy actions, or defaulting to pass.</div>
+                    <div id="control-status" class="status-line">Loading status...</div>
+                    <div id="human-link-status" class="status-line"></div>
                 </div>
-                
-                <div class="card">
-                    <h3>🎮 Game Servers</h3>
-                    <div id="server-stats">Loading...</div>
-                </div>
-                
-                <div class="card">
-                    <h3>🧬 Population</h3>
-                    <div id="population-stats">Loading...</div>
-                </div>
-                
-                <div class="card">
-                    <h3>🏆 Tournaments</h3>
-                    <div id="tournament-stats">Loading...</div>
-                </div>
-                
-                <div class="card">
-                    <h3>⏸️ Training Control</h3>
-                    <div id="training-control">
-                        <button id="pause-btn" onclick="pauseTraining()">⏸️ Pause</button>
-                        <button id="resume-btn" onclick="resumeTraining()">▶️ Resume</button>
-                        <button id="debug-btn" onclick="runDebugGame()">🐛 Debug Game</button>
-                        <div id="control-status">Loading...</div>
-                    </div>
-                </div>
-                
-                <div class="card">
-                    <h3>🧭 Recent Games</h3>
-                    <div id="recent-games">Loading...</div>
-                </div>
-                <div class="card">
-                    <h3>🏁 Recent End Screens</h3>
-                    <div id="recent-ends">Loading...</div>
-                </div>
-                <div class="card">
-                    <h3>🏁 End Summaries</h3>
-                    <div id="recent-ends-summary">Loading...</div>
+                <div class="actions">
+                    <button class="secondary" onclick="refreshAll()">Refresh</button>
+                    <button id="pause-btn" class="warn" onclick="pauseTraining()">Pause Training</button>
+                    <button id="resume-btn" class="secondary" onclick="resumeTraining()">Resume Training</button>
+                    <button id="human-vs-btn" class="secondary" onclick="startHumanVsGeneration()">Play Vs Generation</button>
+                    <button id="debug-btn" onclick="runDebugGame()">Run Debug Game</button>
                 </div>
             </div>
-            
-            <div class="card">
-                <h3>📈 Top Performing Agents</h3>
-                <div id="top-agents">Loading...</div>
+
+            <div class="grid cols-3">
+                <div class="card">
+                    <h3>Training</h3>
+                    <div id="training-stats" class="metric-grid">Loading...</div>
+                </div>
+                <div class="card">
+                    <h3>RL Behavior</h3>
+                    <div id="behavior-stats" class="metric-grid">Loading...</div>
+                </div>
+                <div class="card">
+                    <h3>Game Servers</h3>
+                    <div id="server-stats" class="metric-grid">Loading...</div>
+                </div>
+            </div>
+
+            <div class="grid cols-2" style="margin-top: 14px;">
+                <div class="card">
+                    <h3>Fitness and Diversity Trend</h3>
+                    <div class="trend-wrap" id="trend-chart">Loading...</div>
+                    <div class="legend" id="trend-meta"></div>
+                </div>
+                <div class="card">
+                    <h3>Steering Hints</h3>
+                    <div id="steering-hints" class="empty">Loading...</div>
+                    <h3 style="margin-top: 14px;">Exploration Spread</h3>
+                    <div id="hyperparams" class="empty">Loading...</div>
+                    <h3 style="margin-top: 14px;">Action Mix</h3>
+                    <div id="action-mix" class="empty">Loading...</div>
+                </div>
+            </div>
+
+            <div class="grid cols-2" style="margin-top: 14px;">
+                <div class="card">
+                    <h3>Recent Games</h3>
+                    <div id="recent-games" class="empty">Loading...</div>
+                </div>
+                <div class="card">
+                    <h3>Recent End Screens</h3>
+                    <div id="recent-ends" class="empty">Loading...</div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 14px;">
+                <h3>Top Agents (Behavior View)</h3>
+                <div id="top-agents" class="table-wrap">Loading...</div>
             </div>
         </div>
-        
+
         <script>
-            async function loadStats() {
-                try {
-                    const response = await fetch('/stats');
-                    const data = await response.json();
-                    
-                    // Training stats
-                    document.getElementById('training-stats').innerHTML = `
-                        <div class="metric">
-                            <div class="metric-value">${data.population.current_generation}</div>
-                            <div class="metric-label">Generation</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">${data.population.size}</div>
-                            <div class="metric-label">Population Size</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">${data.population.best_fitness.toFixed(2)}</div>
-                            <div class="metric-label">Best Fitness</div>
-                        </div>
-                    `;
-                    
-                    // Server stats
-                    document.getElementById('server-stats').innerHTML = `
-                        <div class="metric">
-                            <div class="metric-value ${data.servers.healthy_servers === data.servers.total_servers ? 'status-good' : 'status-bad'}">
-                                ${data.servers.healthy_servers}/${data.servers.total_servers}
-                            </div>
-                            <div class="metric-label">Healthy Servers</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value">${data.servers.total_active_games}</div>
-                            <div class="metric-label">Active Games</div>
-                        </div>
-                    `;
+            const AUTO_REFRESH_MS = 30000;
 
-                    // Recent games list
-                    const recent = (data.recent_games || []).slice(-10).reverse();
-                    document.getElementById('recent-games').innerHTML = recent.length ? `
-                        <ul>
-                            ${recent.map(g => `<li><a href="${g.url}" target="_blank">${g.game_id}</a></li>`).join('')}
-                        </ul>
-                    ` : '<div class="metric-label">No recent games</div>';
-
-                    // Recent end screens list (first player link per game)
-                    const ends = (data.recent_end_screens || []).slice(-10).reverse();
-                    document.getElementById('recent-ends').innerHTML = ends.length ? `
-                        <ul>
-                            ${ends.map(e => {
-                                const url = (e.end_screens && e.end_screens.length) ? e.end_screens[0] : null;
-                                return url ? `<li><a href="${url}" target="_blank">${e.game_id}</a></li>` : `<li>${e.game_id}</li>`;
-                            }).join('')}
-                        </ul>
-                    ` : '<div class="metric-label">No completed games yet</div>';
-
-                    // Fetch and render parsed summaries for the most recent completed games
-                    const endsToSummarize = ends.slice(0, 5);
-                    if (endsToSummarize.length) {
-                        const summaries = await Promise.all(endsToSummarize.map(async (e) => {
-                            const url = (e.end_screens && e.end_screens.length) ? e.end_screens[0] : null;
-                            if (!url) return null;
-                            try {
-                                const resp = await fetch(`/parse-end-screen?url=${encodeURIComponent(url)}`);
-                                if (!resp.ok) return { game_id: e.game_id, url, error: `HTTP ${resp.status}` };
-                                const parsed = await resp.json();
-                                return { game_id: e.game_id, url, parsed };
-                            } catch (err) {
-                                return { game_id: e.game_id, url, error: String(err) };
-                            }
-                        }));
-                        const html = summaries.filter(Boolean).map(s => {
-                            if (!s.parsed) {
-                                return `<div><a href="${s.url}" target="_blank">${s.game_id}</a>: <span class="metric-label">summary unavailable${s.error ? ` (${s.error})` : ''}</span></div>`;
-                            }
-                            const winner = s.parsed.winner || 'Unknown winner';
-                            const players = (s.parsed.players || []).slice().sort((a,b) => (b.total||0) - (a.total||0));
-                            const top = players.slice(0, 3).map(p => `${p.name}: ${p.total}`).join(' · ');
-                            return `<div>
-                                <a href="${s.url}" target="_blank">${s.game_id}</a>: 
-                                <strong>${winner}</strong>
-                                <span class="metric-label"> | Top: ${top || 'n/a'}</span>
-                            </div>`;
-                        }).join('');
-                        document.getElementById('recent-ends-summary').innerHTML = html || '<div class="metric-label">No summaries</div>';
-                    } else {
-                        document.getElementById('recent-ends-summary').innerHTML = '<div class="metric-label">No completed games yet</div>';
-                    }
-                    
-                } catch (error) {
-                    console.error('Failed to load stats:', error);
-                }
+            function fmt(value, digits = 2) {
+                const n = Number(value ?? 0);
+                return Number.isFinite(n) ? n.toFixed(digits) : (0).toFixed(digits);
             }
-            
-            async function loadPopulation() {
-                try {
-                    const response = await fetch('/population');
-                    const data = await response.json();
-                    
-                    const topAgents = data.population.slice(0, 10);
-                    
-                    document.getElementById('top-agents').innerHTML = `
-                        <table style="width: 100%; border-collapse: collapse;">
-                            <tr style="background: #f8f9fa;">
-                                <th style="padding: 10px; text-align: left;">Agent ID</th>
-                                <th style="padding: 10px; text-align: right;">Eval Fitness</th>
-                                <th style="padding: 10px; text-align: right;">Lifetime Fitness</th>
-                                <th style="padding: 10px; text-align: right;">Games</th>
-                                <th style="padding: 10px; text-align: right;">Win Rate</th>
-                                <th style="padding: 10px; text-align: right;">Avg VP</th>
+
+            function pct(value, digits = 1) {
+                return `${fmt((Number(value ?? 0) * 100), digits)}%`;
+            }
+
+            function metricCard(label, value, sub = '') {
+                return `
+                    <div class="metric">
+                        <div class="metric-value">${value}</div>
+                        <div class="metric-label">${label}</div>
+                        ${sub ? `<div class="metric-sub">${sub}</div>` : ''}
+                    </div>
+                `;
+            }
+
+            function updateTrainingCards(stats) {
+                const p = stats.population || {};
+                const t = stats.tournaments || {};
+                const html = [
+                    metricCard('Generation', fmt(p.current_generation || 0, 0)),
+                    metricCard('Population', fmt(p.size || 0, 0)),
+                    metricCard('Best Eval Fitness', fmt(p.best_eval_fitness || 0, 2)),
+                    metricCard('Avg Eval Fitness', fmt(p.avg_eval_fitness || 0, 2)),
+                    metricCard('Total Games', fmt(p.total_games_played || 0, 0)),
+                    metricCard('Active Tournaments', fmt(t.active || 0, 0)),
+                ].join('');
+                document.getElementById('training-stats').innerHTML = html;
+            }
+
+            function updateBehaviorCards(stats) {
+                const b = stats.behavior || {};
+                const html = [
+                    metricCard('Policy Success', pct(b.policy_success_rate || 0), `${fmt(b.policy_successes || 0, 0)}/${fmt(b.policy_attempts || 0, 0)} accepted`),
+                    metricCard('Epsilon Random Rate', pct(b.epsilon_random_rate || 0), `${fmt(b.epsilon_random_actions || 0, 0)} sampled`),
+                    metricCard('Fallback Decision Rate', pct(b.fallback_decision_rate || 0), `${fmt(b.fallback_decisions || 0, 0)} turns`),
+                    metricCard('Fallback Pass Rate', pct(b.fallback_pass_rate || 0), `${fmt(b.fallback_passes || 0, 0)} forced passes`),
+                    metricCard('Avg Available Actions', fmt(b.avg_available_actions || 0, 1), 'signal breadth per decision'),
+                    metricCard('Total Decisions', fmt(b.total_decisions || 0, 0)),
+                ].join('');
+                document.getElementById('behavior-stats').innerHTML = html;
+            }
+
+            function updateServerCards(stats) {
+                const s = stats.servers || {};
+                const healthy = Number(s.healthy_servers || 0);
+                const total = Number(s.total_servers || 0);
+                const healthyClass = total > 0 && healthy === total ? 'good' : 'bad';
+                const html = [
+                    metricCard('Healthy Servers', `<span class="${healthyClass}">${healthy}/${total}</span>`),
+                    metricCard('Active Games', fmt(s.total_active_games || 0, 0)),
+                    metricCard('Queued Games', fmt(s.total_queued_games || 0, 0)),
+                ].join('');
+                document.getElementById('server-stats').innerHTML = html;
+            }
+
+            function renderList(containerId, items, emptyLabel) {
+                if (!items.length) {
+                    document.getElementById(containerId).innerHTML = `<div class="empty">${emptyLabel}</div>`;
+                    return;
+                }
+
+                const html = `<ol class="list">${items.map(item => `<li>${item}</li>`).join('')}</ol>`;
+                document.getElementById(containerId).innerHTML = html;
+            }
+
+            function updateRecentLists(stats) {
+                const recentGames = (stats.recent_games || []).slice(-10).reverse().map((g) => {
+                    if (!g || !g.url) return `<span class="mono">${(g && g.game_id) ? g.game_id : 'unknown'}</span>`;
+                    return `<a href="${g.url}" target="_blank" rel="noopener noreferrer"><span class="mono">${g.game_id}</span></a>`;
+                });
+
+                const recentEnds = (stats.recent_end_screens || []).slice(-10).reverse().map((e) => {
+                    const url = (e && e.end_screens && e.end_screens.length) ? e.end_screens[0] : null;
+                    if (!url) return `<span class="mono">${(e && e.game_id) ? e.game_id : 'unknown'}</span>`;
+                    return `<a href="${url}" target="_blank" rel="noopener noreferrer"><span class="mono">${e.game_id}</span></a>`;
+                });
+
+                renderList('recent-games', recentGames, 'No recent games');
+                renderList('recent-ends', recentEnds, 'No completed games yet');
+            }
+
+            function updateHyperparameterTable(stats) {
+                const hp = (stats.behavior || {}).hyperparameters || {};
+                const rows = [
+                    ['Epsilon', hp.epsilon || {}],
+                    ['Temperature', hp.temperature || {}],
+                    ['Learning Rate', hp.learning_rate || {}],
+                ];
+
+                const html = `
+                    <table class="kv-table">
+                        <thead>
+                            <tr>
+                                <th>Hyperparameter</th>
+                                <th>Min</th>
+                                <th>Mean</th>
+                                <th>Max</th>
                             </tr>
-                            ${topAgents.map(agent => `
+                        </thead>
+                        <tbody>
+                            ${rows.map(([name, values]) => `
                                 <tr>
-                                    <td style=\"padding: 10px;\">${agent.id.substring(0, 8)}...</td>
-                                    <td style=\"padding: 10px; text-align: right;\">${(agent.last_eval_fitness ?? agent.fitness_score).toFixed(2)}</td>
-                                    <td style=\"padding: 10px; text-align: right;\">${agent.fitness_score.toFixed(2)}</td>
-                                    <td style=\"padding: 10px; text-align: right;\">${agent.games_played}</td>
-                                    <td style=\"padding: 10px; text-align: right;\">${(agent.win_rate * 100).toFixed(1)}%</td>
-                                    <td style=\"padding: 10px; text-align: right;\">${agent.avg_vp.toFixed(1)}</td>
+                                    <th>${name}</th>
+                                    <td>${fmt(values.min || 0, name === 'Learning Rate' ? 5 : 3)}</td>
+                                    <td>${fmt(values.mean || 0, name === 'Learning Rate' ? 5 : 3)}</td>
+                                    <td>${fmt(values.max || 0, name === 'Learning Rate' ? 5 : 3)}</td>
                                 </tr>
                             `).join('')}
-                        </table>
+                        </tbody>
+                    </table>
+                `;
+
+                document.getElementById('hyperparams').innerHTML = html;
+            }
+
+            function humanizeActionName(name) {
+                return String(name || '')
+                    .replace(/_/g, ' ')
+                    .replace(/\b\w/g, (c) => c.toUpperCase());
+            }
+
+            function updateActionMix(stats) {
+                const mix = (stats.behavior || {}).action_mix || {};
+                const entries = Object.entries(mix);
+
+                if (!entries.length) {
+                    document.getElementById('action-mix').innerHTML = '<div class="empty">No action telemetry yet</div>';
+                    return;
+                }
+
+                const rows = entries.map(([name, ratio]) => {
+                    const width = Math.max(2, Number(ratio || 0) * 100);
+                    return `
+                        <div class="bar-row">
+                            <div class="bar-name">${humanizeActionName(name)}</div>
+                            <div class="bar-track"><div class="bar-fill" style="width: ${width}%"></div></div>
+                            <div class="bar-value">${pct(ratio, 1)}</div>
+                        </div>
                     `;
-                    
-                } catch (error) {
-                    console.error('Failed to load population:', error);
-                }
+                }).join('');
+
+                document.getElementById('action-mix').innerHTML = `<div class="bar-list">${rows}</div>`;
             }
-            
-            async function loadControlStatus() {
-                try {
-                    const response = await fetch('/control/status');
-                    const data = await response.json();
-                    
-                    const statusDiv = document.getElementById('control-status');
-                    const pauseBtn = document.getElementById('pause-btn');
-                    const resumeBtn = document.getElementById('resume-btn');
-                    
-                    if (data.paused) {
-                        statusDiv.innerHTML = '<div class="metric-label status-bad">⏸️ Training Paused</div>';
-                        pauseBtn.disabled = true;
-                        resumeBtn.disabled = false;
-                    } else {
-                        statusDiv.innerHTML = '<div class="metric-label status-good">▶️ Training Running</div>';
-                        pauseBtn.disabled = false;
-                        resumeBtn.disabled = true;
+
+            function buildPath(values, width, height, padding) {
+                if (!values.length) return '';
+                const min = Math.min(...values);
+                const max = Math.max(...values);
+                const range = (max - min) || 1;
+                const denominator = Math.max(1, values.length - 1);
+                return values.map((value, index) => {
+                    const x = padding + (index / denominator) * (width - 2 * padding);
+                    const y = height - padding - ((value - min) / range) * (height - 2 * padding);
+                    return `${index === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`;
+                }).join(' ');
+            }
+
+            function updateTrend(stats) {
+                const evolution = stats.evolution || {};
+                const fitnessHistory = (evolution.fitness_history || []).slice(-50);
+                const diversityHistory = (evolution.diversity_history || []).slice(-50);
+                const width = 920;
+                const height = 250;
+                const padding = 22;
+
+                if (!fitnessHistory.length) {
+                    document.getElementById('trend-chart').innerHTML = '<div class="empty">Trend will appear after at least one evaluated generation.</div>';
+                    document.getElementById('trend-meta').innerHTML = '';
+                    return;
+                }
+
+                const meanFitness = fitnessHistory.map((x) => Number(x.mean || 0));
+                const bestFitness = fitnessHistory.map((x) => Number(x.max || 0));
+                const stdFitness = fitnessHistory.map((x) => Number(x.std || 0));
+                const diversity = diversityHistory.map((x) => Number(x || 0));
+
+                const meanPath = buildPath(meanFitness, width, height, padding);
+                const bestPath = buildPath(bestFitness, width, height, padding);
+                const stdPath = buildPath(stdFitness, width, height, padding);
+                const divPath = buildPath(diversity, width, height, padding);
+
+                const gridLines = [0.2, 0.4, 0.6, 0.8].map((ratio) => {
+                    const y = (padding + ratio * (height - 2 * padding)).toFixed(1);
+                    return `<line x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}" stroke="#e4ebf2" stroke-width="1" />`;
+                }).join('');
+
+                const svg = `
+                    <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Fitness and diversity trend">
+                        <rect x="0" y="0" width="${width}" height="${height}" fill="#fcfdff" />
+                        ${gridLines}
+                        ${meanPath ? `<path d="${meanPath}" fill="none" stroke="#0b6e4f" stroke-width="2.2" />` : ''}
+                        ${bestPath ? `<path d="${bestPath}" fill="none" stroke="#1f4e99" stroke-width="2.2" />` : ''}
+                        ${stdPath ? `<path d="${stdPath}" fill="none" stroke="#8a4d00" stroke-width="2" stroke-dasharray="4 3" />` : ''}
+                        ${divPath ? `<path d="${divPath}" fill="none" stroke="#8b2bb8" stroke-width="2" />` : ''}
+                        <line x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" stroke="#b8c5d3" stroke-width="1.2" />
+                    </svg>
+                `;
+
+                document.getElementById('trend-chart').innerHTML = svg;
+                document.getElementById('trend-meta').innerHTML = `
+                    <span><span class="dot" style="background:#0b6e4f;"></span>Mean fitness (auto-scaled)</span>
+                    <span><span class="dot" style="background:#1f4e99;"></span>Best fitness (auto-scaled)</span>
+                    <span><span class="dot" style="background:#8a4d00;"></span>Fitness stddev (auto-scaled)</span>
+                    <span><span class="dot" style="background:#8b2bb8;"></span>Diversity (auto-scaled)</span>
+                `;
+            }
+
+            function updateSteeringHints(stats) {
+                const hints = [];
+                const b = stats.behavior || {};
+                const p = stats.population || {};
+                const evolution = stats.evolution || {};
+                const history = evolution.fitness_history || [];
+
+                if ((b.total_decisions || 0) < 50) {
+                    hints.push('Low decision count. Run more games before tuning hyperparameters aggressively.');
+                }
+
+                if ((b.epsilon_random_rate || 0) > 0.22) {
+                    hints.push(`High epsilon-driven randomness (${pct(b.epsilon_random_rate || 0)}). Consider lowering epsilon range for newly created agents.`);
+                }
+
+                if ((b.policy_attempts || 0) >= 20 && (b.policy_success_rate || 0) < 0.35) {
+                    hints.push(`Policy actions are frequently rejected (${pct(1 - (b.policy_success_rate || 0))} rejection). Focus on action decoder validity for common waiting states.`);
+                }
+
+                if ((b.fallback_pass_rate || 0) > 0.15) {
+                    hints.push(`Pass fallback is high (${pct(b.fallback_pass_rate || 0)}). This often means the policy cannot find valid productive actions.`);
+                }
+
+                if (history.length >= 12) {
+                    const prev = history.slice(-12, -6).map((x) => Number(x.mean || 0));
+                    const now = history.slice(-6).map((x) => Number(x.mean || 0));
+                    const prevMean = prev.length ? prev.reduce((a, b) => a + b, 0) / prev.length : 0;
+                    const nowMean = now.length ? now.reduce((a, b) => a + b, 0) / now.length : 0;
+                    if (nowMean <= (prevMean * 1.02)) {
+                        hints.push('Average fitness appears flat over the last 12 generations. Consider stronger mutation or more self-play learning signal.');
                     }
-                } catch (error) {
-                    console.error('Failed to load control status:', error);
+                }
+
+                if ((p.best_eval_fitness || 0) > 0 && (b.policy_success_rate || 0) > 0.55 && (b.fallback_pass_rate || 0) < 0.08) {
+                    hints.push('Behavior signal is healthy: policy acceptance is strong and forced pass fallback is low.');
+                }
+
+                const content = hints.length
+                    ? `<ol class="hint-list">${hints.map((h) => `<li>${h}</li>`).join('')}</ol>`
+                    : '<div class="empty">No warnings yet. Keep running and watch trend + behavior rates.</div>';
+
+                document.getElementById('steering-hints').innerHTML = content;
+            }
+
+            async function loadStats() {
+                const response = await fetch('/stats');
+                if (!response.ok) throw new Error(`Failed /stats (${response.status})`);
+                const stats = await response.json();
+
+                updateTrainingCards(stats);
+                updateBehaviorCards(stats);
+                updateServerCards(stats);
+                updateRecentLists(stats);
+                updateHyperparameterTable(stats);
+                updateActionMix(stats);
+                updateTrend(stats);
+                updateSteeringHints(stats);
+            }
+
+            async function loadPopulation() {
+                const response = await fetch('/population');
+                if (!response.ok) throw new Error(`Failed /population (${response.status})`);
+                const data = await response.json();
+                const topAgents = (data.population || []).slice(0, 12);
+
+                if (!topAgents.length) {
+                    document.getElementById('top-agents').innerHTML = '<div class="empty">No agents available</div>';
+                    return;
+                }
+
+                const rows = topAgents.map((agent) => `
+                    <tr>
+                        <td class="left mono">${String(agent.id || '').slice(0, 10)}</td>
+                        <td>${fmt(agent.last_eval_fitness || 0, 2)}</td>
+                        <td>${fmt(agent.fitness_score || 0, 2)}</td>
+                        <td>${fmt(agent.games_played || 0, 0)}</td>
+                        <td>${pct(agent.win_rate || 0, 1)}</td>
+                        <td>${fmt(agent.avg_vp || 0, 1)}</td>
+                        <td>${fmt(agent.epsilon || 0, 3)}</td>
+                        <td>${fmt(agent.temperature || 0, 3)}</td>
+                        <td>${fmt(agent.learning_rate || 0, 5)}</td>
+                        <td>${fmt(agent.total_decisions || 0, 0)}</td>
+                        <td>${pct(agent.policy_success_rate || 0, 1)}</td>
+                        <td>${pct(agent.epsilon_random_rate || 0, 1)}</td>
+                        <td>${pct(agent.fallback_pass_rate || 0, 1)}</td>
+                    </tr>
+                `).join('');
+
+                document.getElementById('top-agents').innerHTML = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th class="left">Agent</th>
+                                <th>Eval Fitness</th>
+                                <th>Lifetime Fitness</th>
+                                <th>Games</th>
+                                <th>Win Rate</th>
+                                <th>Avg VP</th>
+                                <th>Epsilon</th>
+                                <th>Temperature</th>
+                                <th>Learning Rate</th>
+                                <th>Decisions</th>
+                                <th>Policy Success</th>
+                                <th>Epsilon Random</th>
+                                <th>Pass Fallback</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                `;
+            }
+
+            async function loadControlStatus() {
+                const response = await fetch('/control/status');
+                if (!response.ok) throw new Error(`Failed /control/status (${response.status})`);
+                const data = await response.json();
+                const statusNode = document.getElementById('control-status');
+                const pauseBtn = document.getElementById('pause-btn');
+                const resumeBtn = document.getElementById('resume-btn');
+
+                if (data.paused) {
+                    statusNode.innerHTML = '<span class="bad">Training paused</span>';
+                    pauseBtn.disabled = true;
+                    resumeBtn.disabled = false;
+                } else {
+                    statusNode.innerHTML = '<span class="good">Training running</span>';
+                    pauseBtn.disabled = false;
+                    resumeBtn.disabled = true;
                 }
             }
-            
+
             async function pauseTraining() {
                 try {
                     const response = await fetch('/control/pause', { method: 'POST' });
-                    if (response.ok) {
-                        loadControlStatus();
-                    } else {
-                        alert('Failed to pause training');
-                    }
+                    if (!response.ok) throw new Error(`Failed /control/pause (${response.status})`);
+                    await loadControlStatus();
                 } catch (error) {
-                    console.error('Failed to pause training:', error);
+                    console.error('Pause failed', error);
                     alert('Failed to pause training');
                 }
             }
-            
+
             async function resumeTraining() {
                 try {
                     const response = await fetch('/control/resume', { method: 'POST' });
-                    if (response.ok) {
-                        loadControlStatus();
-                    } else {
-                        alert('Failed to resume training');
-                    }
+                    if (!response.ok) throw new Error(`Failed /control/resume (${response.status})`);
+                    await loadControlStatus();
                 } catch (error) {
-                    console.error('Failed to resume training:', error);
+                    console.error('Resume failed', error);
                     alert('Failed to resume training');
                 }
             }
-            
-            async function runDebugGame() {
+
+            async function startHumanVsGeneration() {
+                const button = document.getElementById('human-vs-btn');
+                const statusNode = document.getElementById('human-link-status');
                 try {
-                    const debugBtn = document.getElementById('debug-btn');
-                    debugBtn.disabled = true;
-                    debugBtn.textContent = '🐛 Creating...';
-                    
-                    const response = await fetch('/debug/game', { method: 'POST' });
+                    const generationRaw = window.prompt('Generation number (leave blank for random):', '');
+                    if (generationRaw === null) return;
+                    const generationText = String(generationRaw || '').trim();
+                    const randomGeneration = generationText.length === 0;
+
+                    const humanNameRaw = window.prompt('Your player name:', 'You');
+                    if (humanNameRaw === null) return;
+                    const humanName = String(humanNameRaw || '').trim() || 'You';
+
+                    const payload = {
+                        generation: randomGeneration ? null : Number(generationText),
+                        random_generation: randomGeneration,
+                        human_name: humanName,
+                        bot_count: 3,
+                    };
+
+                    button.disabled = true;
+                    button.textContent = 'Creating...';
+                    statusNode.innerHTML = '<span class="mono">Starting human-vs-generation game...</span>';
+
+                    const response = await fetch('/play/human-vs-generation', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
                     const result = await response.json();
-                    
-                    if (response.ok && result.success) {
-                        alert(`Debug game created! Game ID: ${result.game_id}\\nGame URL: ${result.game_url || 'N/A'}`);
-                        // Refresh stats to show the new game
-                        loadStats();
-                    } else {
-                        alert(`Failed to create debug game: ${result.error || 'Unknown error'}`);
+                    if (!response.ok || !result.success) {
+                        throw new Error(result.detail || result.error || `HTTP ${response.status}`);
                     }
+
+                    const playerUrl = result.player_url || '';
+                    const gameUrl = result.game_url || '';
+                    const generation = result.generation;
+                    statusNode.innerHTML = playerUrl
+                        ? `Play link (generation ${generation}): <a href="${playerUrl}" target="_blank" rel="noopener noreferrer">${playerUrl}</a>`
+                        : '<span class="bad">Game created, but no player URL returned.</span>';
+
+                    const summary = [
+                        `Game created: ${result.game_id}`,
+                        `Generation: ${generation}`,
+                        playerUrl ? `Play: ${playerUrl}` : '',
+                        gameUrl ? `Spectator: ${gameUrl}` : '',
+                    ].filter(Boolean).join('\\n');
+                    alert(summary);
+                    if (playerUrl) {
+                        window.open(playerUrl, '_blank', 'noopener,noreferrer');
+                    }
+                    await refreshAll();
                 } catch (error) {
-                    console.error('Failed to create debug game:', error);
-                    alert('Failed to create debug game');
+                    console.error('Human-vs-generation failed', error);
+                    statusNode.innerHTML = '<span class="bad">Failed to create human-vs-generation game.</span>';
+                    alert('Failed to create human-vs-generation game');
                 } finally {
-                    const debugBtn = document.getElementById('debug-btn');
-                    debugBtn.disabled = false;
-                    debugBtn.textContent = '🐛 Debug Game';
+                    button.disabled = false;
+                    button.textContent = 'Play Vs Generation';
                 }
             }
-            
-            // Load data on page load
-            loadStats();
-            loadPopulation();
-            loadControlStatus(); // Load control status on page load
-            
-            // Auto-refresh every 30 seconds
-            setInterval(() => {
-                loadStats();
-                loadPopulation();
-                loadControlStatus(); // Refresh control status periodically
-            }, 30000);
+
+            async function runDebugGame() {
+                const debugBtn = document.getElementById('debug-btn');
+                try {
+                    debugBtn.disabled = true;
+                    debugBtn.textContent = 'Creating...';
+                    const response = await fetch('/debug/game', { method: 'POST' });
+                    const result = await response.json();
+                    if (!response.ok || !result.success) {
+                        throw new Error(result.error || `HTTP ${response.status}`);
+                    }
+                    alert(`Debug game created: ${result.game_id}`);
+                    await refreshAll();
+                } catch (error) {
+                    console.error('Debug game failed', error);
+                    alert('Failed to create debug game');
+                } finally {
+                    debugBtn.disabled = false;
+                    debugBtn.textContent = 'Run Debug Game';
+                }
+            }
+
+            async function refreshAll() {
+                try {
+                    await Promise.all([loadStats(), loadPopulation(), loadControlStatus()]);
+                } catch (error) {
+                    console.error('Refresh failed', error);
+                }
+            }
+
+            refreshAll();
+            setInterval(refreshAll, AUTO_REFRESH_MS);
         </script>
     </body>
     </html>
@@ -536,3 +1202,4 @@ async def start_api_server(coordinator_instance):
     )
     server = uvicorn.Server(config)
     await server.serve()
+

@@ -56,6 +56,9 @@ class GameInstance:
     def get_public_player_api_url(self, player_id: str) -> str:
         return f"{self._resolve_public_base()}/api/player?id={player_id}"
 
+    def get_public_player_url(self, player_id: str) -> str:
+        return f"{self._resolve_public_base()}/player?id={player_id}"
+
     def get_internal_player_api_url(self, player_id: str) -> str:
         return f"{self.base_url}/api/player?id={player_id}"
         

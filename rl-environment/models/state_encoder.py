@@ -120,14 +120,17 @@ class StateEncoder:
         mining_norm = float(mining_rate) / 8.0
         habitat_norm = float(habitat_rate) / 8.0
 
-        logger.info(
-            f"Oxygen: {oxygen} (level {oxygen_level}, index {oxygen_index}), "
-            f"Temperature: {temperature} (level {temp_level}, index {temp_index}), "
-            f"Venus: {venus} (level {venus_level}, index {venus_index}), "
-            f"Moon: logistics {logistics_norm} (raw {logistics_rate}), "
-            f"mining {mining_norm} (raw {mining_rate}), "
-            f"habitat {habitat_norm} (raw {habitat_rate})"
-            f"Generation: {generation}, "
+        logger.debug(
+            "Global params: oxygen=%.3f(level=%s,index=%s), temp=%.3f(level=%s,index=%s), "
+            "venus=%.3f(level=%s,index=%s), moon(logistics=%.3f raw=%s, mining=%.3f raw=%s, "
+            "habitat=%.3f raw=%s), generation=%.3f",
+            oxygen, oxygen_level, oxygen_index,
+            temperature, temp_level, temp_index,
+            venus, venus_level, venus_index,
+            logistics_norm, logistics_rate,
+            mining_norm, mining_rate,
+            habitat_norm, habitat_rate,
+            generation,
         )
 
         return [
@@ -156,7 +159,7 @@ class StateEncoder:
             max(player.get('terraformRating', 20) - 20, 0),
             player.get('victoryPointsBreakdown', {}).get('total', 0)
         ]
-        logger.info(f"Resources: {resources} for player {player.get('id')}")
+        logger.debug("Resources: %s for player %s", resources, player.get('id'))
         # Normalize
         normalized = [min(res / max_res, 1.0) for res, max_res in zip(resources, max_resources)]
         return normalized
@@ -173,7 +176,7 @@ class StateEncoder:
             player.get('energyProduction', 0),
             player.get('heatProduction', 0)
         ]
-        logger.info(f"Production: {prod_values} for player {player.get('id')}")
+        logger.debug("Production: %s for player %s", prod_values, player.get('id'))
         # Normalize and handle negative production
         normalized = [(prod + 10) / (max_prod + 10) for prod, max_prod in zip(prod_values, max_production)]
         return normalized
@@ -182,7 +185,7 @@ class StateEncoder:
         """Encode played cards (tableau)"""
         tableau = player.get('tableau', [])
         encoding = [0.0] * 50
-        logger.info(f"Tableau: {tableau} for player {player.get('id')}")
+        logger.debug("Tableau: %s for player %s", tableau, player.get('id'))
         # Count cards by type/category
         card_counts = {}
         for card in tableau:
@@ -262,14 +265,14 @@ class StateEncoder:
         """Encode cards in hand"""
         hand = player_state.get('cardsInHand', [])
         encoding = [0.0] * 50
-        logger.info(f"Hand: {hand} for player {player_state.get('id')}")
+        logger.debug("Hand: %s for player %s", hand, player_state.get('id'))
         # Basic hand info
         encoding[0] = min(len(hand) / 10.0, 1.0)  # Hand size
         
         # Card costs
         total_cost = sum(card.get('calculatedCost', 0) for card in hand)
         encoding[1] = min(total_cost / 100.0, 1.0)
-        logger.info(f"Total cost: {total_cost} for player {player_state.get('id')}")
+        logger.debug("Hand total cost: %s for player %s", total_cost, player_state.get('id'))
         
         # Estimate affordable cards given current resources (rough heuristic)
         player = player_state.get('thisPlayer', {})
@@ -344,7 +347,7 @@ class StateEncoder:
         # Normalize
         for i in range(3, 20):
             encoding[i] = min(encoding[i], 1.0)
-        logger.info(f"Hand encoding: {encoding} for player {player_state.get('id')}")
+        logger.debug("Hand encoding: %s for player %s", encoding, player_state.get('id'))
         return encoding
     
     def _encode_board_state(self, game_state: Dict[str, Any]) -> List[float]:
@@ -591,7 +594,7 @@ class StateEncoder:
                 max_amount = float(waiting_for.get('max', 0) or 0)
                 encoding[38] = min(min_amount / 20.0, 1.0)
                 encoding[39] = min(max_amount / 20.0, 1.0)
-        logger.info(f"Action context: {encoding} for player {player_state.get('id')}")
+        logger.debug("Action context: %s for player %s", encoding, player_state.get('id'))
         return encoding
     
     def _encode_awards_milestones(self, game_state: Dict[str, Any]) -> List[float]:
@@ -609,7 +612,7 @@ class StateEncoder:
         for i, award in enumerate(awards[:16]):
             if award.get('playerName'):
                 encoding[16 + i] = 1.0
-        logger.info(f"Awards and milestones: {encoding} for player {game_state.get('id')}")
+        logger.debug("Awards/milestones: %s for game/player %s", encoding, game_state.get('id'))
         return encoding
 
     def _infer_tags_from_name(self, card_name: str) -> Dict[str, int]:

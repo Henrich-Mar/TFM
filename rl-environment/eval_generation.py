@@ -19,6 +19,21 @@ from models.agent import RLAgent
 from tournament_manager import TournamentManager
 
 
+def default_models_root() -> str:
+    env_path = os.getenv("RL_MODELS_DIR")
+    if env_path:
+        return env_path
+    base_dir = os.path.abspath(os.path.dirname(__file__))
+    candidates = [
+        os.path.join(base_dir, "rl-models"),
+        os.path.abspath(os.path.join(base_dir, "..", "rl-models")),
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[0]
+
+
 def find_checkpoint(models_root: str, generation: int, agent_index: int) -> str:
     gen_dir = os.path.join(models_root, f"generation_{generation}")
     pattern = os.path.join(gen_dir, f"agent_{agent_index}_fitness_*.pth")
@@ -47,8 +62,6 @@ async def evaluate_agents(server_addrs: List[str], agents: List[RLAgent], games:
     while len(eval_agents) < 4:
         eval_agents.append(agents[0])
 
-    # Run 'games' tournaments to approximate games per matchup (since current TM
-    # does not repeat combinations based on games_per_matchup)
     from collections import defaultdict
     totals = defaultdict(lambda: {"vp": 0, "games": 0, "wins": 0})
     total_completed = 0
@@ -80,7 +93,7 @@ def main():
     parser.add_argument("--generation", type=int, required=True)
     parser.add_argument("--agent", type=int, default=0, help="agent index within saved top set (default: 0)")
     parser.add_argument("--games", type=int, default=3, help="games per matchup")
-    parser.add_argument("--models", type=str, default=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rl-models")))
+    parser.add_argument("--models", type=str, default=default_models_root())
     parser.add_argument("--servers", type=str, default="localhost:8080", help="comma-separated game servers")
     args = parser.parse_args()
 

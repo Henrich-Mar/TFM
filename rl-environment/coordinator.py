@@ -5,6 +5,7 @@ import sys
 import os
 import glob
 import uuid
+import shutil
 
 import asyncio
 import logging
@@ -69,6 +70,14 @@ class RLCoordinator:
         self.paused = False
         self.pause_event = asyncio.Event()
         self.pause_event.set()  # Initially not paused
+        # Crash-safe resume settings
+        self.resume_training_enabled = os.getenv("RESUME_TRAINING", "1") != "0"
+        self.checkpoint_root = os.getenv(
+            "RL_CHECKPOINT_DIR",
+            os.path.join(self._default_models_root(), "checkpoints"),
+        )
+        self.checkpoint_state_path = os.path.join(self.checkpoint_root, "state.json")
+        self.checkpoint_population_dir = os.path.join(self.checkpoint_root, "population")
         
     async def initialize(self):
         """Initialize the RL system"""
@@ -79,42 +88,97 @@ class RLCoordinator:
         
         # Test game server connections
         await self.game_cluster.health_check()
-        
-        # Create initial population
+
+        resumed = False
+        if self.resume_training_enabled:
+            resumed = self._load_training_checkpoint()
+            if not resumed:
+                resumed = self._load_population_from_latest_saved_generation()
+
+        if resumed:
+            if len(self.population) > self.config.population_size:
+                logger.warning(
+                    "Checkpoint population (%d) larger than configured size (%d). Trimming.",
+                    len(self.population),
+                    self.config.population_size,
+                )
+                self.population = self.population[:self.config.population_size]
+            elif len(self.population) < self.config.population_size:
+                missing = self.config.population_size - len(self.population)
+                logger.warning(
+                    "Checkpoint population (%d) smaller than configured size (%d). Adding %d fresh agents.",
+                    len(self.population),
+                    self.config.population_size,
+                    missing,
+                )
+                self.population.extend(
+                    await self.evolution_manager.create_initial_population(missing)
+                )
+            logger.info(
+                "Resumed training at generation %d with %d agents",
+                self.current_generation,
+                len(self.population),
+            )
+            return
+
+        # No checkpoint found or resume disabled: start fresh.
+        self.current_generation = 0
         self.population = await self.evolution_manager.create_initial_population(
             self.config.population_size
         )
-        
         logger.info(f"Created initial population of {len(self.population)} agents")
+        self._save_training_checkpoint(next_generation=0)
     
     async def run_evolution_cycle(self):
         """Main evolution loop"""
         logger.info("Starting evolution cycle...")
-        
-        for generation in range(self.config.generations):
+
+        generation = max(0, int(self.current_generation))
+        if generation >= self.config.generations:
+            logger.info(
+                "Checkpoint generation %d is already at/above configured GENERATIONS=%d. Nothing to run.",
+                generation,
+                self.config.generations,
+            )
+            return
+
+        while generation < self.config.generations:
             # Check for pause
             await self.pause_event.wait()
-            
+
             self.current_generation = generation
             logger.info(f"=== Generation {generation + 1}/{self.config.generations} ===")
-            
-            # Evaluate current population
-            fitness_scores = await self.evaluate_population()
-            
-            # Record metrics
-            await self.metrics_tracker.record_generation(
-                generation, self.population, fitness_scores
-            )
 
-            # Save best agents FROM the evaluated population (before evolving)
-            await self.save_generation_models(generation, fitness_scores)
+            try:
+                # Evaluate current population
+                fitness_scores = await self.evaluate_population()
 
-            # Evolve population for the next generation
-            self.population = await self.evolution_manager.evolve_population(
-                self.population, fitness_scores
-            )
-            
-            logger.info(f"Generation {generation + 1} complete. Best fitness: {max(fitness_scores):.2f}")
+                # Record metrics
+                await self.metrics_tracker.record_generation(
+                    generation, self.population, fitness_scores
+                )
+
+                # Save best agents FROM the evaluated population (before evolving)
+                await self.save_generation_models(generation, fitness_scores)
+
+                # Evolve population for the next generation
+                self.population = await self.evolution_manager.evolve_population(
+                    self.population, fitness_scores
+                )
+
+                next_generation = generation + 1
+                self._save_training_checkpoint(next_generation=next_generation)
+                self.current_generation = next_generation
+                logger.info(
+                    f"Generation {generation + 1} complete. Best fitness: {max(fitness_scores):.2f}"
+                )
+                generation = next_generation
+            except Exception:
+                logger.exception(
+                    "Generation %d failed. Keeping current population and retrying after backoff.",
+                    generation + 1,
+                )
+                await asyncio.sleep(5)
     
     async def evaluate_population(self) -> List[float]:
         """Evaluate entire population through tournaments"""
@@ -204,6 +268,135 @@ class RLCoordinator:
                 json.dump(cfg, f, indent=2)
         
         logger.info(f"Saved top {num_to_save} agents from generation {generation}")
+
+    @staticmethod
+    def _checkpoint_agent_index(path: str) -> int:
+        try:
+            base = os.path.basename(path)
+            return int(base.replace("agent_", "").replace(".pth", ""))
+        except Exception:
+            return sys.maxsize
+
+    def _save_training_checkpoint(self, next_generation: int):
+        """Persist full population so crashes can resume from the last completed generation."""
+        if not self.resume_training_enabled:
+            return
+
+        os.makedirs(self.checkpoint_root, exist_ok=True)
+        tmp_population_dir = os.path.join(
+            self.checkpoint_root,
+            f"population.tmp.{uuid.uuid4().hex}",
+        )
+        tmp_state_path = os.path.join(self.checkpoint_root, "state.tmp.json")
+        previous_population_dir = os.path.join(self.checkpoint_root, "population.prev")
+
+        try:
+            os.makedirs(tmp_population_dir, exist_ok=True)
+            for idx, agent in enumerate(self.population):
+                agent.save_model(os.path.join(tmp_population_dir, f"agent_{idx}.pth"))
+
+            state_payload = {
+                "version": 1,
+                "next_generation": int(next_generation),
+                "population_size": len(self.population),
+                "updated_at": datetime.utcnow().isoformat() + "Z",
+            }
+            with open(tmp_state_path, "w", encoding="utf-8") as f:
+                json.dump(state_payload, f, indent=2)
+
+            if os.path.isdir(previous_population_dir):
+                shutil.rmtree(previous_population_dir, ignore_errors=True)
+            if os.path.isdir(self.checkpoint_population_dir):
+                os.replace(self.checkpoint_population_dir, previous_population_dir)
+            os.replace(tmp_population_dir, self.checkpoint_population_dir)
+            os.replace(tmp_state_path, self.checkpoint_state_path)
+            if os.path.isdir(previous_population_dir):
+                shutil.rmtree(previous_population_dir, ignore_errors=True)
+        except Exception as e:
+            logger.warning(f"Failed saving training checkpoint: {e}")
+            try:
+                if os.path.isdir(tmp_population_dir):
+                    shutil.rmtree(tmp_population_dir, ignore_errors=True)
+                if os.path.exists(tmp_state_path):
+                    os.remove(tmp_state_path)
+            except Exception:
+                pass
+
+    def _load_training_checkpoint(self) -> bool:
+        """Load full population + next generation pointer from disk."""
+        if not os.path.exists(self.checkpoint_state_path):
+            return False
+
+        try:
+            with open(self.checkpoint_state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            next_generation = int(state.get("next_generation", 0))
+        except Exception as e:
+            logger.warning(f"Failed loading checkpoint state file: {e}")
+            return False
+
+        model_paths = sorted(
+            glob.glob(os.path.join(self.checkpoint_population_dir, "agent_*.pth")),
+            key=self._checkpoint_agent_index,
+        )
+        if not model_paths:
+            logger.warning(
+                "Checkpoint state exists but no population models found in %s",
+                self.checkpoint_population_dir,
+            )
+            return False
+
+        loaded_population: List[RLAgent] = []
+        for model_path in model_paths:
+            try:
+                agent = RLAgent()
+                agent.load_model(model_path)
+                loaded_population.append(agent)
+            except Exception as e:
+                logger.warning(f"Failed loading checkpoint model {model_path}: {e}")
+
+        if not loaded_population:
+            return False
+
+        self.population = loaded_population
+        self.current_generation = max(0, min(next_generation, self.config.generations))
+        return True
+
+    def _load_population_from_latest_saved_generation(self) -> bool:
+        """Fallback resume path: bootstrap population from latest generation_* saves."""
+        try:
+            models_root = self._default_models_root()
+            generations = self._available_generations(models_root)
+            if not generations:
+                return False
+            latest_generation = generations[-1]
+            checkpoints = self._all_generation_checkpoints(models_root, latest_generation)
+            if not checkpoints:
+                return False
+
+            loaded_population: List[RLAgent] = []
+            for checkpoint in checkpoints[: self.config.population_size]:
+                agent = RLAgent()
+                agent.load_model(checkpoint)
+                loaded_population.append(agent)
+
+            if not loaded_population:
+                return False
+
+            self.population = loaded_population
+            self.current_generation = max(
+                0,
+                min(int(latest_generation) + 1, self.config.generations),
+            )
+            logger.info(
+                "Bootstrapped resume from generation_%d using %d saved agents",
+                latest_generation,
+                len(loaded_population),
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed fallback resume from generation_* saves: {e}")
+            return False
 
     async def run_debug_game(self, agent_ids: List[str] = None) -> Dict[str, Any]:
         """Run a single debug game with 4 agents for easy debugging"""
@@ -429,6 +622,22 @@ class RLCoordinator:
         """Check if training is currently paused"""
         return self.paused
 
+    async def shutdown(self):
+        """Release coordinator resources for clean process shutdown."""
+        # Stop background tasks launched from API endpoints.
+        for task in list(self.background_tasks):
+            if not task.done():
+                task.cancel()
+        if self.background_tasks:
+            await asyncio.gather(*list(self.background_tasks), return_exceptions=True)
+            self.background_tasks.clear()
+
+        # Close shared aiohttp session to avoid unclosed session warnings.
+        try:
+            await self.game_cluster.close()
+        except Exception as e:
+            logger.warning(f"Failed to close game server cluster session: {e}")
+
 async def main():
     """Main entry point"""
     # Parse environment variables
@@ -445,18 +654,48 @@ async def main():
     )
     
     coordinator = RLCoordinator(config)
-    
-    # Start API server for monitoring
-    api_task = asyncio.create_task(start_api_server(coordinator))
-    
+
+    api_task: Optional[asyncio.Task] = None
+    evolution_task: Optional[asyncio.Task] = None
     try:
-        # Initialize and run evolution
         await coordinator.initialize()
-        await coordinator.run_evolution_cycle()
+
+        # Start API server and evolution loop concurrently.
+        api_task = asyncio.create_task(start_api_server(coordinator))
+        evolution_task = asyncio.create_task(coordinator.run_evolution_cycle())
+
+        done, _pending = await asyncio.wait(
+            {api_task, evolution_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if evolution_task in done:
+            # If training completed (e.g., reached GENERATIONS), keep API alive.
+            exc = evolution_task.exception()
+            if exc is not None:
+                raise exc
+            logger.info("Evolution cycle finished. Keeping API server alive.")
+            await api_task
+        elif api_task in done:
+            # API should not exit during normal operation.
+            exc = api_task.exception()
+            if exc is not None:
+                raise exc
+            raise RuntimeError("API server stopped unexpectedly")
     except KeyboardInterrupt:
         logger.info("Shutting down...")
+    except Exception as e:
+        logger.exception(f"Coordinator main loop failed: {e}")
+        raise
     finally:
-        api_task.cancel()
+        for task in (evolution_task, api_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *[task for task in (evolution_task, api_task) if task is not None],
+            return_exceptions=True,
+        )
+        await coordinator.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())

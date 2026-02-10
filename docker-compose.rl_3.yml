@@ -58,11 +58,21 @@ services:
     environment:
         - GAME_SERVERS=tm-server-1:8080,tm-server-2:8080,tm-server-3:8080
         - PUBLIC_TM_MAP=tm-server-1:8080=http://localhost:8081,tm-server-2:8080=http://localhost:8082,tm-server-3:8080=http://localhost:8083
-        - GENERATIONS=10
+        - GENERATIONS=1000
         - POPULATION_SIZE=16
         - TOURNAMENT_SIZE=4
-        - GAMES_PER_EVAL=1
-        - TOURNAMENT_CONCURRENCY=6
+        - GAMES_PER_EVAL=6
+        - TOURNAMENT_CONCURRENCY=8
+        - TM_FAST_MODE_OPTION=1
+        - AGENT_POLL_INTERVAL_SEC=0.15
+        - AGENT_POST_MOVE_SLEEP_SEC=0.0
+        - AGENT_FAILURE_PAUSE_SEC=0.05
+        - AGENT_STUCK_LOG_COOLDOWN_SEC=4.0
+        - TM_GAME_TIMEOUT_SEC=420
+        - SELF_PLAY_LEARNING=1
+        - SELF_PLAY_REWARD_SCALE=1.0
+        - RESUME_TRAINING=1
+        - RL_CHECKPOINT_DIR=/app/rl-models/checkpoints
         - REDIS_URL=redis://redis:6379
         - POSTGRES_URL=postgresql://postgres:password@postgres:5432/rl_metrics
         - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083

@@ -26,9 +26,32 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
     including recursive handling for 'or' and 'and'.
     """
     input_type = waiting_for.get('type', '')
+    alias_input_types = {
+        'selectAmount': 'amount',
+        'selectOption': 'option',
+        'selectPlayer': 'player',
+        'selectPayment': 'payment',
+        'selectResources': 'resources',
+        'selectProductionToLose': 'productionToLose',
+        'selectColony': 'colony',
+        'selectParty': 'party',
+        'selectDelegate': 'delegate',
+        'selectGlobalEvent': 'globalEvent',
+        'selectClaimedUndergroundToken': 'claimedUndergroundToken',
+        'selectInitialCards': 'initialCards',
+    }
+    input_type = alias_input_types.get(input_type, input_type)
     # Helper to get a default action index if not provided
     def get_default_index(options):
         return 0 if not options else min(len(options) - 1, 0)
+    def normalize_index(raw_index, base=None):
+        try:
+            idx = int(raw_index)
+        except Exception:
+            return 0
+        if base is not None and idx >= int(base):
+            idx -= int(base)
+        return idx
 
     # --- Recursive types ---
     if input_type == 'or':
@@ -69,7 +92,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                     option_type = option.get('type', '')
                     option_title = _title_text(option.get('title', ''))
                     
-                    if option_type in ['selectCard', 'card'] and 'standard projects' in option_title.lower():
+                    if option_type in ['selectCard', 'card'] and 'standard project' in option_title.lower():
                         selected_idx = i
                         # Adjust action_index for the standard project selection
                         # Instead of just subtracting 100, we need to map to the actual project index
@@ -136,7 +159,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                         # action_index is already correct for card selection
                         matched = True
                         break
-                    elif option_type in ['selectCard', 'card'] and 'standard projects' in option_title.lower():
+                    elif option_type in ['selectCard', 'card'] and 'standard project' in option_title.lower():
                         # Check if this is a standard project card
                         cards = option.get('cards', [])
                         if action_index < len(cards):
@@ -165,7 +188,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             logger.info(f"Standard project selection action_index: {action_index}")
                             break
                         current_action_count += len(cards)
-                    elif option_type in ['selectCard', 'card'] and 'standard projects' in _title_text(option.get('title', '')).lower():
+                    elif option_type in ['selectCard', 'card'] and 'standard project' in _title_text(option.get('title', '')).lower():
                         cards = option.get('cards', [])
                         if current_action_count <= action_index < current_action_count + len(cards):
                             selected_idx = i
@@ -229,7 +252,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         if selected_via_option_range:
             sub_action_index = None
         # For standard projects, we need to pass the project index to the sub-option
-        elif selected_option.get('type', '') in ['selectCard', 'card'] and 'standard projects' in option_title_l:
+        elif selected_option.get('type', '') in ['selectCard', 'card'] and 'standard project' in option_title_l:
             # action_index already contains the project index, so we don't need to change sub_action_index
             pass
         elif action_index is not None and 200 <= action_index < 300:
@@ -238,11 +261,11 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 sub_action_index = 0
             elif opt_type == 'card' and (
                 selected_option.get('selectBlueCardAction', False)
-                or 'standard projects' in option_title_l
+                or 'standard project' in option_title_l
                 or 'sell patents' in option_title_l
             ):
                 # For standard projects selected via SELECT_OPTION, extract the project index
-                if 'standard projects' in option_title_l and action_index >= 200:
+                if 'standard project' in option_title_l and action_index >= 200:
                     # Map the SELECT_OPTION index back to the project index
                     # SELECT_OPTION_STANDARD_PROJECTS is at base 200, so action_index 200+ maps to project 0+
                     # But we need to be more careful about the mapping
@@ -311,7 +334,11 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
     elif input_type == 'amount':
         min_amount = int(waiting_for.get('min', 0))
         max_amount = int(waiting_for.get('max', 10))
-        amount = min_amount if min_amount <= max_amount else 0
+        if action_index is not None:
+            amount = normalize_index(action_index, 500)
+        else:
+            amount = min_amount if min_amount <= max_amount else 0
+        amount = max(min_amount, min(max_amount, amount))
         return {'type': 'amount', 'amount': amount}
     elif input_type == 'card':
         cards = waiting_for.get('cards', [])
@@ -340,7 +367,9 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             enabled_cards = [c for c in cards if not c.get('isDisabled', False)]
             if not enabled_cards:
                 return {'type': 'pass'}
-            idx = action_index if (action_index is not None and 0 <= action_index < len(enabled_cards)) else 0
+            idx = normalize_index(action_index, 100) if action_index is not None else 0
+            if idx < 0 or idx >= len(enabled_cards):
+                idx = 0
             chosen = [enabled_cards[idx]['name']]
             return {'type': 'card', 'cards': chosen}
         # Special-case: Sell patents sometimes appears as 'card' type
@@ -404,17 +433,25 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 return {'type': 'pass'}
     elif input_type == 'colony':
         colonies = waiting_for.get('colonies', [])
-        colony_name = colonies[0] if colonies else ''
+        idx = normalize_index(action_index, 720) if action_index is not None else 0
+        colony_name = colonies[idx] if colonies and 0 <= idx < len(colonies) else (colonies[0] if colonies else '')
         return {'type': 'colony', 'colonyName': colony_name}
     elif input_type == 'delegate':
         players = waiting_for.get('players', [])
-        player = players[0] if players else ''
+        idx = normalize_index(action_index, 740) if action_index is not None else 0
+        player = players[idx] if players and 0 <= idx < len(players) else (players[0] if players else '')
         return {'type': 'delegate', 'player': player}
     elif input_type == 'option':
+        options = waiting_for.get('options', [])
+        if options:
+            idx = normalize_index(action_index, 200) if action_index is not None else get_default_index(options)
+            idx = max(0, min(idx, len(options) - 1))
+            return {'type': 'option', 'index': int(idx)}
         return {'type': 'option'}
     elif input_type == 'party':
         parties = waiting_for.get('parties', [])
-        party_name = parties[0] if parties else ''
+        idx = normalize_index(action_index, 730) if action_index is not None else 0
+        party_name = parties[idx] if parties and 0 <= idx < len(parties) else (parties[0] if parties else '')
         return {'type': 'party', 'partyName': party_name}
     elif input_type == 'payment':
         # Build a valid payment using per-resource unit values and allowed payment options.
@@ -540,20 +577,38 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         return {'type': 'payment', 'payment': payment}
     elif input_type == 'player':
         players = waiting_for.get('players', [])
-        player = players[0] if players else ''
+        idx = normalize_index(action_index, 600) if action_index is not None else 0
+        player = players[idx] if players and 0 <= idx < len(players) else (players[0] if players else '')
         return {'type': 'player', 'player': player}
     elif input_type == 'productionToLose':
         units = {k: 0 for k in ['megaCreditProduction', 'steelProduction', 'titaniumProduction', 'plantProduction', 'energyProduction', 'heatProduction']}
         return {'type': 'productionToLose', 'units': units}
     elif input_type == 'projectCard':
         cards = waiting_for.get('cards', [])
+        can_pass = bool(waiting_for.get('canPass', False))
         if not cards:
             return {'type': 'pass'}
 
         # For projectCard, action_index should be the card index directly
-        card_idx = action_index if action_index is not None else 0
-        # logger.info(f"projectCard: action_index={action_index}, card_idx={card_idx}, cards={[c['name'] for c in cards]}")
-        if 0 <= card_idx < len(cards):
+        card_idx = normalize_index(action_index, 0) if action_index is not None else 0
+        affordable_indices: List[int] = []
+        if player_state:
+            player = player_state.get('thisPlayer', {})
+            for i, candidate in enumerate(cards):
+                if _can_afford_card(player, candidate):
+                    affordable_indices.append(i)
+
+        if affordable_indices:
+            if card_idx in affordable_indices:
+                chosen_idx = card_idx
+            elif 0 <= card_idx < len(affordable_indices):
+                chosen_idx = affordable_indices[card_idx]
+            else:
+                chosen_idx = affordable_indices[0]
+            card = cards[chosen_idx]
+        elif can_pass:
+            return {'type': 'pass'}
+        elif 0 <= card_idx < len(cards):
             card = cards[card_idx]
         else:
             card = cards[0]
@@ -562,71 +617,103 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         payment_options = waiting_for.get('paymentOptions', {})
         payment = _build_payment_with_options(player_state, card, payment_options)
         return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
-    elif input_type == 'space':
+    elif input_type in ['space', 'selectSpace']:
         # Prefer explicit availableSpaces with IDs; fallback to 'spaces'
         spaces = waiting_for.get('availableSpaces') or waiting_for.get('spaces', [])
         # Accept both list of space dicts or list of ids/strings
         if not spaces:
             return {'type': 'pass'}
+        idx = normalize_index(action_index, 300) if action_index is not None else 0
         if isinstance(spaces[0], dict):
-            # Choose a valid first space (non-disabled if present)
-            chosen = next((s for s in spaces if not s.get('isDisabled', False)), spaces[0])
+            # Use chosen index when valid, otherwise fallback to first non-disabled.
+            if 0 <= idx < len(spaces) and not spaces[idx].get('isDisabled', False):
+                chosen = spaces[idx]
+            else:
+                chosen = next((s for s in spaces if not s.get('isDisabled', False)), spaces[0])
             return {'type': 'space', 'spaceId': str(chosen.get('id') or chosen.get('spaceId') or chosen)}
         else:
             # Already ids/strings
-            return {'type': 'space', 'spaceId': str(spaces[0])}
+            if idx < 0 or idx >= len(spaces):
+                idx = 0
+            return {'type': 'space', 'spaceId': str(spaces[idx])}
     elif input_type == 'aresGlobalParameters':
         return {'type': 'aresGlobalParameters', 'response': {'lowOceanDelta': 0, 'highOceanDelta': 0, 'temperatureDelta': 0, 'oxygenDelta': 0}}
     elif input_type == 'globalEvent':
         events = waiting_for.get('globalEventNames', waiting_for.get('events', []))
-        event_name = events[0] if events else ''
+        idx = normalize_index(action_index, 750) if action_index is not None else 0
+        event_name = events[idx] if events and 0 <= idx < len(events) else (events[0] if events else '')
         return {'type': 'globalEvent', 'globalEventName': event_name}
     elif input_type == 'policy':
         policies = waiting_for.get('policies', [])
-        policy_id = policies[0] if policies else ''
+        idx = normalize_index(action_index, 840) if action_index is not None else 0
+        policy_id = policies[idx] if policies and 0 <= idx < len(policies) else (policies[0] if policies else '')
         return {'type': 'policy', 'policyId': policy_id}
     elif input_type == 'resource':
         resources = waiting_for.get('include', [])
-        resource = resources[0] if resources else ''
+        idx = normalize_index(action_index, 820) if action_index is not None else 0
+        resource = resources[idx] if resources and 0 <= idx < len(resources) else (resources[0] if resources else '')
         return {'type': 'resource', 'resource': resource}
     elif input_type == 'resources':
         units = {k: 0 for k in ['megaCredits', 'steel', 'titanium', 'plants', 'energy', 'heat']}
         return {'type': 'resources', 'units': units}
     elif input_type == 'claimedUndergroundToken':
         tokens = waiting_for.get('tokens', [])
-        selected = [tokens[0]] if tokens else []
+        idx = normalize_index(action_index, 760) if action_index is not None else 0
+        selected = [tokens[idx]] if tokens and 0 <= idx < len(tokens) else ([tokens[0]] if tokens else [])
         return {'type': 'claimedUndergroundToken', 'selected': selected}
     elif input_type == 'selectProjectCardToPlay':
         # Handle project card selection for playing
         cards = waiting_for.get('cards', [])
+        can_pass = bool(waiting_for.get('canPass', False))
         if not cards:
             return {'type': 'pass'}
-            
-        card_idx = action_index if action_index is not None else 0
+             
+        card_idx = normalize_index(action_index, 0) if action_index is not None else 0
+        affordable_indices: List[int] = []
+        if player_state:
+            player = player_state.get('thisPlayer', {})
+            for i, candidate in enumerate(cards):
+                if _can_afford_card(player, candidate):
+                    affordable_indices.append(i)
+        if affordable_indices:
+            if card_idx in affordable_indices:
+                chosen_idx = card_idx
+            elif 0 <= card_idx < len(affordable_indices):
+                chosen_idx = affordable_indices[card_idx]
+            else:
+                chosen_idx = affordable_indices[0]
+            card = cards[chosen_idx]
+            payment_options = waiting_for.get('paymentOptions', {}) if isinstance(waiting_for, dict) else {}
+            payment = _build_payment_with_options(player_state, card, payment_options)
+            return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
+        if can_pass:
+            return {'type': 'pass'}
         if 0 <= card_idx < len(cards):
             card = cards[card_idx]
             payment_options = waiting_for.get('paymentOptions', {}) if isinstance(waiting_for, dict) else {}
             payment = _build_payment_with_options(player_state, card, payment_options)
             return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
-        else:
-            return {'type': 'pass'}
-    elif input_type == 'selectCard' and 'standard projects' in _title_text(waiting_for.get('title', '')).lower():
+        return {'type': 'pass'}
+    elif input_type == 'selectCard' and 'standard project' in _title_text(waiting_for.get('title', '')).lower():
         # Handle standard project selection
         cards = waiting_for.get('cards', [])
         if not cards:
             return {'type': 'pass'}
             
-        card_idx = action_index if action_index is not None else 0
+        card_idx = normalize_index(action_index, 100) if action_index is not None else 0
         enabled_cards = [(i, card) for i, card in enumerate(cards) if not card.get('isDisabled', False)]
         if not enabled_cards:
             return {'type': 'pass'}
             
         # Select the appropriate card based on action_index
-        if card_idx < len(enabled_cards):
-            selected_index, card = enabled_cards[card_idx]
+        enabled_index_to_card = {i: card for i, card in enabled_cards}
+        if card_idx in enabled_index_to_card:
+            card = enabled_index_to_card[card_idx]
+        elif 0 <= card_idx < len(enabled_cards):
+            _, card = enabled_cards[card_idx]
         else:
             # Default to first available project
-            selected_index, card = enabled_cards[0]
+            _, card = enabled_cards[0]
         
         name = (card.get('name') or '')
 
@@ -647,9 +734,40 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         cards = waiting_for.get('cards', [])
         if not cards:
             return {'type': 'pass'}
-        
-        # Select all cards to sell (maximize money gain)
-        card_names = [card['name'] for card in cards]
+
+        min_cards = int(waiting_for.get('min', 1) or 1)
+        max_cards = int(waiting_for.get('max', len(cards)) or len(cards))
+        min_cards = max(0, min(min_cards, len(cards)))
+        max_cards = max(min_cards, min(max_cards, len(cards)))
+
+        selected: List[str] = []
+        normalized = normalize_index(action_index, 702) if action_index is not None else 0
+        if normalized > 0:
+            for i, card in enumerate(cards):
+                if (normalized >> i) & 1:
+                    name = str(card.get('name', '') or '')
+                    if name:
+                        selected.append(name)
+            if len(selected) > max_cards:
+                selected = selected[:max_cards]
+
+        if len(selected) < min_cards:
+            # Conservative default: sell the cheapest cards first.
+            ranked = sorted(
+                cards,
+                key=lambda c: (int(c.get('calculatedCost', c.get('cost', 0)) or 0), str(c.get('name', '')))
+            )
+            for card in ranked:
+                name = str(card.get('name', '') or '')
+                if not name or name in selected:
+                    continue
+                selected.append(name)
+                if len(selected) >= min_cards:
+                    break
+
+        card_names = selected[:max_cards]
+        if not card_names:
+            return {'type': 'pass'}
         return {'type': 'card', 'cards': card_names}
     else:
         # Fallback: return a pass/option action
@@ -888,12 +1006,13 @@ class ActionDecoder:
                         for j, card in enumerate(cards):
                             if player_state and _can_afford_card(player, card):
                                 affordable_indices.append(j)
-                        candidate_indices = affordable_indices if affordable_indices else list(range(len(cards)))
+                        candidate_indices = affordable_indices
                         if candidate_indices:
                             for j in candidate_indices:
                                 available_actions.append(self.action_types['PLAY_CARD'] + j)
                             added_concrete_action = True
                         else:
+                            # Avoid surfacing known-unaffordable project-card branches.
                             allow_select_option = False
                     elif option_type in ['selectCard', 'card'] and 'standard project' in option_title_l:
                         cards = option.get('cards', [])
@@ -973,9 +1092,9 @@ class ActionDecoder:
                         for i in affordable_cards:
                             available_actions.append(self.action_types['PLAY_CARD'] + i)
                     else:
-                        # No affordable cards, just add all and let payment logic handle it
-                        for i, _ in enumerate(cards):
-                            available_actions.append(self.action_types['PLAY_CARD'] + i)
+                        # No affordable cards: avoid guaranteed payment rejection.
+                        if can_pass:
+                            available_actions.append(self.action_types['PASS'])
                 elif not available_actions:
                     # For selection scenarios, include all cards
                     for i, _ in enumerate(cards):
@@ -1026,15 +1145,17 @@ class ActionDecoder:
                     for i in affordable_cards:
                         available_actions.append(self.action_types['PLAY_CARD'] + i)
                 else:
-                    # No affordable cards, just add all and let payment logic handle it
-                    for i, _ in enumerate(cards):
-                        available_actions.append(self.action_types['PLAY_CARD'] + i)
-                        
+                    # No affordable cards: avoid guaranteed payment rejection.
+                    if can_pass:
+                        available_actions.append(self.action_types['PASS'])
+                         
                 if can_pass:
                     available_actions.append(self.action_types['PASS'])
             elif input_type == 'selectSpace' or input_type == 'space':
                 spaces = waiting_for.get('availableSpaces', waiting_for.get('spaces', []))
-                for i, _ in enumerate(spaces):
+                for i, space in enumerate(spaces):
+                    if isinstance(space, dict) and space.get('isDisabled', False):
+                        continue
                     available_actions.append(self.action_types['SELECT_SPACE'] + i)
             elif input_type == 'selectPayment' or input_type == 'payment':
                 for i in range(10):

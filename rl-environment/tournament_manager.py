@@ -11,7 +11,6 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
 import uuid
-import aiohttp
 
 from models.agent import RLAgent
 from game_interface import GameServerCluster, GameInstance
@@ -230,10 +229,15 @@ class TournamentManager:
                 for agent in agents
             ]
             
-            # Wait for game completion with timeout
+            # Wait for game completion with configurable timeout.
+            try:
+                timeout_sec = float(os.getenv('TM_GAME_TIMEOUT_SEC', '300'))
+            except Exception:
+                timeout_sec = 300.0
+            timeout_sec = max(60.0, timeout_sec)
             await asyncio.wait_for(
                 asyncio.gather(*agent_tasks), 
-                timeout=300  # 5 minutes max per game
+                timeout=timeout_sec
             )
             
             # Get final game state and results
@@ -241,13 +245,10 @@ class TournamentManager:
             
             duration = (datetime.now() - start_time).total_seconds()
             
-            # Extract end-screen URLs and parse authoritative totals/ranks when possible
+            # Extract end-screen URLs and parse authoritative totals/ranks when possible.
             players: List[Dict[str, Any]] = []
-            name_map: Dict[str, str] = {f"Agent_{agent.id[:8]}": agent.id for agent in agents}
-            parsed_scoreboard: Optional[Dict[str, Dict[str, Any]]] = None
 
-            # Build end-screen URLs for convenience
-            # Resolve bases per server
+            # Build end-screen URLs for convenience.
             internal_base = game_instance.base_url
             mapping_str = os.getenv('PUBLIC_TM_MAP', '')
             public_map: Dict[str, str] = {}
@@ -266,140 +267,117 @@ class TournamentManager:
                 pub = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')
                 public_base = (pub.split(',')[0] if ',' in pub else pub)
             end_screens: List[str] = []  # public links for UI
-            end_screens_fetch: List[str] = []  # internal links for container-to-container fetch
             try:
                 for p in game_state.get('players', []):
                     pid = p.get('id')
                     if pid:
                         end_screens.append(f"{public_base}/the-end?id={pid}")
-                        end_screens_fetch.append(f"{internal_base}/the-end?id={pid}")
                         logger.info(f"End screen: {public_base}/the-end?id={pid}")
-                # Prefer internal JSON for reliable totals/ranking
-                parsed_scoreboard = None
-                try:
-                    # Fetch the final game view (players list) to compute scores like the UI
-                    async with self.game_cluster.session.get(f"{internal_base}/api/game", params={'id': game_instance.game_id}) as r:
-                        if r.status == 200:
-                            game_view = await r.json()
-                            players_view = game_view.get('players', []) or []
-                            # Compute rank: sort by total VP desc, then megacredits desc
-                            def vp_total(p):
-                                return int(((p.get('victoryPointsBreakdown', {}) or {}).get('total', 0) or 0))
-                            def mc_val(p):
-                                return int(p.get('megaCredits', 0) or 0)
-                            sorted_players = sorted(players_view, key=lambda p: (vp_total(p), mc_val(p)), reverse=True)
-                            parsed_scoreboard = {}
-                            for p in sorted_players:
-                                parsed_scoreboard[p.get('name')] = {
-                                    'name': p.get('name'),
-                                    'total': vp_total(p),
-                                    'tr': int(((p.get('victoryPointsBreakdown', {}) or {}).get('terraformRating', 0) or 0)),
-                                    'mc': mc_val(p),
-                                }
-                        else:
-                            logger.warning(f"Failed to fetch game view for scoring (HTTP {r.status})")
-                except Exception:
-                    logger.warning("Fetching game view for tournament scoring failed", exc_info=True)
             except Exception:
                 logger.warning("Parsing end screen for tournament scoring failed", exc_info=True)
-            
-            if parsed_scoreboard:
-                # Use parsed totals to compute ranks
-                # Map our agents to parsed names (should match Agent_<id8>)
-                scored_list: List[Dict[str, Any]] = []
-                for agent in agents:
-                    disp_name = f"Agent_{agent.id[:8]}"
-                    pl = parsed_scoreboard.get(disp_name)
-                    total = int(pl.get('total', 0)) if pl else 0
-                    tr = int(pl.get('tr', 0)) if pl and isinstance(pl.get('tr'), int) else None
-                    scored_list.append({'agent_id': agent.id, 'name': disp_name, 'total': total, 'tr': tr})
-                # Rank by total desc, tiebreaker TR desc
-                scored_list.sort(key=lambda x: (x['total'], x['tr'] if x['tr'] is not None else -1), reverse=True)
-                # Assign 1..n ranks
-                rank_map: Dict[str, int] = {}
-                current_rank = 1
-                last_score = None
-                for entry in scored_list:
-                    score_key = (entry['total'], entry['tr'])
-                    if score_key != last_score:
-                        rank = current_rank
-                        last_score = score_key
-                    rank_map[entry['agent_id']] = rank
-                    current_rank += 1
-                # Emit players list
-                for entry in scored_list:
-                    players.append({
-                        'agent_id': entry['agent_id'],
-                        'rank': rank_map[entry['agent_id']],
-                        'victory_points': entry['total'],
-                        'terraform_rating': entry['tr'] if entry['tr'] is not None else 0,
-                        'megacredits': 0,
-                        'completed': True,
-                    })
-            else:
-                # Fallback: fetch per-player JSON from internal API to get victoryPointsBreakdown.total
-                name_to_pid: Dict[str, str] = {}
-                for p in game_state.get('players', []):
-                    if p.get('name') and p.get('id'):
-                        name_to_pid[p['name']] = p['id']
-                internal_base = os.getenv('INTERNAL_TM_URL', os.getenv('PUBLIC_TM_URL', 'http://localhost:8081'))
-                totals: Dict[str, Dict[str, Any]] = {}
-                try:
-                    async with aiohttp.ClientSession() as s:
-                        for agent in agents:
-                            disp_name = f"Agent_{agent.id[:8]}"
-                            pid = name_to_pid.get(disp_name)
-                            if not pid:
-                                continue
-                            api_url = f"{internal_base}/api/player?id={pid}"
-                            async with s.get(api_url) as r:
-                                if r.status == 200:
-                                    data = await r.json()
-                                    vp = int((data.get('victoryPointsBreakdown', {}) or {}).get('total', 0) or 0)
-                                    tr = int(data.get('terraformRating', 0) or 0)
-                                    totals[agent.id] = { 'name': disp_name, 'total': vp, 'tr': tr }
-                                else:
-                                    logger.warning(f"Failed to fetch player JSON {api_url} (HTTP {r.status})")
-                except Exception:
-                    logger.warning("Fetching per-player JSON failed for tournament fallback", exc_info=True)
 
-                if totals:
-                    scored_list = []
-                    for agent in agents:
-                        entry = totals.get(agent.id, { 'name': f"Agent_{agent.id[:8]}", 'total': 0, 'tr': 0 })
-                        scored_list.append({ 'agent_id': agent.id, 'name': entry['name'], 'total': entry['total'], 'tr': entry['tr'] })
-                    scored_list.sort(key=lambda x: (x['total'], x['tr']), reverse=True)
-                    rank_map: Dict[str, int] = {}
-                    current_rank = 1
-                    last_score = None
-                    for e in scored_list:
-                        score_key = (e['total'], e['tr'])
-                        if score_key != last_score:
-                            rank = current_rank
-                            last_score = score_key
-                        rank_map[e['agent_id']] = rank
-                        current_rank += 1
-                    for e in scored_list:
-                        players.append({
-                            'agent_id': e['agent_id'],
-                            'rank': rank_map[e['agent_id']],
-                            'victory_points': e['total'],
-                            'terraform_rating': e['tr'],
-                            'megacredits': 0,
-                            'completed': True
-                        })
+            # Prefer per-player JSON (/api/player) and its embedded players[] scoreboard,
+            # matching the logic used in RLAgent._record_game_result.
+            game_players_by_name: Dict[str, Dict[str, Any]] = {}
+            player_ids: List[str] = []
+            for p in game_state.get('players', []):
+                player_name = p.get('name')
+                if player_name:
+                    game_players_by_name[str(player_name)] = p
+                pid = p.get('id')
+                if pid:
+                    player_ids.append(str(pid))
+
+            view_players_by_name: Dict[str, Dict[str, Any]] = {}
+            if player_ids:
+                sample_pid = player_ids[0]
+                try:
+                    async with game_instance.session.get(
+                        f"{internal_base}/api/player",
+                        params={'id': sample_pid},
+                    ) as r:
+                        if r.status == 200:
+                            view = await r.json()
+                            players_view = view.get('players', []) or []
+                            for p in players_view:
+                                nm = p.get('name')
+                                if nm:
+                                    view_players_by_name[str(nm)] = p
+                        else:
+                            logger.warning(
+                                "Failed to fetch shared /api/player view for scoring (HTTP %s)",
+                                r.status,
+                            )
+                except Exception:
+                    logger.warning("Fetching /api/player view failed for tournament scoring", exc_info=True)
+
+            scored_list: List[Dict[str, Any]] = []
+            for agent in agents:
+                disp_name = f"Agent_{agent.id[:8]}"
+                source = view_players_by_name.get(disp_name) or game_players_by_name.get(disp_name, {})
+
+                vp = int(((source.get('victoryPointsBreakdown', {}) or {}).get('total', source.get('terraformRating', 0)) or 0))
+                tr = int(source.get('terraformRating', 0) or 0)
+                mc = int(source.get('megaCredits', 0) or 0)
+
+                scored_list.append({
+                    'agent_id': agent.id,
+                    'name': disp_name,
+                    'total': vp,
+                    'tr': tr,
+                    'mc': mc,
+                })
+
+            scored_list.sort(key=lambda x: (x['total'], x['mc'], x['tr']), reverse=True)
+
+            rank_map: Dict[str, int] = {}
+            current_rank = 1
+            last_score: Optional[tuple] = None
+            for entry in scored_list:
+                score_key = (entry['total'], entry['mc'], entry['tr'])
+                if score_key != last_score:
+                    rank = current_rank
+                    last_score = score_key
+                rank_map[entry['agent_id']] = rank
+                current_rank += 1
+
+            # If the extracted scores are still uniformly zero-like, use final-state rank when available.
+            uniform_scores = bool(scored_list) and all(
+                (entry['total'], entry['mc'], entry['tr']) == (scored_list[0]['total'], scored_list[0]['mc'], scored_list[0]['tr'])
+                for entry in scored_list
+            )
+            if uniform_scores:
+                final_rank_by_name = {
+                    str(p.get('name')): int(p.get('rank', 0) or 0)
+                    for p in game_state.get('players', [])
+                    if p.get('name')
+                }
+                any_valid_final_rank = any(v > 0 for v in final_rank_by_name.values())
+                if any_valid_final_rank:
+                    logger.warning(
+                        "Uniform extracted tournament scores for game %s; using final-state ranks.",
+                        game_instance.game_id,
+                    )
+                    for entry in scored_list:
+                        fr = final_rank_by_name.get(entry['name'], 0)
+                        if fr > 0:
+                            rank_map[entry['agent_id']] = fr
                 else:
-                    # Last-resort fallback to final game state
-                    for i, agent in enumerate(agents):
-                        player_data = game_state['players'][i]
-                        players.append({
-                            'agent_id': agent.id,
-                            'rank': player_data.get('rank', 4),
-                            'victory_points': player_data.get('terraformRating', 20),
-                            'terraform_rating': player_data.get('terraformRating', 20),
-                            'megacredits': player_data.get('megaCredits', 0),
-                            'completed': True
-                        })
+                    logger.warning(
+                        "Uniform tournament scores for game %s with no valid final ranks; scores=%s",
+                        game_instance.game_id,
+                        [(e['name'], e['total'], e['mc'], e['tr']) for e in scored_list],
+                    )
+
+            for entry in scored_list:
+                players.append({
+                    'agent_id': entry['agent_id'],
+                    'rank': rank_map.get(entry['agent_id'], 4),
+                    'victory_points': entry['total'],
+                    'terraform_rating': entry['tr'],
+                    'megacredits': entry['mc'],
+                    'completed': True,
+                })
 
             actual_game_id = game_instance.game_id
             result = GameResult(
@@ -423,7 +401,16 @@ class TournamentManager:
             return result
             
         except asyncio.TimeoutError:
-            logger.warning(f"Game {provisional_id} timed out after 5 minutes")
+            try:
+                timeout_sec = float(os.getenv('TM_GAME_TIMEOUT_SEC', '300'))
+            except Exception:
+                timeout_sec = 300.0
+            timeout_sec = max(60.0, timeout_sec)
+            logger.warning(
+                "Game %s timed out after %.0f seconds",
+                provisional_id,
+                timeout_sec,
+            )
             return GameResult(
                 game_id=provisional_id,
                 players=[{

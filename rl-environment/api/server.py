@@ -61,6 +61,7 @@ def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
         "no_available_actions": 0,
     }
     action_counts: Dict[str, int] = {}
+    standard_project_counts: Dict[str, int] = {}
     avg_available_actions_samples: List[float] = []
     epsilon_values: List[float] = []
     temperature_values: List[float] = []
@@ -78,6 +79,9 @@ def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
         for key, value in dict(stats.get("action_counts", {})).items():
             action_counts[key] = int(action_counts.get(key, 0)) + int(value)
 
+        for key, value in dict(stats.get("standard_project_counts", {})).items():
+            standard_project_counts[key] = int(standard_project_counts.get(key, 0)) + int(value)
+
         if "avg_available_actions" in stats:
             avg_available_actions_samples.append(float(stats.get("avg_available_actions", 0.0)))
 
@@ -91,6 +95,11 @@ def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
     action_mix = {
         key: _safe_ratio(value, total_recorded_actions)
         for key, value in sorted(action_counts.items(), key=lambda item: item[1], reverse=True)
+    }
+    total_standard_project_actions = sum(standard_project_counts.values())
+    standard_project_mix = {
+        key: _safe_ratio(value, total_standard_project_actions)
+        for key, value in sorted(standard_project_counts.items(), key=lambda item: item[1], reverse=True)
     }
 
     return {
@@ -106,6 +115,8 @@ def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
         "avg_available_actions": _safe_mean(avg_available_actions_samples),
         "action_counts": action_counts,
         "action_mix": action_mix,
+        "standard_project_counts": standard_project_counts,
+        "standard_project_mix": standard_project_mix,
         "hyperparameters": {
             "epsilon": _summarize_values(epsilon_values),
             "temperature": _summarize_values(temperature_values),
@@ -703,6 +714,8 @@ async def dashboard():
                     <div id="hyperparams" class="empty">Loading...</div>
                     <h3 style="margin-top: 14px;">Action Mix</h3>
                     <div id="action-mix" class="empty">Loading...</div>
+                    <h3 style="margin-top: 14px;">Standard Projects Chosen</h3>
+                    <div id="standard-project-mix" class="empty">Loading...</div>
                 </div>
             </div>
 
@@ -874,6 +887,32 @@ async def dashboard():
                 document.getElementById('action-mix').innerHTML = `<div class="bar-list">${rows}</div>`;
             }
 
+            function updateStandardProjectMix(stats) {
+                const behavior = stats.behavior || {};
+                const counts = behavior.standard_project_counts || {};
+                const total = Object.values(counts).reduce((acc, value) => acc + Number(value || 0), 0);
+                const entries = Object.entries(counts).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0));
+
+                if (!entries.length || total <= 0) {
+                    document.getElementById('standard-project-mix').innerHTML = '<div class="empty">No standard project telemetry yet</div>';
+                    return;
+                }
+
+                const rows = entries.map(([name, count]) => {
+                    const ratio = Number(count || 0) / total;
+                    const width = Math.max(2, ratio * 100);
+                    return `
+                        <div class="bar-row">
+                            <div class="bar-name mono" style="text-transform:none;">${name}</div>
+                            <div class="bar-track"><div class="bar-fill" style="width: ${width}%"></div></div>
+                            <div class="bar-value">${fmt(count, 0)} (${pct(ratio, 1)})</div>
+                        </div>
+                    `;
+                }).join('');
+
+                document.getElementById('standard-project-mix').innerHTML = `<div class="bar-list">${rows}</div>`;
+            }
+
             function buildPath(values, width, height, padding) {
                 if (!values.length) return '';
                 const min = Math.min(...values);
@@ -992,6 +1031,7 @@ async def dashboard():
                 updateRecentLists(stats);
                 updateHyperparameterTable(stats);
                 updateActionMix(stats);
+                updateStandardProjectMix(stats);
                 updateTrend(stats);
                 updateSteeringHints(stats);
             }

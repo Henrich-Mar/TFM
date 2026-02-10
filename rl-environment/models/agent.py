@@ -127,7 +127,8 @@ class RLAgent:
             'no_available_actions': 0,
             'sum_available_actions': 0,
             'available_action_observations': 0,
-            'action_type_counts': {}
+            'action_type_counts': {},
+            'standard_project_counts': {},
         }
         
     async def play_game(self, game_instance: GameInstance, player_name: str):
@@ -245,7 +246,7 @@ class RLAgent:
                 if await game_instance.send_player_input(player_id, policy_action):
                     self._bump_decision_stat('policy_successes')
                     if policy_action_idx is not None:
-                        self._record_action_choice(int(policy_action_idx))
+                        self._record_action_choice(int(policy_action_idx), policy_action, player_state)
                     logger.info(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
                     if sampled_from_policy and policy_action_idx is not None:
                         if len(episode_steps) < self.config.max_episode_steps:
@@ -288,7 +289,7 @@ class RLAgent:
                     self._bump_decision_stat('fallback_random_attempts')
                     if await game_instance.send_player_input(player_id, random_action):
                         self._bump_decision_stat('fallback_random_successes')
-                        self._record_action_choice(int(random_action_idx))
+                        self._record_action_choice(int(random_action_idx), random_action, player_state)
                         logger.info(f"Random action succeeded for agent {self.id[:8]}.")
                         await self._sleep_if_needed(self.post_move_sleep_sec)
                         return  # Success
@@ -351,10 +352,90 @@ class RLAgent:
             return 'sell_patents'
         return 'other'
 
-    def _record_action_choice(self, action_index: int):
+    def _extract_standard_project_name(
+        self,
+        action_index: int,
+        action_input: Optional[Dict[str, Any]],
+        player_state: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Best-effort extraction of selected standard project name for telemetry."""
+        known_names = set(getattr(self.action_decoder, "standard_projects", []) or [])
+
+        # Direct payload naming.
+        if action_input:
+            if action_input.get('type') == 'standardProject':
+                project = str(action_input.get('project', '') or '').strip()
+                return project or None
+            if action_input.get('type') == 'card':
+                selected = action_input.get('cards', []) or []
+                if selected:
+                    candidate = str(selected[0]).strip()
+                    if candidate in known_names:
+                        return candidate
+            if action_input.get('type') == 'projectCard':
+                candidate = str(action_input.get('card', '') or '').strip()
+                if candidate in known_names:
+                    return candidate
+
+        waiting_for = (player_state or {}).get('waitingFor', {}) if player_state else {}
+        input_type = str(waiting_for.get('type', ''))
+        title = waiting_for.get('title', '')
+        if isinstance(title, dict):
+            title = title.get('message', '')
+        title_l = str(title).lower()
+
+        if input_type in ['card', 'selectCard'] and 'standard project' in title_l:
+            cards = waiting_for.get('cards', []) or []
+            normalized = int(action_index)
+            if 100 <= normalized < 200:
+                normalized -= 100
+            if 0 <= normalized < len(cards):
+                name = str(cards[normalized].get('name', '') or '').strip()
+                if name:
+                    return name
+            enabled = [c for c in cards if not c.get('isDisabled', False)]
+            if enabled:
+                name = str(enabled[0].get('name', '') or '').strip()
+                return name or None
+            return None
+
+        if input_type == 'or':
+            options = waiting_for.get('options', []) or []
+            for option in options:
+                opt_title = option.get('title', '')
+                if isinstance(opt_title, dict):
+                    opt_title = opt_title.get('message', '')
+                opt_title_l = str(opt_title).lower()
+                if option.get('type') in ['card', 'selectCard'] and 'standard project' in opt_title_l:
+                    cards = option.get('cards', []) or []
+                    normalized = int(action_index)
+                    if 100 <= normalized < 200:
+                        normalized -= 100
+                    if 0 <= normalized < len(cards):
+                        name = str(cards[normalized].get('name', '') or '').strip()
+                        if name:
+                            return name
+                    enabled = [c for c in cards if not c.get('isDisabled', False)]
+                    if enabled:
+                        name = str(enabled[0].get('name', '') or '').strip()
+                        return name or None
+                    break
+        return None
+
+    def _record_action_choice(
+        self,
+        action_index: int,
+        action_input: Optional[Dict[str, Any]] = None,
+        player_state: Optional[Dict[str, Any]] = None,
+    ):
         counts = self.decision_stats.setdefault('action_type_counts', {})
         category = self._categorize_action(int(action_index))
         counts[category] = int(counts.get(category, 0)) + 1
+        if category == 'standard_project':
+            project_name = self._extract_standard_project_name(int(action_index), action_input, player_state)
+            if project_name:
+                project_counts = self.decision_stats.setdefault('standard_project_counts', {})
+                project_counts[project_name] = int(project_counts.get(project_name, 0)) + 1
     
     async def _get_action_from_network(self, state_vector: np.ndarray, 
                                     player_state: Dict[str, Any], force_random: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool]:
@@ -484,22 +565,24 @@ class RLAgent:
         if force_random or np.random.random() < max(0.05, self.config.epsilon * 0.5):
             return np.random.choice(available_actions), False
 
-        # Mask unavailable actions
+        # Mask unavailable actions (strict mask; never sample hidden actions).
         masked_probs = torch.zeros_like(policy_probs)
-        for action_idx in available_actions:
-            if action_idx < len(policy_probs):
-                masked_probs[action_idx] = policy_probs[action_idx]
-        
-        # Add small epsilon to prevent zero probabilities
-        epsilon = 1e-8
-        masked_probs += epsilon
+        valid_actions = [
+            int(action_idx)
+            for action_idx in available_actions
+            if 0 <= int(action_idx) < len(policy_probs)
+        ]
+        if not valid_actions:
+            return np.random.choice(available_actions), False
+        for action_idx in valid_actions:
+            masked_probs[action_idx] = torch.clamp(policy_probs[action_idx], min=0.0)
         
         # Renormalize
         if masked_probs.sum() > 0:
             masked_probs = masked_probs / masked_probs.sum()
         else:
             # Fallback to uniform if all probabilities are zero
-            for action_idx in available_actions:
+            for action_idx in valid_actions:
                 if action_idx < len(masked_probs):
                     masked_probs[action_idx] = 1.0
             masked_probs /= masked_probs.sum()
@@ -509,7 +592,7 @@ class RLAgent:
         sell_patents_action = 702  # Sell patents action
         select_option_base = 200  # From action_types['SELECT_OPTION']
         
-        for i, action_idx in enumerate(available_actions):
+        for i, action_idx in enumerate(valid_actions):
             if action_idx >= pass_action_base:
                 masked_probs[action_idx] *= 0.3  # Reduce pass action probability
             elif action_idx == sell_patents_action:
@@ -527,11 +610,18 @@ class RLAgent:
         # Apply contextual adjustments (e.g., OR menu titles)
         if action_weight_adjustments:
             for action_idx, mult in action_weight_adjustments.items():
-                if action_idx < len(masked_probs):
+                if action_idx in valid_actions and action_idx < len(masked_probs):
                     masked_probs[action_idx] *= float(mult)
 
+        # Keep numerical stability only on valid actions.
+        for action_idx in valid_actions:
+            masked_probs[action_idx] += 1e-8
+
         # Renormalize after adjustment
-        masked_probs = masked_probs / masked_probs.sum()
+        total_prob = float(masked_probs.sum().item())
+        if total_prob <= 0:
+            return np.random.choice(valid_actions), False
+        masked_probs = masked_probs / total_prob
 
         # Sample from policy
         try:
@@ -693,10 +783,16 @@ class RLAgent:
             return float(numerator) / float(denominator) if denominator > 0 else 0.0
 
         action_counts = dict(self.decision_stats.get('action_type_counts', {}))
+        standard_project_counts = dict(self.decision_stats.get('standard_project_counts', {}))
         total_recorded_actions = sum(int(v) for v in action_counts.values())
         action_mix = {
             key: _ratio(int(value), total_recorded_actions)
             for key, value in action_counts.items()
+        }
+        total_standard_projects = sum(int(v) for v in standard_project_counts.values())
+        standard_project_mix = {
+            key: _ratio(int(value), total_standard_projects)
+            for key, value in standard_project_counts.items()
         }
 
         return {
@@ -720,6 +816,8 @@ class RLAgent:
             'fallback_pass_rate': _ratio(fallback_passes, total_decisions),
             'action_counts': action_counts,
             'action_mix': action_mix,
+            'standard_project_counts': standard_project_counts,
+            'standard_project_mix': standard_project_mix,
         }
     
     def mutate(self, mutation_rate: float = 0.1):

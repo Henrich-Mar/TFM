@@ -180,8 +180,13 @@ class GameServerCluster:
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+    async def close(self):
+        """Close shared HTTP session used for game/server API calls."""
         if self.session:
             await self.session.close()
+            self.session = None
 
     def _default_game_options(self) -> Dict[str, Any]:
         return {

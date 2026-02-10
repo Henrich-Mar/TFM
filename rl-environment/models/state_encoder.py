@@ -10,6 +10,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 class StateEncoder:
+    # Process-local cache keyed by metadata file path.
+    _CARD_METADATA_CACHE: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
     def __init__(self, state_size: int = 512):
         self.state_size = state_size
         
@@ -665,6 +668,12 @@ class StateEncoder:
             candidate = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                                      'terraforming-mars', 'card_metadata.json')
             path = candidate
+
+        cache_key = os.path.abspath(path)
+        cached = StateEncoder._CARD_METADATA_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             if os.path.exists(path):
                 with open(path, 'r', encoding='utf-8') as f:
@@ -672,19 +681,23 @@ class StateEncoder:
                 # Normalize tag casing to our expected TitleCase keys used above
                 normalized: Dict[str, Dict[str, Any]] = {}
                 for name, meta in (data or {}).items():
-                    tags = meta.get('tags') or []
+                    meta_copy = dict(meta or {})
+                    tags = meta_copy.get('tags') or []
                     # Accept both enums and strings; convert to TitleCase keys used in encoder
                     norm_tags = []
                     for t in tags:
                         ts = str(t)
-                        # If enum-like 'plant' → 'Plant'
+                        # If enum-like 'plant' -> 'Plant'
                         norm_tags.append(ts.strip().capitalize())
-                    meta['tags'] = norm_tags
-                    normalized[name] = meta
+                    meta_copy['tags'] = norm_tags
+                    normalized[name] = meta_copy
                 logger.info(f"Loaded card metadata for {len(normalized)} cards from {path}")
+                StateEncoder._CARD_METADATA_CACHE[cache_key] = normalized
                 return normalized
         except Exception as e:
             logger.warning(f"Failed to load card metadata from {path}: {e}")
+
+        StateEncoder._CARD_METADATA_CACHE[cache_key] = {}
         return {}
 
     def _get_card_tags(self, card_name: str, fallback: Any = None) -> Dict[str, int]:
@@ -707,3 +720,4 @@ class StateEncoder:
     
 
     
+

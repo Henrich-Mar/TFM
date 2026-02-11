@@ -28,14 +28,27 @@ from scoring import calculate_selection_score
 LOG_DIR = os.getenv('RL_LOG_DIR', '/app/rl-logs')
 LOG_MAX_MB = int(os.getenv('RL_LOG_MAX_MB', '5'))
 LOG_BACKUPS = int(os.getenv('RL_LOG_BACKUPS', '5'))
+LOG_LEVEL_NAME = str(os.getenv("LOG_LEVEL", "INFO")).strip().upper()
+LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
 setup_logging(
     log_dir=LOG_DIR,
     filename='rl-coordinator.log',
     max_bytes=LOG_MAX_MB * 1024 * 1024,
     backup_count=LOG_BACKUPS,
-    level=logging.INFO,
+    level=LOG_LEVEL,
 )
 logger = logging.getLogger(__name__)
+
+# Optional override for very chatty per-move loggers.
+AGENT_LOG_LEVEL_NAME = str(os.getenv("AGENT_LOG_LEVEL", "")).strip().upper()
+if AGENT_LOG_LEVEL_NAME:
+    agent_level = getattr(logging, AGENT_LOG_LEVEL_NAME, None)
+    if isinstance(agent_level, int):
+        logging.getLogger("models.agent").setLevel(agent_level)
+        logging.getLogger("models.action_decoder").setLevel(agent_level)
+        logger.info("Applied AGENT_LOG_LEVEL=%s to models.agent and models.action_decoder", AGENT_LOG_LEVEL_NAME)
+    else:
+        logger.warning("Invalid AGENT_LOG_LEVEL=%s. Expected Python logging level name.", AGENT_LOG_LEVEL_NAME)
 
 @dataclass
 class CoordinatorConfig:

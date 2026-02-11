@@ -49,7 +49,9 @@ services:
 
   # RL Environment Controller
   rl-coordinator:
-    build: ./rl-environment
+    build:
+      context: ./rl-environment
+      dockerfile: Dockerfile.training
     container_name: rl-coordinator
     restart: unless-stopped
     ports:
@@ -61,10 +63,10 @@ services:
         - GENERATIONS=1000
         - POPULATION_SIZE=16
         - TOURNAMENT_SIZE=4
-        - GAMES_PER_EVAL=6
+        - GAMES_PER_EVAL=50
         - TOURNAMENT_CONCURRENCY=8
         - TM_FAST_MODE_OPTION=1
-        - AGENT_POLL_INTERVAL_SEC=0.15
+        - AGENT_POLL_INTERVAL_SEC=0.0
         - AGENT_POST_MOVE_SLEEP_SEC=0.0
         - AGENT_FAILURE_PAUSE_SEC=0.05
         - AGENT_STUCK_LOG_COOLDOWN_SEC=4.0

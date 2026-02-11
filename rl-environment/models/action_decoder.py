@@ -2,7 +2,7 @@
 Action Decoder - Converts neural network output to game actions
 """
 import numpy as np
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import logging
 import random
 import os
@@ -17,6 +17,142 @@ def _title_text(value: Any) -> str:
     if isinstance(value, str):
         return value
     return ''
+
+def _card_cost(card: Dict[str, Any]) -> int:
+    try:
+        return int(card.get('calculatedCost', card.get('cost', 0)) or 0)
+    except Exception:
+        return 0
+
+def _card_vp(card: Dict[str, Any]) -> int:
+    # Prefer metadata VP (card payload often omits it).
+    name = str(card.get('name', '') or '')
+    meta = _CARD_META_CACHE.get(name, {}) if isinstance(_CARD_META_CACHE, dict) else {}
+    try:
+        return int(meta.get('victoryPoints', card.get('victoryPoints', 0)) or 0)
+    except Exception:
+        return 0
+
+def _with_metadata_tags(card: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(card or {})
+    if not out.get('tags'):
+        tags = _metadata_tags(str(out.get('name', '') or ''))
+        if tags:
+            out['tags'] = tags
+    return out
+
+def _extra_mc_needed_to_afford(player: Dict[str, Any], card: Dict[str, Any], max_extra: int) -> Optional[int]:
+    safe_player = dict(player or {})
+    if _can_afford_card(safe_player, card):
+        return 0
+
+    try:
+        base_mc = int(safe_player.get('megaCredits', 0) or 0)
+    except Exception:
+        base_mc = 0
+    limit = max(0, int(max_extra))
+    for extra in range(1, limit + 1):
+        probe = dict(safe_player)
+        probe['megaCredits'] = base_mc + extra
+        if _can_afford_card(probe, card):
+            return extra
+    return None
+
+def _select_patents_to_sell(
+    cards: List[Dict[str, Any]],
+    waiting_for: Dict[str, Any],
+    player_state: Optional[Dict[str, Any]],
+    action_index: Optional[int] = None,
+) -> List[str]:
+    if not cards:
+        return []
+
+    min_cards = int(waiting_for.get('min', 1) or 1)
+    max_cards = int(waiting_for.get('max', len(cards)) or len(cards))
+    min_cards = max(0, min(min_cards, len(cards)))
+    max_cards = max(min_cards, min(max_cards, len(cards)))
+
+    # If caller encoded a bitmask, honor it first.
+    normalized = 0
+    try:
+        normalized = int(action_index) if action_index is not None else 0
+    except Exception:
+        normalized = 0
+    if normalized >= 702:
+        normalized -= 702
+    if normalized > 0:
+        selected_by_mask: List[str] = []
+        for i, card in enumerate(cards):
+            if (normalized >> i) & 1:
+                name = str(card.get('name', '') or '')
+                if name:
+                    selected_by_mask.append(name)
+        if len(selected_by_mask) >= min_cards:
+            return selected_by_mask[:max_cards]
+
+    ranked_all = sorted(
+        cards,
+        key=lambda c: (_card_cost(c), str(c.get('name', '') or ''))
+    )
+
+    # Strategic sell: if possible, sell exactly enough cheap cards to afford
+    # the best reachable card in hand (prioritize VP gain).
+    player = (player_state or {}).get('thisPlayer', {}) if isinstance(player_state, dict) else {}
+    if player and len(cards) > 1:
+        hand_cards = (player_state or {}).get('cardsInHand', []) if isinstance(player_state, dict) else []
+        if not isinstance(hand_cards, list) or not hand_cards:
+            hand_cards = cards
+
+        max_sell_for_target = min(max_cards, len(cards) - 1)
+        best_target_name: Optional[str] = None
+        best_needed: Optional[int] = None
+        best_rank: Optional[Tuple[int, int, int]] = None
+
+        for hand_card in hand_cards:
+            candidate = _with_metadata_tags(hand_card)
+            name = str(candidate.get('name', '') or '')
+            if not name:
+                continue
+            needed = _extra_mc_needed_to_afford(player, candidate, max_sell_for_target)
+            if needed is None or needed <= 0:
+                continue
+            if needed > max_sell_for_target:
+                continue
+
+            # Higher VP first, then fewer sells, then higher impact/cost card.
+            rank = (_card_vp(candidate), -int(needed), _card_cost(candidate))
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best_target_name = name
+                best_needed = int(needed)
+
+        if best_target_name is not None and best_needed is not None:
+            sell_count = max(min_cards, min(max_cards, best_needed))
+            sell_pool = [c for c in ranked_all if str(c.get('name', '') or '') != best_target_name]
+            if len(sell_pool) < sell_count:
+                sell_pool = ranked_all
+            selected_names = []
+            for card in sell_pool:
+                name = str(card.get('name', '') or '')
+                if not name or name in selected_names:
+                    continue
+                selected_names.append(name)
+                if len(selected_names) >= sell_count:
+                    break
+            if len(selected_names) >= min_cards:
+                return selected_names[:max_cards]
+
+    # Conservative default: sell the cheapest cards first.
+    default_count = max(min_cards, 1)
+    selected_default = []
+    for card in ranked_all:
+        name = str(card.get('name', '') or '')
+        if not name or name in selected_default:
+            continue
+        selected_default.append(name)
+        if len(selected_default) >= default_count:
+            break
+    return selected_default[:max_cards]
 
 # --- Action Response Builder for Terraforming Mars RL Agent ---
 def build_response_for_input(waiting_for, action_index=None, player_state=None):
@@ -374,10 +510,10 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             return {'type': 'card', 'cards': chosen}
         # Special-case: Sell patents sometimes appears as 'card' type
         if 'sell patent' in title:
-            if not cards:
+            selected_names = _select_patents_to_sell(cards, waiting_for, player_state, action_index)
+            if not selected_names:
                 return {'type': 'pass'}
-            card_names = [c['name'] for c in cards]
-            return {'type': 'card', 'cards': card_names}
+            return {'type': 'card', 'cards': selected_names}
         if is_selection:
             # Use bitmask logic for card selection (buy/keep/prelude phase)
             if min_cards == 1 and max_cards == 1:
@@ -426,6 +562,8 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 # Calculate proper payment based on player resources
                 if player_state:
                     payment = _calculate_card_payment(player_state, card)
+                    if payment is None:
+                        return {'type': 'pass'}
                 else:
                     payment = {k: 0 for k in ['megaCredits', 'steel', 'titanium', 'heat', 'plants']}
                 return {'type': 'card', 'card': card['name'], 'payment': payment}
@@ -592,10 +730,10 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         # For projectCard, action_index should be the card index directly
         card_idx = normalize_index(action_index, 0) if action_index is not None else 0
         affordable_indices: List[int] = []
+        payment_options = waiting_for.get('paymentOptions', {})
         if player_state:
-            player = player_state.get('thisPlayer', {})
             for i, candidate in enumerate(cards):
-                if _can_afford_card(player, candidate):
+                if _can_afford_card_with_payment_options(player_state, candidate, payment_options):
                     affordable_indices.append(i)
 
         if affordable_indices:
@@ -614,8 +752,9 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             card = cards[0]
 
         # Build inline payment respecting paymentOptions
-        payment_options = waiting_for.get('paymentOptions', {})
         payment = _build_payment_with_options(player_state, card, payment_options)
+        if payment is None:
+            return {'type': 'pass'}
         return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
     elif input_type in ['space', 'selectSpace']:
         # Prefer explicit availableSpaces with IDs; fallback to 'spaces'
@@ -670,10 +809,10 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
              
         card_idx = normalize_index(action_index, 0) if action_index is not None else 0
         affordable_indices: List[int] = []
+        payment_options = waiting_for.get('paymentOptions', {}) if isinstance(waiting_for, dict) else {}
         if player_state:
-            player = player_state.get('thisPlayer', {})
             for i, candidate in enumerate(cards):
-                if _can_afford_card(player, candidate):
+                if _can_afford_card_with_payment_options(player_state, candidate, payment_options):
                     affordable_indices.append(i)
         if affordable_indices:
             if card_idx in affordable_indices:
@@ -683,15 +822,17 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             else:
                 chosen_idx = affordable_indices[0]
             card = cards[chosen_idx]
-            payment_options = waiting_for.get('paymentOptions', {}) if isinstance(waiting_for, dict) else {}
             payment = _build_payment_with_options(player_state, card, payment_options)
+            if payment is None:
+                return {'type': 'pass'}
             return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
         if can_pass:
             return {'type': 'pass'}
         if 0 <= card_idx < len(cards):
             card = cards[card_idx]
-            payment_options = waiting_for.get('paymentOptions', {}) if isinstance(waiting_for, dict) else {}
             payment = _build_payment_with_options(player_state, card, payment_options)
+            if payment is None:
+                return {'type': 'pass'}
             return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
         return {'type': 'pass'}
     elif input_type == 'selectCard' and 'standard project' in _title_text(waiting_for.get('title', '')).lower():
@@ -721,6 +862,8 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         # Prefer selectCard by default; fallback to projectCard if paymentOptions provided.
         if waiting_for.get('paymentOptions'):
             payment = _build_payment_with_options(player_state, card, waiting_for.get('paymentOptions', {}))
+            if payment is None:
+                return {'type': 'pass'}
             return {'type': 'projectCard', 'card': name, 'payment': payment}
         return {'type': 'card', 'cards': [name]}
     elif input_type == 'selectCard' and 'convert plants' in _title_text(waiting_for.get('title', '')).lower():
@@ -734,48 +877,17 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         cards = waiting_for.get('cards', [])
         if not cards:
             return {'type': 'pass'}
-
-        min_cards = int(waiting_for.get('min', 1) or 1)
-        max_cards = int(waiting_for.get('max', len(cards)) or len(cards))
-        min_cards = max(0, min(min_cards, len(cards)))
-        max_cards = max(min_cards, min(max_cards, len(cards)))
-
-        selected: List[str] = []
-        normalized = normalize_index(action_index, 702) if action_index is not None else 0
-        if normalized > 0:
-            for i, card in enumerate(cards):
-                if (normalized >> i) & 1:
-                    name = str(card.get('name', '') or '')
-                    if name:
-                        selected.append(name)
-            if len(selected) > max_cards:
-                selected = selected[:max_cards]
-
-        if len(selected) < min_cards:
-            # Conservative default: sell the cheapest cards first.
-            ranked = sorted(
-                cards,
-                key=lambda c: (int(c.get('calculatedCost', c.get('cost', 0)) or 0), str(c.get('name', '')))
-            )
-            for card in ranked:
-                name = str(card.get('name', '') or '')
-                if not name or name in selected:
-                    continue
-                selected.append(name)
-                if len(selected) >= min_cards:
-                    break
-
-        card_names = selected[:max_cards]
-        if not card_names:
+        selected_names = _select_patents_to_sell(cards, waiting_for, player_state, action_index)
+        if not selected_names:
             return {'type': 'pass'}
-        return {'type': 'card', 'cards': card_names}
+        return {'type': 'card', 'cards': selected_names}
     else:
         # Fallback: return a pass/option action
         return {'type': 'option'}
 
 # --- End Action Response Builder ---
 
-def _calculate_card_payment(player_state: Dict[str, Any], card: Dict[str, Any]) -> Dict[str, Any]:
+def _calculate_card_payment(player_state: Dict[str, Any], card: Dict[str, Any]) -> Optional[Dict[str, int]]:
     """Calculate optimal payment for a card based on player resources"""
     player = player_state.get('thisPlayer', {})
     player_mc = player.get('megaCredits', 0)
@@ -798,7 +910,7 @@ def _calculate_card_payment(player_state: Dict[str, Any], card: Dict[str, Any]) 
     
     cost_remaining = cost
 
-    # Use steel for Building tags
+    # Use steel for Building tags (floor units first; top-up handled later if needed)
     if tags.get('Building') and player_steel > 0:
         usable_steel_value = player_steel * steel_value
         steel_to_pay = min(cost_remaining, usable_steel_value)
@@ -806,7 +918,7 @@ def _calculate_card_payment(player_state: Dict[str, Any], card: Dict[str, Any]) 
         payment['steel'] = steel_units
         cost_remaining -= steel_units * steel_value
 
-    # Use titanium for Space tags
+    # Use titanium for Space tags (floor units first; top-up handled later if needed)
     if tags.get('Space') and player_titanium > 0:
         usable_titanium_value = player_titanium * titanium_value
         titanium_to_pay = min(cost_remaining, usable_titanium_value)
@@ -820,12 +932,36 @@ def _calculate_card_payment(player_state: Dict[str, Any], card: Dict[str, Any]) 
         payment['heat'] = int(heat_to_pay)
         cost_remaining -= heat_to_pay
 
-    # Pay remainder with MegaCredits
-    payment['megaCredits'] = max(0, cost_remaining)
-    
-    # If we can't afford the card, return None to indicate it should be skipped
-    if payment['megaCredits'] > player_mc:
-        # logger.info(f"Cannot afford card: cost={cost}, player_mc={player_mc}, payment={payment}")
+    # Pay remainder with MegaCredits first
+    if cost_remaining > 0:
+        pay_mc = min(cost_remaining, player_mc)
+        payment['megaCredits'] = int(pay_mc)
+        cost_remaining -= pay_mc
+
+    # If still short, top-up with extra steel/titanium units (legal overpay).
+    if cost_remaining > 0:
+        remaining_steel = max(0, int(player_steel - payment.get('steel', 0)))
+        remaining_titanium = max(0, int(player_titanium - payment.get('titanium', 0)))
+        best = None
+        for add_steel in range(remaining_steel + 1):
+            steel_value_paid = add_steel * max(1, int(steel_value))
+            for add_titanium in range(remaining_titanium + 1):
+                value_paid = steel_value_paid + (add_titanium * max(1, int(titanium_value)))
+                if value_paid < cost_remaining:
+                    continue
+                units = add_steel + add_titanium
+                overpay = value_paid - cost_remaining
+                score = (overpay, units)
+                if best is None or score < best[0]:
+                    best = (score, add_steel, add_titanium, value_paid)
+        if best is not None:
+            _, add_steel, add_titanium, value_paid = best
+            payment['steel'] = int(payment.get('steel', 0) + add_steel)
+            payment['titanium'] = int(payment.get('titanium', 0) + add_titanium)
+            cost_remaining -= int(value_paid)
+
+    # Still short means unaffordable with legal resources.
+    if cost_remaining > 0:
         return None
     
     # Ensure all values are integers
@@ -834,7 +970,7 @@ def _calculate_card_payment(player_state: Dict[str, Any], card: Dict[str, Any]) 
         
     return payment
 
-def _build_payment_with_options(player_state: Dict[str, Any], card: Dict[str, Any], payment_options: Dict[str, Any]) -> Dict[str, Any]:
+def _build_payment_with_options(player_state: Dict[str, Any], card: Dict[str, Any], payment_options: Dict[str, Any]) -> Optional[Dict[str, int]]:
     """Build a payment dict honoring paymentOptions from waiting_for."""
     if player_state is None:
         player_state = {}
@@ -862,7 +998,7 @@ def _build_payment_with_options(player_state: Dict[str, Any], card: Dict[str, An
 
     cost_remaining = cost
 
-    # Use steel for Building tags if allowed
+    # Use steel for Building tags if allowed (floor units first; top-up handled later)
     if tags.get('Building') and allowed('steel') and player_steel > 0:
         usable_steel_value = player_steel * steel_value
         steel_to_pay = min(cost_remaining, usable_steel_value)
@@ -870,7 +1006,7 @@ def _build_payment_with_options(player_state: Dict[str, Any], card: Dict[str, An
         payment['steel'] = int(steel_units)
         cost_remaining -= steel_units * steel_value
 
-    # Use titanium for Space tags if allowed
+    # Use titanium for Space tags if allowed (floor units first; top-up handled later)
     if tags.get('Space') and allowed('titanium') and player_titanium > 0:
         usable_titanium_value = player_titanium * titanium_value
         titanium_to_pay = min(cost_remaining, usable_titanium_value)
@@ -895,7 +1031,62 @@ def _build_payment_with_options(player_state: Dict[str, Any], card: Dict[str, An
         payment['megaCredits'] = int(min(cost_remaining, player_mc))
         cost_remaining -= payment['megaCredits']
 
+    # If still short, top-up with extra steel/titanium units (legal overpay).
+    if cost_remaining > 0:
+        topup_resources: List[Tuple[str, int, int]] = []
+        if tags.get('Building') and allowed('steel'):
+            remaining_steel = max(0, int(player_steel - payment.get('steel', 0)))
+            if remaining_steel > 0:
+                topup_resources.append(('steel', remaining_steel, max(1, int(steel_value))))
+        if tags.get('Space') and allowed('titanium'):
+            remaining_titanium = max(0, int(player_titanium - payment.get('titanium', 0)))
+            if remaining_titanium > 0:
+                topup_resources.append(('titanium', remaining_titanium, max(1, int(titanium_value))))
+
+        if topup_resources:
+            best = None
+            if len(topup_resources) == 1:
+                name, max_units, unit_value = topup_resources[0]
+                for units in range(0, max_units + 1):
+                    value_paid = units * unit_value
+                    if value_paid < cost_remaining:
+                        continue
+                    overpay = value_paid - cost_remaining
+                    score = (overpay, units)
+                    if best is None or score < best[0]:
+                        best = (score, {name: units}, value_paid)
+            else:
+                (name_a, max_a, value_a), (name_b, max_b, value_b) = topup_resources[:2]
+                for units_a in range(0, max_a + 1):
+                    value_paid_a = units_a * value_a
+                    for units_b in range(0, max_b + 1):
+                        value_paid = value_paid_a + (units_b * value_b)
+                        if value_paid < cost_remaining:
+                            continue
+                        overpay = value_paid - cost_remaining
+                        score = (overpay, units_a + units_b)
+                        if best is None or score < best[0]:
+                            best = (score, {name_a: units_a, name_b: units_b}, value_paid)
+
+            if best is not None:
+                _, units_map, value_paid = best
+                for key, add_units in units_map.items():
+                    payment[key] = int(payment.get(key, 0) + int(add_units))
+                cost_remaining -= int(value_paid)
+
+    # Unaffordable under current payment options.
+    if cost_remaining > 0:
+        return None
+
     return payment
+
+def _can_afford_card_with_payment_options(
+    player_state: Optional[Dict[str, Any]],
+    card: Dict[str, Any],
+    payment_options: Optional[Dict[str, Any]],
+) -> bool:
+    payment = _build_payment_with_options(player_state or {}, card, payment_options or {})
+    return payment is not None
 
 # --- Metadata helpers for tags when missing ---
 def _metadata_loader() -> Dict[str, Dict[str, Any]]:
@@ -941,7 +1132,7 @@ def _can_afford_card(player: Dict[str, Any], card: Dict[str, Any]) -> bool:
     total_purchasing_power = player_mc
     
     # Add steel value for Building cards
-    tags = card.get('tags', {})
+    tags = card.get('tags', {}) or _metadata_tags(card.get('name', ''))
     if tags.get('Building'):
         total_purchasing_power += player_steel * steel_value
         
@@ -1002,9 +1193,10 @@ class ActionDecoder:
                     if option_type in ['selectProjectCardToPlay', 'projectCard']:
                         # Prefer concrete card actions instead of generic OR selection.
                         cards = option.get('cards', [])
+                        payment_options = option.get('paymentOptions', {})
                         affordable_indices = []
                         for j, card in enumerate(cards):
-                            if player_state and _can_afford_card(player, card):
+                            if player_state and _can_afford_card_with_payment_options(player_state, card, payment_options):
                                 affordable_indices.append(j)
                         candidate_indices = affordable_indices
                         if candidate_indices:
@@ -1128,13 +1320,13 @@ class ActionDecoder:
             elif input_type in ['projectCard', 'selectProjectCardToPlay']:
                 cards = waiting_for.get('cards', [])
                 can_pass = waiting_for.get('canPass', False)
+                payment_options = waiting_for.get('paymentOptions', {})
                 
                 # Filter out unaffordable cards
                 affordable_cards = []
                 for i, card in enumerate(cards):
                     if player_state:
-                        player = player_state.get('thisPlayer', {})
-                        if _can_afford_card(player, card):
+                        if _can_afford_card_with_payment_options(player_state, card, payment_options):
                             affordable_cards.append(i)
                     else:
                         # If no player state, assume all cards are affordable

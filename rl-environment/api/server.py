@@ -7,6 +7,7 @@ from pydantic import BaseModel
 import logging
 from typing import Dict, Any, Optional, List
 import uvicorn
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,7 @@ async def get_stats():
             "avg_eval_fitness": _safe_mean(eval_fitness_scores),
         }
         behavior_stats = _aggregate_behavior_stats(coordinator.population)
+        tournament_progress = coordinator.tournament_manager.get_progress_snapshot()
         
         # Gather recent tournament/game end screens (shallow aggregation)
         recent_end_screens = []
@@ -207,7 +209,12 @@ async def get_stats():
             "servers": server_stats,
             "evolution": evolution_stats,
             "tournaments": {
-                "active": len(coordinator.tournament_manager.active_tournaments)
+                "active": len(coordinator.tournament_manager.active_tournaments),
+                "planned_games": int(tournament_progress.get("planned_games", 0)),
+                "finished_games": int(tournament_progress.get("finished_games", 0)),
+                "successful_games": int(tournament_progress.get("successful_games", 0)),
+                "failed_games": int(tournament_progress.get("failed_games", 0)),
+                "completion_rate": float(tournament_progress.get("completion_rate", 0.0)),
             },
             "links": {
                 "end_screens_hint": "See tournament results payloads for per-game end screen URLs"
@@ -267,11 +274,13 @@ async def get_tournaments():
     for tournament_id, tournament in coordinator.tournament_manager.active_tournaments.items():
         tournament_info = await coordinator.tournament_manager.get_tournament_status(tournament_id)
         active_tournaments.append(tournament_info)
+    progress = coordinator.tournament_manager.get_progress_snapshot()
 
     # NOTE: Completed tournament results (with game end-screen URLs) are returned by the coordinator during evaluations.
     return {
         "active_tournaments": active_tournaments,
-        "total_active": len(active_tournaments)
+        "total_active": len(active_tournaments),
+        "progress": progress,
     }
 
 @app.get("/servers")
@@ -369,6 +378,11 @@ async def play_human_vs_generation(request: HumanVsGenerationRequest):
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     """HTML dashboard focused on RL behavior and training diagnostics."""
+    try:
+        auto_refresh_ms = max(1000, int(os.getenv("DASHBOARD_REFRESH_MS", "5000")))
+    except Exception:
+        auto_refresh_ms = 5000
+
     html_content = """
     <!DOCTYPE html>
     <html>
@@ -737,7 +751,7 @@ async def dashboard():
         </div>
 
         <script>
-            const AUTO_REFRESH_MS = 30000;
+            const AUTO_REFRESH_MS = __AUTO_REFRESH_MS__;
 
             function fmt(value, digits = 2) {
                 const n = Number(value ?? 0);
@@ -761,6 +775,9 @@ async def dashboard():
             function updateTrainingCards(stats) {
                 const p = stats.population || {};
                 const t = stats.tournaments || {};
+                const planned = Number(t.planned_games || 0);
+                const finished = Number(t.finished_games || 0);
+                const progressPct = planned > 0 ? (finished / planned) : 0;
                 const html = [
                     metricCard('Generation', fmt(p.current_generation || 0, 0)),
                     metricCard('Population', fmt(p.size || 0, 0)),
@@ -768,6 +785,8 @@ async def dashboard():
                     metricCard('Avg Eval Fitness', fmt(p.avg_eval_fitness || 0, 2)),
                     metricCard('Total Games', fmt(p.total_games_played || 0, 0)),
                     metricCard('Active Tournaments', fmt(t.active || 0, 0)),
+                    metricCard('Eval Progress', `${fmt(finished, 0)}/${fmt(planned, 0)}`, pct(progressPct, 1)),
+                    metricCard('Eval Failures', fmt(t.failed_games || 0, 0), `${fmt(t.successful_games || 0, 0)} successful`),
                 ].join('');
                 document.getElementById('training-stats').innerHTML = html;
             }
@@ -1227,6 +1246,7 @@ async def dashboard():
     </body>
     </html>
     """
+    html_content = html_content.replace("__AUTO_REFRESH_MS__", str(auto_refresh_ms))
     return HTMLResponse(content=html_content)
 
 async def start_api_server(coordinator_instance):

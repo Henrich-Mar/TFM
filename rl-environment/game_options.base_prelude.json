@@ -45,7 +45,7 @@
   "showOtherPlayersVP": false,
   "showTimers": true,
   "shuffleMapOption": true,
-  "solarPhaseOption": true,
+  "solarPhaseOption": false,
   "soloTR": false,
   "startingCeos": 0,
   "startingCorporations": 2,

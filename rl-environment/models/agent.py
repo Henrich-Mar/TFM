@@ -315,19 +315,64 @@ class RLAgent:
             return available_actions
 
         waiting_for = player_state.get('waitingFor', {}) if player_state else {}
+        waiting_type = str(waiting_for.get('type', ''))
+
+        # Keep pass available during explicit selection flows (draft/research/buy/keep).
+        if waiting_type in ['card', 'selectCard', 'projectCard', 'selectProjectCardToPlay', 'initialCards']:
+            title = waiting_for.get('title', '')
+            if isinstance(title, dict):
+                title = title.get('message', '')
+            title_l = str(title).lower()
+            button_label = str(waiting_for.get('buttonLabel', '') or '').lower()
+            if (
+                waiting_for.get('showOnlyInLearnerMode', False)
+                or waiting_for.get('selectBlueCardAction', False)
+                or 'prelude' in title_l
+                or 'research' in title_l
+                or 'draft' in title_l
+                or 'select' in title_l
+                or button_label in ['keep', 'buy', 'select', 'choose', 'discard', 'confirm', 'ok', 'save']
+                or (
+                    'min' in waiting_for
+                    and 'max' in waiting_for
+                    and button_label in ['keep', 'buy', 'select', 'choose', 'confirm', 'ok', 'save', 'research']
+                )
+            ):
+                return available_actions
+
         if waiting_for.get('type') == 'or':
             options = waiting_for.get('options', [])
             select_option_base = self.action_decoder.action_types.get('SELECT_OPTION', 200)
             filtered = list(non_pass_actions)
+            pass_option_actions = set()
+            sell_option_actions = set()
             for i, option in enumerate(options):
                 title = option.get('title', '')
                 if isinstance(title, dict):
                     title = title.get('message', '')
-                if 'pass' in str(title).lower():
+                title_l = str(title).lower()
+                if 'pass' in title_l:
                     pass_action = select_option_base + i
                     if pass_action in filtered:
                         filtered.remove(pass_action)
+                    pass_option_actions.add(pass_action)
+                if 'sell patents' in title_l:
+                    sell_option_actions.add(select_option_base + i)
+
+            def _is_sell_patents_action(action_idx: int) -> bool:
+                return int(action_idx) == 702 or int(action_idx) in sell_option_actions
+
+            non_pass_non_pass_option = [a for a in non_pass_actions if int(a) not in pass_option_actions]
+            productive_actions = [a for a in non_pass_non_pass_option if not _is_sell_patents_action(int(a))]
+
+            # If the only alternative to pass is sell patents, keep pass.
+            if not productive_actions:
+                return available_actions
             return filtered if filtered else available_actions
+
+        # If the only non-pass action is sell patents, keep pass to avoid forced selling.
+        if non_pass_actions and all(int(a) == 702 for a in non_pass_actions):
+            return available_actions
 
         return non_pass_actions
 

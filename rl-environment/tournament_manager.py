@@ -37,6 +37,7 @@ class TournamentManager:
     def __init__(self, game_cluster: GameServerCluster):
         self.game_cluster = game_cluster
         self.active_tournaments: Dict[str, TournamentBracket] = {}
+        self.tournament_progress: Dict[str, Dict[str, Any]] = {}
         
     def create_tournaments(self, 
                          population: List[RLAgent], 
@@ -66,6 +67,16 @@ class TournamentManager:
             
             tournaments.append(tournament)
             self.active_tournaments[tournament.id] = tournament
+            planned_games = len(self._create_game_combinations(tournament_agents, games_per_evaluation))
+            self.tournament_progress[tournament.id] = {
+                "tournament_id": tournament.id,
+                "planned_games": int(planned_games),
+                "finished_games": 0,
+                "successful_games": 0,
+                "failed_games": 0,
+                "status": "queued",
+                "created_at": tournament.created_at.isoformat(),
+            }
         
         logger.info(f"Created {len(tournaments)} tournaments with {tournament_size} agents each")
         return tournaments
@@ -76,6 +87,10 @@ class TournamentManager:
         
         start_time = datetime.now()
         games = []
+        game_combinations: List[List[RLAgent]] = []
+        finished_games = 0
+        successful_games = 0
+        failed_games = 0
         
         try:
             # Create all possible 4-player combinations from tournament agents
@@ -83,6 +98,15 @@ class TournamentManager:
                 tournament.agents,
                 tournament.games_per_matchup,
             )
+            self.tournament_progress[tournament.id] = {
+                "tournament_id": tournament.id,
+                "planned_games": len(game_combinations),
+                "finished_games": 0,
+                "successful_games": 0,
+                "failed_games": 0,
+                "status": "running",
+                "created_at": tournament.created_at.isoformat(),
+            }
             
             # Run games with controlled concurrency (configurable via env)
             try:
@@ -92,18 +116,30 @@ class TournamentManager:
             semaphore = asyncio.Semaphore(max(1, concurrency))
             
             game_tasks = [
-                self._run_single_game_with_semaphore(semaphore, agents, tournament.id)
+                asyncio.create_task(self._run_single_game_with_semaphore(semaphore, agents, tournament.id))
                 for agents in game_combinations
             ]
             
-            game_results = await asyncio.gather(*game_tasks, return_exceptions=True)
-            
-            # Filter successful games
-            for result in game_results:
-                if isinstance(result, GameResult):
+            for task in asyncio.as_completed(game_tasks):
+                try:
+                    result = await task
                     games.append(result)
-                else:
-                    logger.error(f"Game failed in tournament {tournament.id}: {result}")
+                    if bool(getattr(result, "completed", False)):
+                        successful_games += 1
+                    else:
+                        failed_games += 1
+                except Exception as e:
+                    failed_games += 1
+                    logger.error(f"Game failed in tournament {tournament.id}: {e}")
+                finally:
+                    finished_games += 1
+                    if tournament.id in self.tournament_progress:
+                        self.tournament_progress[tournament.id].update({
+                            "finished_games": int(finished_games),
+                            "successful_games": int(successful_games),
+                            "failed_games": int(failed_games),
+                            "status": "running",
+                        })
             
         except Exception as e:
             logger.error(f"Tournament {tournament.id} failed: {e}")
@@ -111,6 +147,8 @@ class TournamentManager:
             # Clean up
             if tournament.id in self.active_tournaments:
                 del self.active_tournaments[tournament.id]
+            if tournament.id in self.tournament_progress:
+                del self.tournament_progress[tournament.id]
         
         duration = (datetime.now() - start_time).total_seconds()
         
@@ -119,8 +157,10 @@ class TournamentManager:
             'agents': [agent.id for agent in tournament.agents],
             'games': [self._game_result_to_dict(game) for game in games],
             'duration_seconds': duration,
-            'completed_games': len(games),
-            'total_planned_games': len(game_combinations)
+            'completed_games': int(finished_games),
+            'successful_games': int(successful_games),
+            'failed_games': int(failed_games),
+            'total_planned_games': len(game_combinations),
         }
         
         logger.info(f"Tournament {tournament.id} completed: {len(games)} games in {duration:.1f}s")
@@ -465,10 +505,32 @@ class TournamentManager:
             return None
         
         tournament = self.active_tournaments[tournament_id]
+        progress = dict(self.tournament_progress.get(tournament_id, {}))
         return {
             'tournament_id': tournament_id,
             'agent_count': len(tournament.agents),
             'games_per_matchup': tournament.games_per_matchup,
             'created_at': tournament.created_at.isoformat(),
-            'status': 'running'
+            'status': progress.get('status', 'running'),
+            'planned_games': int(progress.get('planned_games', 0)),
+            'finished_games': int(progress.get('finished_games', 0)),
+            'successful_games': int(progress.get('successful_games', 0)),
+            'failed_games': int(progress.get('failed_games', 0)),
+        }
+
+    def get_progress_snapshot(self) -> Dict[str, Any]:
+        """Aggregate in-flight tournament progress for dashboard polling."""
+        entries = list(self.tournament_progress.values())
+        planned_games = sum(int(e.get("planned_games", 0)) for e in entries)
+        finished_games = sum(int(e.get("finished_games", 0)) for e in entries)
+        successful_games = sum(int(e.get("successful_games", 0)) for e in entries)
+        failed_games = sum(int(e.get("failed_games", 0)) for e in entries)
+        completion_rate = (float(finished_games) / float(planned_games)) if planned_games > 0 else 0.0
+        return {
+            "active_tournaments": len(entries),
+            "planned_games": int(planned_games),
+            "finished_games": int(finished_games),
+            "successful_games": int(successful_games),
+            "failed_games": int(failed_games),
+            "completion_rate": completion_rate,
         }

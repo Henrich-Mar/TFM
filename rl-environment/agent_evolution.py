@@ -5,7 +5,7 @@ import numpy as np
 import random
 import logging
 from typing import List, Dict, Any, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import asyncio
 import torch
 
@@ -220,7 +220,8 @@ class EvolutionManager:
     
     def _clone_agent(self, agent: RLAgent) -> RLAgent:
         """Create a copy of an agent"""
-        new_agent = RLAgent(agent.config)
+        # Clone config by value to avoid shared mutable references between agents.
+        new_agent = RLAgent(AgentConfig(**asdict(agent.config)))
         
         # Copy network weights
         new_agent.network.load_state_dict(agent.network.state_dict())

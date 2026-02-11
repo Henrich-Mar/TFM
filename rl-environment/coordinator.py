@@ -91,6 +91,23 @@ class RLCoordinator:
         )
         self.checkpoint_state_path = os.path.join(self.checkpoint_root, "state.json")
         self.checkpoint_population_dir = os.path.join(self.checkpoint_root, "population")
+
+    def _resolve_global_game_concurrency(self) -> int:
+        configured = str(os.getenv("GLOBAL_GAME_CONCURRENCY", "0")).strip()
+        if configured:
+            try:
+                configured_value = int(configured)
+                if configured_value > 0:
+                    return configured_value
+            except Exception:
+                pass
+
+        try:
+            per_server = int(os.getenv("GLOBAL_GAME_CONCURRENCY_PER_SERVER", "4"))
+        except Exception:
+            per_server = 4
+        per_server = max(1, per_server)
+        return max(1, len(self.config.game_servers) * per_server)
         
     async def initialize(self):
         """Initialize the RL system"""
@@ -204,9 +221,19 @@ class RLCoordinator:
             self.config.games_per_evaluation
         )
         
-        # Run tournaments in parallel
+        # Run tournaments in parallel with a global cap on in-flight games.
+        global_game_limit = self._resolve_global_game_concurrency()
+        global_game_semaphore = asyncio.Semaphore(global_game_limit)
+        logger.info(
+            "Evaluation concurrency: GLOBAL_GAME_CONCURRENCY=%d, TOURNAMENT_CONCURRENCY=%s",
+            global_game_limit,
+            os.getenv("TOURNAMENT_CONCURRENCY", "3"),
+        )
         all_results = await asyncio.gather(*[
-            self.tournament_manager.run_tournament(tournament)
+            self.tournament_manager.run_tournament(
+                tournament,
+                global_game_semaphore=global_game_semaphore,
+            )
             for tournament in tournaments
         ])
         

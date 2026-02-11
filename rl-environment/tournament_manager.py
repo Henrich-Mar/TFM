@@ -81,7 +81,11 @@ class TournamentManager:
         logger.info(f"Created {len(tournaments)} tournaments with {tournament_size} agents each")
         return tournaments
     
-    async def run_tournament(self, tournament: TournamentBracket) -> Dict[str, Any]:
+    async def run_tournament(
+        self,
+        tournament: TournamentBracket,
+        global_game_semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> Dict[str, Any]:
         """Run a complete tournament and return results"""
         logger.info(f"Starting tournament {tournament.id} with {len(tournament.agents)} agents")
         
@@ -116,7 +120,14 @@ class TournamentManager:
             semaphore = asyncio.Semaphore(max(1, concurrency))
             
             game_tasks = [
-                asyncio.create_task(self._run_single_game_with_semaphore(semaphore, agents, tournament.id))
+                asyncio.create_task(
+                    self._run_single_game_with_semaphore(
+                        semaphore,
+                        global_game_semaphore,
+                        agents,
+                        tournament.id,
+                    )
+                )
                 for agents in game_combinations
             ]
             
@@ -193,12 +204,18 @@ class TournamentManager:
 
         return combinations
     
-    async def _run_single_game_with_semaphore(self, 
-                                            semaphore: asyncio.Semaphore,
-                                            agents: List[RLAgent],
-                                            tournament_id: str) -> GameResult:
+    async def _run_single_game_with_semaphore(
+        self,
+        semaphore: asyncio.Semaphore,
+        global_game_semaphore: Optional[asyncio.Semaphore],
+        agents: List[RLAgent],
+        tournament_id: str,
+    ) -> GameResult:
         """Run a single game with concurrency control"""
         async with semaphore:
+            if global_game_semaphore is not None:
+                async with global_game_semaphore:
+                    return await self._run_single_game(agents, tournament_id)
             return await self._run_single_game(agents, tournament_id)
     
     async def _run_single_game(self, agents: List[RLAgent], tournament_id: str) -> GameResult:

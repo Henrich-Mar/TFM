@@ -154,6 +154,244 @@ def _select_patents_to_sell(
             break
     return selected_default[:max_cards]
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value if value is not None else default)
+    except Exception:
+        return int(default)
+
+def _normalize_tag_name(tag: Any) -> str:
+    raw = str(tag or '').strip()
+    if not raw:
+        return ''
+    if raw and raw[0].islower():
+        raw = raw.capitalize()
+    return raw
+
+def _card_tags(card: Dict[str, Any]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    tags = card.get('tags')
+    if isinstance(tags, dict):
+        for k, v in tags.items():
+            if v:
+                name = _normalize_tag_name(k)
+                if name:
+                    out[name] = 1
+    elif isinstance(tags, list):
+        for tag in tags:
+            name = _normalize_tag_name(tag)
+            if name:
+                out[name] = 1
+    if out:
+        return out
+    return _metadata_tags(str(card.get('name', '') or ''))
+
+def _initial_option_role(option: Dict[str, Any], index: int) -> str:
+    title_l = _title_text(option.get('title', '')).lower()
+    if 'corporation' in title_l:
+        return 'corporation'
+    if 'prelude' in title_l:
+        return 'prelude'
+    if 'ceo' in title_l:
+        return 'ceo'
+    if 'initial cards' in title_l or 'cards to buy' in title_l or 'project' in title_l:
+        return 'project'
+    min_cards = _safe_int(option.get('min', 0), 0)
+    max_cards = _safe_int(option.get('max', 0), 0)
+    if min_cards == 2 and max_cards == 2:
+        return 'prelude'
+    if min_cards == 1 and max_cards == 1 and index == 0:
+        return 'corporation'
+    return 'project' if index >= 2 else 'unknown'
+
+def _score_initial_card(
+    card: Dict[str, Any],
+    role: str,
+    project_tag_counts: Dict[str, int],
+) -> float:
+    name = str(card.get('name', '') or '')
+    cost = float(_card_cost(card))
+    vp = float(_card_vp(card))
+    tags = _card_tags(card)
+    starting_mc = float(_safe_int(card.get('startingMegaCredits', card.get('startingMegacredits', 0)), 0))
+    card_cost_override = float(_safe_int(card.get('cardCost', 3), 3))
+
+    score = 0.0
+    if role == 'project':
+        score += vp * 6.0
+        score += max(0.0, 20.0 - cost) * 0.18
+    else:
+        score += starting_mc * 0.45
+        score += vp * 4.0
+        if role == 'corporation':
+            score -= max(0.0, card_cost_override - 3.0) * 14.0
+            score += max(0.0, 3.0 - card_cost_override) * 6.0
+
+    # Lightweight tag heuristics. For corporation/prelude, boost tags that match offered projects.
+    tag_weights = {
+        'Science': 2.3,
+        'Building': 1.9,
+        'Space': 1.8,
+        'Plant': 1.6,
+        'Earth': 1.3,
+        'Microbe': 1.0,
+        'Animal': 1.0,
+        'Jovian': 1.0,
+    }
+    for tag_name, weight in tag_weights.items():
+        if not tags.get(tag_name):
+            continue
+        if role == 'project':
+            score += weight
+        else:
+            score += weight * (1.0 + 0.15 * float(project_tag_counts.get(tag_name, 0)))
+
+    # Deterministic tiny tie-breaker by card name.
+    score += (sum(ord(c) for c in name) % 100) * 1e-5
+    return score
+
+def _select_initial_card_names(
+    option: Dict[str, Any],
+    role: str,
+    project_tag_counts: Dict[str, int],
+    cap: Optional[int] = None,
+    force_minimum: Optional[int] = None,
+) -> List[str]:
+    cards = option.get('cards', []) or []
+    if not cards:
+        return []
+
+    min_cards = max(0, min(_safe_int(option.get('min', 0), 0), len(cards)))
+    max_cards = max(min_cards, min(_safe_int(option.get('max', len(cards)), len(cards)), len(cards)))
+    if force_minimum is not None:
+        min_cards = max(min_cards, int(force_minimum))
+        min_cards = min(min_cards, max_cards)
+
+    target = max_cards
+    if cap is not None:
+        target = min(target, max(0, int(cap)))
+    target = max(min_cards, min(target, max_cards))
+
+    ranked_cards = sorted(
+        cards,
+        key=lambda c: _score_initial_card(c, role, project_tag_counts),
+        reverse=True,
+    )
+
+    selected_names: List[str] = []
+    for card in ranked_cards:
+        name = str(card.get('name', '') or '')
+        if not name or name in selected_names:
+            continue
+        selected_names.append(name)
+        if len(selected_names) >= target:
+            break
+
+    if len(selected_names) < min_cards:
+        for card in cards:
+            name = str(card.get('name', '') or '')
+            if not name or name in selected_names:
+                continue
+            selected_names.append(name)
+            if len(selected_names) >= min_cards:
+                break
+
+    return selected_names[:max_cards]
+
+def _build_initial_setup_response(waiting_for: Dict[str, Any], player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    options = waiting_for.get('options', []) or []
+    if not options:
+        return {'type': 'initialCards', 'responses': []}
+
+    roles = [_initial_option_role(opt, idx) for idx, opt in enumerate(options)]
+
+    # Gather project-tag distribution for simple corp/prelude synergy.
+    project_tag_counts: Dict[str, int] = {}
+    for idx, option in enumerate(options):
+        if roles[idx] != 'project':
+            continue
+        for card in option.get('cards', []) or []:
+            for tag_name in _card_tags(card).keys():
+                project_tag_counts[tag_name] = int(project_tag_counts.get(tag_name, 0)) + 1
+        break
+
+    responses: List[Optional[Dict[str, Any]]] = [None] * len(options)
+    selected_corp_card: Optional[Dict[str, Any]] = None
+
+    # Pick corporation first (needed for card-buy budget).
+    for idx, option in enumerate(options):
+        if roles[idx] != 'corporation':
+            continue
+        chosen = _select_initial_card_names(option, 'corporation', project_tag_counts, cap=1, force_minimum=1)
+        responses[idx] = {'type': 'card', 'cards': chosen}
+        if chosen:
+            for candidate in option.get('cards', []) or []:
+                if str(candidate.get('name', '') or '') == chosen[0]:
+                    selected_corp_card = candidate
+                    break
+        break
+
+    for idx, option in enumerate(options):
+        if responses[idx] is not None:
+            continue
+        role = roles[idx]
+
+        if role == 'prelude':
+            min_cards = _safe_int(option.get('min', 2), 2)
+            max_cards = _safe_int(option.get('max', min_cards), min_cards)
+            chosen = _select_initial_card_names(option, 'prelude', project_tag_counts, cap=max_cards, force_minimum=min_cards)
+            responses[idx] = {'type': 'card', 'cards': chosen}
+            continue
+
+        if role == 'ceo':
+            chosen = _select_initial_card_names(option, 'ceo', project_tag_counts, cap=1, force_minimum=1)
+            responses[idx] = {'type': 'card', 'cards': chosen}
+            continue
+
+        if role == 'project':
+            # Keep project cards under the hard affordability check:
+            # selected_count * card_cost <= selected_corporation.startingMegaCredits
+            player = (player_state or {}).get('thisPlayer', {}) if isinstance(player_state, dict) else {}
+            corp_start_mc = _safe_int(
+                (selected_corp_card or {}).get('startingMegaCredits', player.get('megaCredits', 40)),
+                40,
+            )
+            card_cost = _safe_int(
+                (selected_corp_card or {}).get('cardCost', player.get('cardCost', 3)),
+                3,
+            )
+            card_cost = max(1, card_cost)
+
+            min_cards = _safe_int(option.get('min', 0), 0)
+            max_cards = _safe_int(option.get('max', len(option.get('cards', []) or [])), len(option.get('cards', []) or []))
+            affordability_cap = max(0, corp_start_mc // card_cost)
+            keep_cap = min(max_cards, affordability_cap, 6)
+            if keep_cap >= 2:
+                keep_cap = max(2, keep_cap)
+
+            scored = sorted(
+                option.get('cards', []) or [],
+                key=lambda c: _score_initial_card(c, 'project', project_tag_counts),
+                reverse=True,
+            )
+            strong_cards = [c for c in scored if _score_initial_card(c, 'project', project_tag_counts) >= 1.0]
+            desired = min(keep_cap, len(strong_cards)) if keep_cap > 0 else 0
+            if keep_cap >= 2:
+                desired = max(desired, 2)
+            desired = max(min_cards, min(keep_cap, desired))
+            chosen = _select_initial_card_names(option, 'project', project_tag_counts, cap=desired, force_minimum=min_cards)
+            responses[idx] = {'type': 'card', 'cards': chosen}
+            continue
+
+        # Unknown initial option type; use safe generic behavior.
+        responses[idx] = build_response_for_input(option, None, player_state)
+
+    final_responses: List[Dict[str, Any]] = [
+        response if response is not None else {'type': 'pass'}
+        for response in responses
+    ]
+    return {'type': 'initialCards', 'responses': final_responses}
+
 # --- Action Response Builder for Terraforming Mars RL Agent ---
 def build_response_for_input(waiting_for, action_index=None, player_state=None):
     """
@@ -428,6 +666,8 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         responses = [build_response_for_input(opt, None, player_state) for opt in options]
         return {'type': 'and', 'responses': responses}
     elif input_type == 'initialCards':
+        if action_index is None or _safe_int(action_index, -1) == 800:
+            return _build_initial_setup_response(waiting_for, player_state)
         options = waiting_for.get('options', [])
         # Use action_index to determine selections if available
         if action_index is not None:
@@ -1170,6 +1410,13 @@ class ActionDecoder:
             'Power Plant:SP', 'Asteroid:SP', 'Aquifer', 'Greenery', 'City', 'Colony',
             'Air Scrapping', 'Buffer Gas', 'Moon Habitat', 'Moon Mine', 'Moon Road'
         ]
+
+    def build_initial_setup_response(self, player_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        waiting_for = player_state.get('waitingFor', {}) if player_state else {}
+        input_type = waiting_for.get('type', '')
+        if input_type not in ['initialCards', 'selectInitialCards']:
+            return None
+        return _build_initial_setup_response(waiting_for, player_state)
     
     def get_available_actions(self, player_state: Dict[str, Any]) -> List[int]:
         """Get list of available action indices for current game state"""

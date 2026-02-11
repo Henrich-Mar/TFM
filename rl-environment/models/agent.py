@@ -145,7 +145,10 @@ class RLAgent:
                 game_instance.get_public_player_api_url(player_id),
                 game_instance.get_internal_player_api_url(player_id),
             )
-            
+
+            # Dedicated startup flow for corporation/prelude/initial card selection.
+            await self._run_initial_setup(game_instance, player_id)
+             
             # Game loop
             while True:
                 # Get current game state
@@ -186,6 +189,41 @@ class RLAgent:
         delay = max(0.0, float(seconds or 0.0))
         if delay > 0.0:
             await asyncio.sleep(delay)
+
+    async def _run_initial_setup(self, game_instance: GameInstance, player_id: str, max_attempts: int = 12) -> bool:
+        """
+        Attempt to submit initial setup choices once near game start.
+        Returns True only when startup selections were successfully submitted.
+        """
+        attempts = max(1, int(max_attempts))
+        for _ in range(attempts):
+            try:
+                player_state = await game_instance.get_player_state(player_id)
+            except Exception:
+                await self._sleep_if_needed(self.poll_interval_sec)
+                continue
+
+            waiting_for = player_state.get('waitingFor', {}) if isinstance(player_state, dict) else {}
+            waiting_type = str(waiting_for.get('type', ''))
+            if waiting_type in ['initialCards', 'selectInitialCards']:
+                setup_action = self.action_decoder.build_initial_setup_response(player_state)
+                if not setup_action:
+                    return False
+                logger.info(f"Agent {self.id[:8]} startup setup action: {setup_action}")
+                if await game_instance.send_player_input(player_id, setup_action):
+                    self._record_action_choice(800, setup_action, player_state)
+                    await self._sleep_if_needed(self.post_move_sleep_sec)
+                    return True
+                await self._sleep_if_needed(max(self.failure_pause_sec, self.poll_interval_sec))
+                continue
+
+            # If startup input is not currently visible, let normal loop handle the rest.
+            if waiting_for:
+                return False
+
+            await self._sleep_if_needed(self.poll_interval_sec)
+
+        return False
 
     def _log_stuck_context(self, game_instance: GameInstance, player_id: str, player_state: Dict[str, Any], reason: str):
         now = time.monotonic()
@@ -231,6 +269,22 @@ class RLAgent:
             waiting_type = waiting_for.get('type', 'unknown')
             logger.info(f"Agent {self.id[:8]} making move for input type: {waiting_type}")
 
+            if waiting_type in ['initialCards', 'selectInitialCards']:
+                initial_action = self.action_decoder.build_initial_setup_response(player_state)
+                if initial_action:
+                    self._bump_decision_stat('policy_attempts')
+                    self._bump_decision_stat('policy_sampled_actions')
+                    logger.info(f"Agent {self.id[:8]} attempting startup setup action: {initial_action}")
+                    if await game_instance.send_player_input(player_id, initial_action):
+                        self._bump_decision_stat('policy_successes')
+                        self._record_action_choice(800, initial_action, player_state)
+                        logger.info(f"Agent {self.id[:8]} startup setup action succeeded")
+                        await self._sleep_if_needed(self.post_move_sleep_sec)
+                        return
+                    self._bump_decision_stat('policy_rejections')
+                    self._log_stuck_context(game_instance, player_id, player_state, "startup_setup_rejected")
+                    await self._sleep_if_needed(self.failure_pause_sec)
+
             # 1. Try a policy-driven action
             policy_action, policy_action_idx, sampled_from_policy = await self._get_action_from_network(
                 state_vector, player_state, force_random=False
@@ -265,17 +319,28 @@ class RLAgent:
             self._bump_decision_stat('fallback_decisions')
 
             # 2. Try a broader set of alternative actions, excluding already-rejected choices.
-            available_actions = self.action_decoder.get_available_actions(player_state)
-            available_actions = self._filter_pass_actions(available_actions, player_state)
+            pass_base = int(self.action_decoder.action_types.get('PASS', 900))
+            raw_available_actions = self.action_decoder.get_available_actions(player_state)
+            can_legally_pass = any(int(a) >= pass_base for a in raw_available_actions)
+
+            available_actions = self._filter_pass_actions(raw_available_actions, player_state)
             available_actions = [a for a in available_actions if int(a) not in tried_action_indices]
+            if not available_actions and not can_legally_pass:
+                # In mandatory selection flows we cannot pass; retry non-pass actions even if tried.
+                available_actions = [a for a in self._filter_pass_actions(raw_available_actions, player_state) if int(a) < pass_base]
+
             if not available_actions:
-                # If no actions are available, just pass.
+                # If no actions are available, pass only when pass is legal.
                 self._bump_decision_stat('no_available_actions')
-                self._bump_decision_stat('fallback_passes')
-                self._record_action_choice(int(self.action_decoder.action_types.get('PASS', 900)))
-                self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions")
-                await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
-                await self._sleep_if_needed(self.post_move_sleep_sec)
+                if can_legally_pass:
+                    self._bump_decision_stat('fallback_passes')
+                    self._record_action_choice(pass_base)
+                    self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions_pass")
+                    await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
+                    await self._sleep_if_needed(self.post_move_sleep_sec)
+                else:
+                    self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions_no_pass")
+                    await self._sleep_if_needed(self.failure_pause_sec or self.poll_interval_sec)
                 return
                  
             random.shuffle(available_actions)
@@ -294,14 +359,30 @@ class RLAgent:
                         await self._sleep_if_needed(self.post_move_sleep_sec)
                         return  # Success
 
-            logger.warning(f"All random actions failed for agent {self.id[:8]}. Passing.")
-            self._bump_decision_stat('fallback_passes')
-            self._record_action_choice(int(self.action_decoder.action_types.get('PASS', 900)))
-            self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed")
+            if can_legally_pass:
+                logger.warning(f"All random actions failed for agent {self.id[:8]}. Passing.")
+                self._bump_decision_stat('fallback_passes')
+                self._record_action_choice(pass_base)
+                self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_pass")
+                await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
+                await self._sleep_if_needed(self.post_move_sleep_sec)
+                return
 
-            # 3. If all else fails, pass
-            await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
-            await self._sleep_if_needed(self.post_move_sleep_sec)
+            # Mandatory prompt and no legal pass: never send invalid pass input.
+            fallback_candidates = [a for a in self._filter_pass_actions(raw_available_actions, player_state) if int(a) < pass_base]
+            if fallback_candidates:
+                fallback_action_idx = int(fallback_candidates[0])
+                fallback_action = self.action_decoder.decode_action(fallback_action_idx, player_state)
+                if fallback_action and await game_instance.send_player_input(player_id, fallback_action):
+                    self._bump_decision_stat('fallback_random_successes')
+                    self._record_action_choice(fallback_action_idx, fallback_action, player_state)
+                    logger.info(f"Mandatory fallback action succeeded for agent {self.id[:8]}.")
+                    await self._sleep_if_needed(self.post_move_sleep_sec)
+                    return
+
+            self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_no_pass")
+            await self._sleep_if_needed(self.failure_pause_sec or self.poll_interval_sec)
+            return
 
         except Exception as e:
             logger.error(f"Error making move for agent {self.id[:8]}: {e}", exc_info=True)
@@ -928,12 +1009,38 @@ class RLAgent:
         except TypeError:
             # Backward compatibility for torch versions without weights_only argument.
             checkpoint = torch.load(path, map_location='cpu')
-        
+
+        # Restore saved AgentConfig so policy behavior and training hyperparameters
+        # remain consistent after resume/load.
+        config_payload = checkpoint.get('config', {})
+        if isinstance(config_payload, dict):
+            defaults = asdict(AgentConfig())
+            merged_config = defaults.copy()
+            for key, value in config_payload.items():
+                if key in defaults:
+                    merged_config[key] = value
+            self.config = AgentConfig(**merged_config)
+
+        # Rebuild model/optimizer from restored config before loading state dicts.
+        self.network = TerraformingMarsNetwork(self.config)
+        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.config.learning_rate)
+
         self.network.load_state_dict(checkpoint['network_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.games_played = checkpoint.get('games_played', 0)
-        self.total_victory_points = checkpoint.get('total_victory_points', 0)
-        self.wins = checkpoint.get('wins', 0)
+
+        optimizer_state = checkpoint.get('optimizer_state_dict')
+        if optimizer_state:
+            try:
+                self.optimizer.load_state_dict(optimizer_state)
+            except Exception as e:
+                logger.warning(f"Failed to restore optimizer state from {path}: {e}")
+
+        self.network.eval()
+        self.train_from_self_play = (
+            self.config.train_from_self_play and os.getenv("SELF_PLAY_LEARNING", "1") != "0"
+        )
+        self.games_played = int(checkpoint.get('games_played', 0))
+        self.total_victory_points = int(checkpoint.get('total_victory_points', 0))
+        self.wins = int(checkpoint.get('wins', 0))
     
     def get_config(self) -> Dict[str, Any]:
         """Get agent configuration"""

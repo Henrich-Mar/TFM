@@ -640,6 +640,39 @@ async def dashboard():
 
             .list li { margin-bottom: 4px; }
 
+            .server-detail-grid {
+                margin-top: 10px;
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+                gap: 6px;
+            }
+
+            .server-chip {
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                padding: 6px 8px;
+                background: #fbfdff;
+            }
+
+            .server-chip-head {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .server-chip-host {
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 12px;
+                color: var(--ink);
+            }
+
+            .server-chip-meta {
+                margin-top: 3px;
+                font-size: 11px;
+                color: var(--muted);
+            }
+
             .table-wrap {
                 overflow-x: auto;
                 margin-top: 10px;
@@ -808,12 +841,49 @@ async def dashboard():
                 const s = stats.servers || {};
                 const healthy = Number(s.healthy_servers || 0);
                 const total = Number(s.total_servers || 0);
+                const totalActive = Number(s.total_active_games || 0);
                 const healthyClass = total > 0 && healthy === total ? 'good' : 'bad';
+                const avgActivePerServer = total > 0 ? (totalActive / total) : 0;
+                const serverEntries = Array.isArray(s.servers) ? s.servers.slice() : [];
+
+                serverEntries.sort((a, b) => {
+                    const ah = String((a || {}).host || '');
+                    const bh = String((b || {}).host || '');
+                    if (ah === bh) {
+                        return Number((a || {}).port || 0) - Number((b || {}).port || 0);
+                    }
+                    return ah.localeCompare(bh);
+                });
+
+                const detailHtml = serverEntries.length
+                    ? `
+                        <div class="server-detail-grid">
+                            ${serverEntries.map((server) => {
+                                const host = String((server || {}).host || 'unknown');
+                                const port = Number((server || {}).port || 0);
+                                const active = Number((server || {}).active_games || 0);
+                                const healthyServer = Boolean((server || {}).healthy);
+                                const stateClass = healthyServer ? 'good' : 'bad';
+                                const stateLabel = healthyServer ? 'healthy' : 'down';
+                                return `
+                                    <div class="server-chip">
+                                        <div class="server-chip-head">
+                                            <span class="server-chip-host">${host}:${port}</span>
+                                            <span class="${stateClass}">${stateLabel}</span>
+                                        </div>
+                                        <div class="server-chip-meta">active games: ${fmt(active, 0)}</div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    `
+                    : '';
+
                 const html = [
                     metricCard('Healthy Servers', `<span class="${healthyClass}">${healthy}/${total}</span>`),
-                    metricCard('Active Games', fmt(s.total_active_games || 0, 0)),
-                    metricCard('Queued Games', fmt(s.total_queued_games || 0, 0)),
-                ].join('');
+                    metricCard('Active Games', fmt(totalActive, 0)),
+                    metricCard('Avg Active/Server', fmt(avgActivePerServer, 2)),
+                ].join('') + detailHtml;
                 document.getElementById('server-stats').innerHTML = html;
             }
 

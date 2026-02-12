@@ -137,6 +137,11 @@ class GameInstance:
                         self.get_public_player_api_url(player_id),
                         self.get_internal_player_api_url(player_id),
                     )
+                    try:
+                        if self.cluster is not None and hasattr(self.cluster, "record_input_reject"):
+                            self.cluster.record_input_reject(response_text)
+                    except Exception:
+                        pass
                     return False
         except Exception as e:
             logger.error(f"Failed to send input for player {player_id}: {e!r}")
@@ -196,6 +201,8 @@ class GameServerCluster:
         # Optional cross-component scratchpad for latest game URLs
         self.recent_games: List[Dict[str, str]] = []
         self.base_game_options = self._load_game_options()
+        self.input_reject_count: int = 0
+        self.payment_reject_count: int = 0
 
     @staticmethod
     def _parse_int_env(name: str, default: int, min_value: int = 0) -> int:
@@ -466,6 +473,8 @@ class GameServerCluster:
             'total_servers': len(self.servers),
             'healthy_servers': sum(1 for s in self.servers if s.healthy),
             'total_active_games': sum(s.active_games for s in self.servers),
+            'input_reject_count': int(self.input_reject_count),
+            'payment_reject_count': int(self.payment_reject_count),
             'servers': []
         }
         
@@ -480,3 +489,16 @@ class GameServerCluster:
             stats['servers'].append(server_info)
         
         return stats
+
+    def record_input_reject(self, response_text: str):
+        self.input_reject_count = int(self.input_reject_count) + 1
+        response_l = str(response_text or '').lower()
+        payment_error_markers = [
+            'did not spend enough',
+            'pay for card',
+            'cannot pay',
+            'invalid payment',
+            'payment',
+        ]
+        if any(marker in response_l for marker in payment_error_markers):
+            self.payment_reject_count = int(self.payment_reject_count) + 1

@@ -7,8 +7,13 @@ import logging
 import random
 import os
 import json
+import itertools
 
 logger = logging.getLogger(__name__)
+
+_CARD_SELECTION_MASK_BASE = 520
+_CARD_SELECTION_MASK_LIMIT = 80
+_CARD_SELECTION_CANDIDATE_LIMIT = 12
 
 def _title_text(value: Any) -> str:
     """Normalize title payloads from server into plain text for matching."""
@@ -159,6 +164,158 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value if value is not None else default)
     except Exception:
         return int(default)
+
+def _is_special_card_prompt_title(title_l: str) -> bool:
+    return (
+        'standard project' in title_l
+        or 'convert plants' in title_l
+        or 'convert heat' in title_l
+        or 'sell patents' in title_l
+    )
+
+def _is_card_selection_prompt(waiting_for: Dict[str, Any]) -> bool:
+    title = _title_text(waiting_for.get('title', '')).lower()
+    button_label = str(waiting_for.get('buttonLabel', '') or '').lower()
+    return (
+        'prelude' in title
+        or 'select' in title
+        or button_label in ['keep', 'buy', 'select', 'choose', 'take action', 'discard', 'confirm', 'ok', 'save']
+        or waiting_for.get('showOnlyInLearnerMode', False)
+        or waiting_for.get('selectBlueCardAction', False)
+        or ('min' in waiting_for and 'max' in waiting_for)
+    )
+
+def _score_card_for_selection(card: Dict[str, Any], player_state: Optional[Dict[str, Any]]) -> float:
+    cost = float(_card_cost(card))
+    vp = float(_card_vp(card))
+    tags = _card_tags(card)
+
+    player = (player_state or {}).get('thisPlayer', {}) if isinstance(player_state, dict) else {}
+    mc = float(player.get('megaCredits', 0) or 0)
+    steel = float(player.get('steel', 0) or 0)
+    titanium = float(player.get('titanium', 0) or 0)
+    steel_value = float(player.get('steelValue', 2) or 2)
+    titanium_value = float(player.get('titaniumValue', 3) or 3)
+
+    purchasing_power = mc
+    if tags.get('Building'):
+        purchasing_power += steel * steel_value
+    if tags.get('Space'):
+        purchasing_power += titanium * titanium_value
+
+    affordable = 1.0 if purchasing_power >= cost else max(0.0, 1.0 - ((cost - purchasing_power) / 20.0))
+    cheapness = max(0.0, 1.0 - min(cost / 40.0, 1.0))
+
+    tag_score = 0.0
+    if tags.get('Science'):
+        tag_score += 0.45
+    if tags.get('Building'):
+        tag_score += 0.35
+    if tags.get('Space'):
+        tag_score += 0.35
+    if tags.get('Earth'):
+        tag_score += 0.2
+    if tags.get('Plant'):
+        tag_score += 0.2
+
+    deterministic_tiebreak = (sum(ord(ch) for ch in str(card.get('name', '') or '')) % 97) * 1e-5
+    return (vp * 0.45) + (affordable * 1.4) + (cheapness * 0.8) + tag_score + deterministic_tiebreak
+
+def _enumerate_card_selection_masks(
+    cards: List[Dict[str, Any]],
+    min_cards: int,
+    max_cards: int,
+    player_state: Optional[Dict[str, Any]],
+    limit: int = _CARD_SELECTION_MASK_LIMIT,
+) -> List[int]:
+    if not cards:
+        return []
+
+    enabled_indices = [idx for idx, card in enumerate(cards) if not card.get('isDisabled', False)]
+    if not enabled_indices:
+        return []
+
+    min_pick = max(0, min(_safe_int(min_cards, 0), len(enabled_indices)))
+    max_pick = max(min_pick, min(_safe_int(max_cards, len(enabled_indices)), len(enabled_indices)))
+    if max_pick <= 0:
+        return [0] if min_pick == 0 else []
+
+    scored_indices = sorted(
+        enabled_indices,
+        key=lambda idx: _score_card_for_selection(cards[idx], player_state),
+        reverse=True,
+    )
+
+    candidate_budget = min(
+        len(scored_indices),
+        max(_CARD_SELECTION_CANDIDATE_LIMIT, min(max_pick, 14)),
+    )
+    candidate_indices = sorted(scored_indices[:candidate_budget])
+    score_map = {idx: _score_card_for_selection(cards[idx], player_state) for idx in candidate_indices}
+
+    ranked_masks: List[Tuple[float, int, int]] = []
+    if min_pick == 0:
+        ranked_masks.append((0.0, 0, 0))
+
+    start_pick = max(1, min_pick)
+    for pick_count in range(start_pick, max_pick + 1):
+        if pick_count > len(candidate_indices):
+            break
+        for combo in itertools.combinations(candidate_indices, pick_count):
+            mask = 0
+            combo_score = 0.0
+            for idx in combo:
+                mask |= (1 << idx)
+                combo_score += float(score_map.get(idx, 0.0))
+            combo_score += 0.03 * float(pick_count)
+            ranked_masks.append((combo_score, pick_count, mask))
+
+    ranked_masks.sort(key=lambda item: (item[0], item[1], -item[2]), reverse=True)
+
+    masks: List[int] = []
+    seen_masks = set()
+    for _, _, mask in ranked_masks:
+        if mask in seen_masks:
+            continue
+        selected_count = int(mask.bit_count()) if hasattr(int, 'bit_count') else bin(mask).count('1')
+        if selected_count < min_pick or selected_count > max_pick:
+            continue
+        masks.append(mask)
+        seen_masks.add(mask)
+        if len(masks) >= max(1, int(limit)):
+            break
+
+    if masks:
+        return masks
+
+    fallback_target = max(min_pick, 1)
+    fallback_indices = scored_indices[:min(fallback_target, len(scored_indices))]
+    fallback_mask = 0
+    for idx in fallback_indices:
+        fallback_mask |= (1 << idx)
+    if fallback_mask > 0:
+        return [fallback_mask]
+    return [0] if min_pick == 0 else []
+
+def _decode_card_selection_mask_action(
+    waiting_for: Dict[str, Any],
+    action_index: Optional[int],
+    player_state: Optional[Dict[str, Any]],
+) -> Optional[int]:
+    if action_index is None:
+        return None
+    normalized = _safe_int(action_index, -1)
+    offset = normalized - _CARD_SELECTION_MASK_BASE
+    if offset < 0 or offset >= _CARD_SELECTION_MASK_LIMIT:
+        return None
+
+    cards = waiting_for.get('cards', []) or []
+    min_cards = _safe_int(waiting_for.get('min', 1), 1)
+    max_cards = _safe_int(waiting_for.get('max', len(cards)), len(cards))
+    masks = _enumerate_card_selection_masks(cards, min_cards, max_cards, player_state, _CARD_SELECTION_MASK_LIMIT)
+    if 0 <= offset < len(masks):
+        return int(masks[offset])
+    return None
 
 def _normalize_tag_name(tag: Any) -> str:
     raw = str(tag or '').strip()
@@ -443,6 +600,18 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 selected_via_option_range = True
                 # This action chooses the OR option itself, not an inner sub-index.
                 action_index = None
+            elif _CARD_SELECTION_MASK_BASE <= action_index < (_CARD_SELECTION_MASK_BASE + _CARD_SELECTION_MASK_LIMIT):
+                matched = False
+                for i, option in enumerate(options):
+                    option_type = option.get('type', '')
+                    option_title_l = _title_text(option.get('title', '')).lower()
+                    if option_type in ['selectCard', 'card'] and not _is_special_card_prompt_title(option_title_l):
+                        if _is_card_selection_prompt(option):
+                            selected_idx = i
+                            matched = True
+                            break
+                if not matched:
+                    selected_idx = 0
             elif action_index >= 600 and action_index < 700:
                 # This is a direct award selection (600+ range)
                 # Find which option contains the award selection
@@ -542,6 +711,17 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             action_index = action_index
                             matched = True
                             break
+                    elif option_type in ['selectCard', 'card'] and not _is_special_card_prompt_title(option_title.lower()):
+                        if _is_card_selection_prompt(option):
+                            cards = option.get('cards', []) or []
+                            enabled_indices = [idx for idx, c in enumerate(cards) if not c.get('isDisabled', False)]
+                            if not enabled_indices:
+                                enabled_indices = list(range(len(cards)))
+                            normalized_action = int(action_index)
+                            if normalized_action in enabled_indices or (0 <= normalized_action < len(cards)):
+                                selected_idx = i
+                                matched = True
+                                break
                 if not matched:
                     # No card-like option matched; treat low index as plain OR option index.
                     if 0 <= action_index < len(options):
@@ -718,8 +898,8 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         return {'type': 'amount', 'amount': amount}
     elif input_type == 'card':
         cards = waiting_for.get('cards', [])
-        min_cards = waiting_for.get('min', 1)
-        max_cards = waiting_for.get('max', len(cards))
+        min_cards = _safe_int(waiting_for.get('min', 1), 1)
+        max_cards = _safe_int(waiting_for.get('max', len(cards)), len(cards))
         n = len(cards)
         title = _title_text(waiting_for.get('title', '')).lower()
         button_label = waiting_for.get('buttonLabel', '').lower()
@@ -776,12 +956,25 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                         card_names = [cards[0]['name']] if cards else []
             elif n > 0 and max_cards > 1:
                 if action_index is not None:
+                    normalized_action = _safe_int(action_index, 0)
+                    decoded_mask = _decode_card_selection_mask_action(waiting_for, normalized_action, player_state)
+                    if decoded_mask is None:
+                        # Backward-compatible fallback:
+                        # - index in [0, n): treat as selecting that single card
+                        # - otherwise interpret as legacy raw bitmask
+                        if 0 <= normalized_action < n:
+                            decoded_mask = (1 << normalized_action)
+                        else:
+                            decoded_mask = max(0, normalized_action)
+
                     selected = []
                     for i in range(n):
-                        if (action_index >> i) & 1:
+                        if ((decoded_mask >> i) & 1) and not cards[i].get('isDisabled', False):
                             selected.append(cards[i]['name'])
                     if len(selected) < min_cards:
                         for i in range(n):
+                            if cards[i].get('isDisabled', False):
+                                continue
                             if cards[i]['name'] not in selected:
                                 selected.append(cards[i]['name'])
                                 if len(selected) >= min_cards:
@@ -790,9 +983,11 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                         selected = selected[:max_cards]
                     card_names = selected
                 else:
-                    card_names = [c['name'] for c in cards[:min_cards]]
+                    fallback_count = max(0, min(min_cards, n))
+                    card_names = [c['name'] for c in cards[:fallback_count] if not c.get('isDisabled', False)]
             else:
-                card_names = [c['name'] for c in cards[:min_cards]] if cards else []
+                fallback_count = max(0, min(min_cards, n))
+                card_names = [c['name'] for c in cards[:fallback_count]] if cards else []
             return {'type': 'card', 'cards': card_names}
         else:
             # Play-card action (main phase)
@@ -1398,6 +1593,7 @@ class ActionDecoder:
             'PLAY_CARD': 0,
             'STANDARD_PROJECT': 100,
             'SELECT_OPTION': 200,
+            'SELECT_CARD_MASK': _CARD_SELECTION_MASK_BASE,
             'SELECT_SPACE': 300,
             'SELECT_PAYMENT': 400,
             'SELECT_AMOUNT': 500,
@@ -1410,6 +1606,7 @@ class ActionDecoder:
             'Power Plant:SP', 'Asteroid:SP', 'Aquifer', 'Greenery', 'City', 'Colony',
             'Air Scrapping', 'Buffer Gas', 'Moon Habitat', 'Moon Mine', 'Moon Road'
         ]
+        self.card_selection_mask_limit = _CARD_SELECTION_MASK_LIMIT
 
     def build_initial_setup_response(self, player_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         waiting_for = player_state.get('waitingFor', {}) if player_state else {}
@@ -1480,6 +1677,32 @@ class ActionDecoder:
                             added_concrete_action = True
                         else:
                             allow_select_option = False
+                    elif option_type in ['selectCard', 'card'] and not _is_special_card_prompt_title(option_title_l):
+                        option_cards = option.get('cards', []) or []
+                        min_cards = _safe_int(option.get('min', 1), 1)
+                        max_cards = _safe_int(option.get('max', len(option_cards)), len(option_cards))
+                        if _is_card_selection_prompt(option) and max_cards > 1:
+                            masks = _enumerate_card_selection_masks(
+                                option_cards,
+                                min_cards,
+                                max_cards,
+                                player_state,
+                                _CARD_SELECTION_MASK_LIMIT,
+                            )
+                            for j, _ in enumerate(masks):
+                                available_actions.append(self.action_types['SELECT_CARD_MASK'] + j)
+                            added_concrete_action = len(masks) > 0
+                            if not added_concrete_action:
+                                allow_select_option = False
+                        elif _is_card_selection_prompt(option):
+                            enabled_indices = [j for j, card in enumerate(option_cards) if not card.get('isDisabled', False)]
+                            if not enabled_indices:
+                                enabled_indices = list(range(len(option_cards)))
+                            for j in enabled_indices:
+                                available_actions.append(self.action_types['PLAY_CARD'] + j)
+                            added_concrete_action = len(enabled_indices) > 0
+                            if not added_concrete_action:
+                                allow_select_option = False
 
                     # Keep SELECT_OPTION only when we do not have a concrete safer index,
                     # or when this option is simple and does not require sub-selection.
@@ -1492,6 +1715,8 @@ class ActionDecoder:
             elif input_type == 'card':
                 cards = waiting_for.get('cards', [])
                 can_pass = waiting_for.get('canPass', False)
+                min_cards = _safe_int(waiting_for.get('min', 1), 1)
+                max_cards = _safe_int(waiting_for.get('max', len(cards)), len(cards))
                 
                 # Filter out unaffordable cards in play-card scenarios
                 title = _title_text(waiting_for.get('title', '')).lower()
@@ -1510,13 +1735,7 @@ class ActionDecoder:
                         available_actions.append(self.action_types['STANDARD_PROJECT'] + i)
                 
                 # Check if this is a card purchase/selection scenario vs playing cards
-                is_selection = (
-                    'prelude' in title
-                    or 'select' in title
-                    or button_label in ['keep', 'buy', 'select', 'choose', 'take action', 'discard', 'confirm', 'ok']
-                    or waiting_for.get('showOnlyInLearnerMode', False)
-                    or select_blue
-                )
+                is_selection = _is_card_selection_prompt(waiting_for)
                 
                 if not available_actions and not is_selection and player_state:
                     # For playing cards, check affordability
@@ -1535,9 +1754,23 @@ class ActionDecoder:
                         if can_pass:
                             available_actions.append(self.action_types['PASS'])
                 elif not available_actions:
-                    # For selection scenarios, include all cards
-                    for i, _ in enumerate(cards):
-                        available_actions.append(self.action_types['PLAY_CARD'] + i)
+                    # For selection scenarios, support multi-card subset actions.
+                    if is_selection and max_cards > 1:
+                        masks = _enumerate_card_selection_masks(
+                            cards,
+                            min_cards,
+                            max_cards,
+                            player_state,
+                            _CARD_SELECTION_MASK_LIMIT,
+                        )
+                        for i, _ in enumerate(masks):
+                            available_actions.append(self.action_types['SELECT_CARD_MASK'] + i)
+                    if not available_actions:
+                        enabled_indices = [i for i, card in enumerate(cards) if not card.get('isDisabled', False)]
+                        if not enabled_indices:
+                            enabled_indices = list(range(len(cards)))
+                        for i in enabled_indices:
+                            available_actions.append(self.action_types['PLAY_CARD'] + i)
                         
                 if can_pass:
                     available_actions.append(self.action_types['PASS'])
@@ -1545,6 +1778,8 @@ class ActionDecoder:
                 cards = waiting_for.get('cards', [])
                 can_pass = waiting_for.get('canPass', False)
                 title = _title_text(waiting_for.get('title', '')).lower()
+                min_cards = _safe_int(waiting_for.get('min', 1), 1)
+                max_cards = _safe_int(waiting_for.get('max', len(cards)), len(cards))
                 if 'standard project' in title:
                     enabled_cards = [(i, card) for i, card in enumerate(cards) if not card.get('isDisabled', False)]
                     for i, _ in enabled_cards:
@@ -1557,11 +1792,22 @@ class ActionDecoder:
                     if cards:
                         available_actions.append(702)
                 else:
-                    enabled_indices = [i for i, card in enumerate(cards) if not card.get('isDisabled', False)]
-                    if not enabled_indices:
-                        enabled_indices = list(range(len(cards)))
-                    for i in enabled_indices:
-                        available_actions.append(self.action_types['PLAY_CARD'] + i)
+                    if _is_card_selection_prompt(waiting_for) and max_cards > 1:
+                        masks = _enumerate_card_selection_masks(
+                            cards,
+                            min_cards,
+                            max_cards,
+                            player_state,
+                            _CARD_SELECTION_MASK_LIMIT,
+                        )
+                        for i, _ in enumerate(masks):
+                            available_actions.append(self.action_types['SELECT_CARD_MASK'] + i)
+                    if not available_actions:
+                        enabled_indices = [i for i, card in enumerate(cards) if not card.get('isDisabled', False)]
+                        if not enabled_indices:
+                            enabled_indices = list(range(len(cards)))
+                        for i in enabled_indices:
+                            available_actions.append(self.action_types['PLAY_CARD'] + i)
                 if can_pass:
                     available_actions.append(self.action_types['PASS'])
             elif input_type in ['projectCard', 'selectProjectCardToPlay']:

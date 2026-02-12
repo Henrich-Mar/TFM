@@ -350,6 +350,133 @@ class StateEncoder:
         # Normalize
         for i in range(3, 20):
             encoding[i] = min(encoding[i], 1.0)
+
+        # Card-quality and resource-pressure signals.
+        steel_prod = float(player.get('steelProduction', 0) or 0)
+        titanium_prod = float(player.get('titaniumProduction', 0) or 0)
+
+        tableau = player.get('tableau', []) or []
+        tableau_tag_profile: Dict[str, int] = {}
+        for played in tableau:
+            played_name = played.get('name', '')
+            played_tags = self._get_card_tags(played_name, fallback=played.get('tags', {}))
+            for tag_name, present in played_tags.items():
+                if present:
+                    tableau_tag_profile[tag_name] = int(tableau_tag_profile.get(tag_name, 0)) + 1
+        max_tag_count = max(tableau_tag_profile.values(), default=1)
+
+        def _card_vp(card: Dict[str, Any]) -> float:
+            name = str(card.get('name', '') or '')
+            meta = self.card_metadata_by_name.get(name, {})
+            raw_vp = card.get('victoryPoints', meta.get('victoryPoints', 0))
+            try:
+                return float(raw_vp or 0)
+            except Exception:
+                return 0.0
+
+        card_eval: List[Dict[str, Any]] = []
+        for idx, card in enumerate(hand):
+            name = str(card.get('name', '') or '')
+            tags = self._get_card_tags(name, fallback=card.get('tags', {}))
+            cost = float(card.get('calculatedCost', card.get('cost', 0)) or 0)
+            cost_norm = min(max(cost, 0.0) / 40.0, 1.0)
+            vp_norm = min(max(_card_vp(card), 0.0) / 5.0, 1.0)
+
+            purchasing_power = mc
+            if tags.get('Building', 0) > 0:
+                purchasing_power += steel * steel_value
+            if tags.get('Space', 0) > 0:
+                purchasing_power += titanium * titanium_value
+            affordable = 1.0 if purchasing_power >= cost else max(0.0, 1.0 - ((cost - purchasing_power) / 20.0))
+
+            synergy_score = 0.0
+            for tag_name, present in tags.items():
+                if present:
+                    synergy_score += float(tableau_tag_profile.get(tag_name, 0)) / float(max_tag_count)
+            synergy_norm = min(synergy_score / 4.0, 1.0)
+
+            key_tags = ['Science', 'Building', 'Space', 'Earth']
+            key_density = sum(1 for t in key_tags if tags.get(t, 0) > 0) / float(len(key_tags))
+            cheapness = max(0.0, 1.0 - cost_norm)
+
+            quality_raw = (
+                (affordable * 1.20)
+                + (vp_norm * 0.80)
+                + (cheapness * 0.60)
+                + (synergy_norm * 0.70)
+                + (key_density * 0.35)
+            )
+            quality = min(max(quality_raw / 3.0, 0.0), 1.0)
+
+            card_eval.append({
+                'index': idx,
+                'quality': quality,
+                'cost_norm': cost_norm,
+                'affordable': affordable,
+                'vp_norm': vp_norm,
+                'synergy_norm': synergy_norm,
+                'tags': tags,
+            })
+
+        if card_eval:
+            ranked = sorted(
+                card_eval,
+                key=lambda item: (item['quality'], item['affordable'], item['vp_norm'], -item['cost_norm']),
+                reverse=True,
+            )
+            qualities = [float(item['quality']) for item in ranked]
+            encoding[20] = min(sum(qualities) / max(1, len(qualities)), 1.0)
+            encoding[21] = qualities[0]
+            encoding[22] = qualities[1] if len(qualities) > 1 else qualities[0]
+
+            affordable_qualities = [float(item['quality']) for item in ranked if item['affordable'] >= 0.99]
+            encoding[23] = min(
+                (sum(affordable_qualities) / len(affordable_qualities)) if affordable_qualities else 0.0,
+                1.0,
+            )
+            encoding[24] = min(sum(1 for item in ranked if item['quality'] >= 0.65) / float(len(ranked)), 1.0)
+
+            for slot in range(3):
+                base = 25 + (slot * 5)
+                if slot < len(ranked):
+                    item = ranked[slot]
+                    encoding[base] = float(item['quality'])
+                    encoding[base + 1] = float(item['cost_norm'])
+                    encoding[base + 2] = float(item['affordable'])
+                    encoding[base + 3] = float(item['vp_norm'])
+                    encoding[base + 4] = float(item['synergy_norm'])
+
+            hand_count = float(len(ranked))
+            building_ratio = sum(1 for item in ranked if item['tags'].get('Building', 0) > 0) / hand_count
+            space_ratio = sum(1 for item in ranked if item['tags'].get('Space', 0) > 0) / hand_count
+            affordable_building_ratio = sum(
+                1 for item in ranked if item['affordable'] >= 0.99 and item['tags'].get('Building', 0) > 0
+            ) / hand_count
+            affordable_space_ratio = sum(
+                1 for item in ranked if item['affordable'] >= 0.99 and item['tags'].get('Space', 0) > 0
+            ) / hand_count
+        else:
+            building_ratio = 0.0
+            space_ratio = 0.0
+            affordable_building_ratio = 0.0
+            affordable_space_ratio = 0.0
+
+        steel_stock_norm = min(steel / 25.0, 1.0)
+        titanium_stock_norm = min(titanium / 20.0, 1.0)
+        steel_prod_norm = min(max(steel_prod, 0.0) / 12.0, 1.0)
+        titanium_prod_norm = min(max(titanium_prod, 0.0) / 10.0, 1.0)
+
+        encoding[40] = steel_stock_norm
+        encoding[41] = titanium_stock_norm
+        encoding[42] = steel_prod_norm
+        encoding[43] = titanium_prod_norm
+        encoding[44] = min(building_ratio, 1.0)
+        encoding[45] = min(space_ratio, 1.0)
+        encoding[46] = min(affordable_building_ratio, 1.0)
+        encoding[47] = min(affordable_space_ratio, 1.0)
+        encoding[48] = min((steel_stock_norm + (0.5 * steel_prod_norm)) * max(building_ratio, 0.0), 1.0)
+        encoding[49] = min((titanium_stock_norm + (0.5 * titanium_prod_norm)) * max(space_ratio, 0.0), 1.0)
+
         logger.debug("Hand encoding: %s for player %s", encoding, player_state.get('id'))
         return encoding
     

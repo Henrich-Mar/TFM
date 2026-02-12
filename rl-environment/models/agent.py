@@ -18,7 +18,7 @@ from collections import deque
 from game_interface import GameInstance
 from .state_encoder import StateEncoder
 from .action_decoder import ActionDecoder
-from scoring import calculate_terminal_reward
+from scoring import calculate_terminal_reward, calculate_step_reward
 import random
 import aiohttp
 
@@ -129,11 +129,14 @@ class RLAgent:
             'available_action_observations': 0,
             'action_type_counts': {},
             'standard_project_counts': {},
+            'card_play_actions': 0,
+            'steel_spent': 0,
+            'titanium_spent': 0,
         }
         
     async def play_game(self, game_instance: GameInstance, player_name: str):
         """Play a complete game"""
-        episode_steps: List[Tuple[np.ndarray, int]] = []
+        episode_steps: List[Tuple[np.ndarray, int, float]] = []
         try:
             # Join the game
             player_id = await game_instance.join_player(player_name)
@@ -257,7 +260,7 @@ class RLAgent:
         game_instance: GameInstance,
         player_id: str,
         player_state: Dict[str, Any],
-        episode_steps: List[Tuple[np.ndarray, int]],
+        episode_steps: List[Tuple[np.ndarray, int, float]],
     ):
         """Make a single move in the game, with robust fallbacks."""
         try:
@@ -304,7 +307,18 @@ class RLAgent:
                     logger.info(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
                     if sampled_from_policy and policy_action_idx is not None:
                         if len(episode_steps) < self.config.max_episode_steps:
-                            episode_steps.append((state_vector.astype(np.float32), int(policy_action_idx)))
+                            step_reward = 0.0
+                            if self.train_from_self_play:
+                                try:
+                                    post_action_state = await game_instance.get_player_state(player_id)
+                                except Exception:
+                                    post_action_state = None
+                                step_reward = calculate_step_reward(
+                                    before_state=player_state,
+                                    after_state=post_action_state,
+                                    action_input=policy_action,
+                                )
+                            episode_steps.append((state_vector.astype(np.float32), int(policy_action_idx), float(step_reward)))
                     await self._sleep_if_needed(self.post_move_sleep_sec)
                     return  # Success
                 else:
@@ -462,6 +476,8 @@ class RLAgent:
 
     def _categorize_action(self, action_index: int) -> str:
         pass_base = int(self.action_decoder.action_types.get('PASS', 900))
+        mask_base = int(self.action_decoder.action_types.get('SELECT_CARD_MASK', -1))
+        mask_limit = int(getattr(self.action_decoder, 'card_selection_mask_limit', 0) or 0)
         if action_index >= pass_base:
             return 'pass'
         if action_index < 100:
@@ -470,6 +486,8 @@ class RLAgent:
             return 'standard_project'
         if action_index < 300:
             return 'select_option'
+        if mask_base >= 0 and mask_limit > 0 and mask_base <= action_index < (mask_base + mask_limit):
+            return 'card_selection_mask'
         if action_index == 700:
             return 'convert_plants'
         if action_index == 701:
@@ -562,6 +580,30 @@ class RLAgent:
             if project_name:
                 project_counts = self.decision_stats.setdefault('standard_project_counts', {})
                 project_counts[project_name] = int(project_counts.get(project_name, 0)) + 1
+
+        # Track project card plays separately from selection-card prompts.
+        if isinstance(action_input, dict):
+            action_type = str(action_input.get('type', '') or '')
+            if category != 'standard_project' and (
+                action_type == 'projectCard'
+                or (action_type == 'card' and 'card' in action_input)
+            ):
+                self._bump_decision_stat('card_play_actions')
+
+            payment = action_input.get('payment')
+            if isinstance(payment, dict):
+                try:
+                    steel_units = int(payment.get('steel', 0) or 0)
+                except Exception:
+                    steel_units = 0
+                try:
+                    titanium_units = int(payment.get('titanium', 0) or 0)
+                except Exception:
+                    titanium_units = 0
+                if steel_units > 0:
+                    self._bump_decision_stat('steel_spent', steel_units)
+                if titanium_units > 0:
+                    self._bump_decision_stat('titanium_spent', titanium_units)
     
     async def _get_action_from_network(self, state_vector: np.ndarray, 
                                     player_state: Dict[str, Any], force_random: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool]:
@@ -583,13 +625,36 @@ class RLAgent:
             waiting_for = player_state.get('waitingFor', {})
             self._bump_decision_stat('available_action_observations')
             self._bump_decision_stat('sum_available_actions', len(available_actions))
-              
+            prefer_project_cards = False
+            waiting_type = str(waiting_for.get('type', '') or '').lower()
+            if waiting_type in ['projectcard', 'selectprojectcardtoplay']:
+                prefer_project_cards = True
+            elif waiting_type == 'or':
+                options = waiting_for.get('options', [])
+                has_project_card_option = any(
+                    str(option.get('type', '') or '') in ['projectCard', 'selectProjectCardToPlay']
+                    for option in options
+                )
+                def _opt_title_l(option: Dict[str, Any]) -> str:
+                    raw = option.get('title', '')
+                    if isinstance(raw, dict):
+                        raw = raw.get('message', '')
+                    return str(raw or '').lower()
+                has_standard_project_option = any(
+                    str(option.get('type', '') or '') in ['card', 'selectCard']
+                    and 'standard project' in _opt_title_l(option)
+                    for option in options
+                )
+                prefer_project_cards = bool(has_project_card_option and has_standard_project_option)
+               
             if not available_actions:
                 return None, None, False
                  
             # Log available action types for debugging
             action_types = []
             option_titles = waiting_for.get('options', []) if waiting_for.get('type') == 'or' else []
+            card_mask_base = int(self.action_decoder.action_types.get('SELECT_CARD_MASK', -1))
+            card_mask_limit = int(getattr(self.action_decoder, 'card_selection_mask_limit', 0) or 0)
             for action_idx in available_actions:
                 if action_idx < 100:
                     action_types.append(f"PLAY_CARD({action_idx})")
@@ -605,6 +670,8 @@ class RLAgent:
                         title = str(title).strip()
                         option_name = title if title else option_titles[option_idx].get('type', option_name)
                     action_types.append(f"SELECT_OPTION_{option_name}({action_idx})")
+                elif card_mask_base >= 0 and card_mask_limit > 0 and card_mask_base <= action_idx < (card_mask_base + card_mask_limit):
+                    action_types.append(f"CARD_SELECTION_MASK({action_idx - card_mask_base})")
                 elif action_idx == 700:
                     action_types.append("CONVERT_PLANTS")
                 elif action_idx == 701:
@@ -660,24 +727,11 @@ class RLAgent:
                 available_actions,
                 force_random=force_random,
                 action_weight_adjustments=action_weight_adjustments,
+                prefer_project_cards=prefer_project_cards,
             )
             
             # Convert to game input
             action_input = self.action_decoder.decode_action(action_index, player_state)
-            
-            # Additional safety check: if this is a card play action and we have no money, prefer pass
-            if action_input and action_input.get('type') in ['card', 'projectCard']:
-                player = player_state.get('thisPlayer', {})
-                player_mc = player.get('megaCredits', 0)
-                if player_mc <= 0:
-                    logger.info(f"Agent has no money ({player_mc} MC), preferring pass over card play")
-                    # Try to find a pass action
-                    pass_actions = [a for a in available_actions if a >= 900]  # PASS action base
-                    if pass_actions:
-                        pass_action_index = pass_actions[0]
-                        action_index = pass_action_index
-                        sampled_from_policy = False
-                        action_input = self.action_decoder.decode_action(pass_action_index, player_state)
             
             return action_input, action_index, sampled_from_policy
             
@@ -685,7 +739,14 @@ class RLAgent:
             logger.error(f"Error getting action from network: {e}")
             return None, None, False
     
-    def _sample_action(self, policy_probs: torch.Tensor, available_actions: List[int], force_random: bool = False, action_weight_adjustments: Optional[Dict[int, float]] = None) -> Tuple[int, bool]:
+    def _sample_action(
+        self,
+        policy_probs: torch.Tensor,
+        available_actions: List[int],
+        force_random: bool = False,
+        action_weight_adjustments: Optional[Dict[int, float]] = None,
+        prefer_project_cards: bool = False,
+    ) -> Tuple[int, bool]:
         """Sample action from policy, restricted to available actions"""
         # Reduce epsilon-greedy for more policy-driven behavior
         if force_random or np.random.random() < max(0.05, self.config.epsilon * 0.5):
@@ -713,18 +774,35 @@ class RLAgent:
                     masked_probs[action_idx] = 1.0
             masked_probs /= masked_probs.sum()
 
-        # Prefer diverse actions - reduce probability of repetitive actions
+        # Prefer productive engine-building decisions over repetitive low-ceiling lines.
         pass_action_base = 900  # From action_types['PASS']
         sell_patents_action = 702  # Sell patents action
         select_option_base = 200  # From action_types['SELECT_OPTION']
+        has_play_card_action = any(0 <= int(a) < 100 for a in valid_actions)
+        has_standard_project_action = any(100 <= int(a) < 200 for a in valid_actions)
+        play_card_actions = [int(a) for a in valid_actions if 0 <= int(a) < 100]
+        standard_project_actions = [int(a) for a in valid_actions if 100 <= int(a) < 200]
+
+        # Aggressive bias: when both branches are legal in the action phase,
+        # force a project-card attempt with configurable probability.
+        if prefer_project_cards and play_card_actions and standard_project_actions:
+            try:
+                priority_prob = float(os.getenv("PLAY_CARD_PRIORITY_PROB", "0.75"))
+            except Exception:
+                priority_prob = 0.75
+            priority_prob = max(0.0, min(1.0, priority_prob))
+            if np.random.random() < priority_prob:
+                return int(np.random.choice(play_card_actions)), True
         
         for i, action_idx in enumerate(valid_actions):
             if action_idx >= pass_action_base:
                 masked_probs[action_idx] *= 0.3  # Reduce pass action probability
             elif action_idx == sell_patents_action:
                 masked_probs[action_idx] *= 0.5  # Reduce sell patents probability to encourage diversity
+            elif action_idx < 100:  # Play project card
+                masked_probs[action_idx] *= 1.55
             elif action_idx >= 100 and action_idx < 200:  # Standard projects
-                masked_probs[action_idx] *= 1.5  # Increase standard project probability
+                masked_probs[action_idx] *= 0.75
             elif action_idx == 700:  # Convert plants
                 masked_probs[action_idx] *= 1.3  # Increase convert plants probability
             elif action_idx == 701:  # Convert heat
@@ -732,6 +810,14 @@ class RLAgent:
             elif action_idx >= select_option_base and action_idx < select_option_base + 100:  # SELECT_OPTION range
                 # Keep option actions near-neutral; contextual boosts are applied via titles.
                 masked_probs[action_idx] *= 1.0
+
+        # When both lines are available, nudge policy toward card execution.
+        if has_play_card_action and has_standard_project_action:
+            for action_idx in valid_actions:
+                if action_idx < 100:
+                    masked_probs[action_idx] *= 1.35
+                elif 100 <= action_idx < 200:
+                    masked_probs[action_idx] *= 0.45
         
         # Apply contextual adjustments (e.g., OR menu titles)
         if action_weight_adjustments:
@@ -821,7 +907,7 @@ class RLAgent:
         """Convert game outcome into a bounded terminal reward for policy updates."""
         return calculate_terminal_reward(rank=rank, victory_points=vp, completed=completed)
 
-    async def _train_from_episode(self, episode_steps: List[Tuple[np.ndarray, int]], terminal_reward: float):
+    async def _train_from_episode(self, episode_steps: List[Tuple[np.ndarray, int, float]], terminal_reward: float):
         """Policy/value update from one self-play episode with terminal reward."""
         if not episode_steps:
             return
@@ -829,15 +915,19 @@ class RLAgent:
         # Protect optimizer/network updates when the same agent appears in concurrent games.
         async with self.training_lock:
             steps = episode_steps[-max(1, self.config.max_episode_steps):]
-            states = torch.from_numpy(np.stack([s for s, _ in steps], axis=0)).float()
-            actions = torch.tensor([a for _, a in steps], dtype=torch.long)
+            states = torch.from_numpy(np.stack([step[0] for step in steps], axis=0)).float()
+            actions = torch.tensor([int(step[1]) for step in steps], dtype=torch.long)
+            step_rewards = [
+                float(step[2]) if len(step) >= 3 else 0.0
+                for step in steps
+            ]
 
-            # Sparse reward: back-propagate terminal signal through discounted returns.
+            # Dense+terminal reward: back-propagate step shaping and final outcome.
             running_return = float(terminal_reward)
             returns = []
-            for _ in range(len(steps)):
+            for immediate_reward in reversed(step_rewards):
+                running_return = float(immediate_reward) + (float(self.config.discount_factor) * running_return)
                 returns.append(running_return)
-                running_return *= float(self.config.discount_factor)
             returns.reverse()
             returns_t = torch.tensor(returns, dtype=torch.float32)
             if returns_t.numel() > 1:
@@ -873,7 +963,7 @@ class RLAgent:
 
             logger.info(
                 f"Agent {self.id[:8]} self-play update: "
-                f"steps={len(steps)}, reward={terminal_reward:.3f}, "
+                f"steps={len(steps)}, reward={terminal_reward:.3f}, shaped_sum={sum(step_rewards):.3f}, "
                 f"policy_loss={policy_loss.item():.4f}, value_loss={value_loss.item():.4f}"
             )
     
@@ -904,6 +994,9 @@ class RLAgent:
         no_available_actions = int(self.decision_stats.get('no_available_actions', 0))
         sum_available_actions = int(self.decision_stats.get('sum_available_actions', 0))
         available_action_observations = int(self.decision_stats.get('available_action_observations', 0))
+        card_play_actions = int(self.decision_stats.get('card_play_actions', 0))
+        steel_spent = int(self.decision_stats.get('steel_spent', 0))
+        titanium_spent = int(self.decision_stats.get('titanium_spent', 0))
 
         def _ratio(numerator: int, denominator: int) -> float:
             return float(numerator) / float(denominator) if denominator > 0 else 0.0
@@ -940,6 +1033,12 @@ class RLAgent:
             'fallback_decision_rate': _ratio(fallback_decisions, total_decisions),
             'fallback_random_success_rate': _ratio(fallback_random_successes, fallback_random_attempts),
             'fallback_pass_rate': _ratio(fallback_passes, total_decisions),
+            'card_play_actions': card_play_actions,
+            'card_plays_per_game': _ratio(card_play_actions, int(self.games_played)),
+            'steel_spent': steel_spent,
+            'steel_spent_per_game': _ratio(steel_spent, int(self.games_played)),
+            'titanium_spent': titanium_spent,
+            'titanium_spent_per_game': _ratio(titanium_spent, int(self.games_played)),
             'action_counts': action_counts,
             'action_mix': action_mix,
             'standard_project_counts': standard_project_counts,

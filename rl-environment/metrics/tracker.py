@@ -62,9 +62,13 @@ class MetricsTracker:
     async def record_generation(self, 
                               generation: int, 
                               population: List[RLAgent], 
-                              fitness_scores: List[float]):
+                              fitness_scores: List[float],
+                              raw_fitness_scores: List[float] = None,
+                              generation_metrics: Dict[str, Any] = None,
+                              gating_summary: Dict[str, Any] = None):
         """Record generation metrics"""
         timestamp = datetime.now()
+        raw_scores = raw_fitness_scores if raw_fitness_scores is not None else fitness_scores
         
         generation_data = {
             'generation': generation,
@@ -76,13 +80,23 @@ class MetricsTracker:
                 'mean': sum(fitness_scores) / len(fitness_scores),
                 'std': self._calculate_std(fitness_scores)
             },
+            'raw_fitness_stats': {
+                'max': max(raw_scores),
+                'min': min(raw_scores),
+                'mean': sum(raw_scores) / len(raw_scores),
+                'std': self._calculate_std(raw_scores)
+            },
+            'generation_metrics': generation_metrics or {},
+            'gating_summary': gating_summary or {},
             'agent_details': [
                 {
                     'agent_id': agent.id,
                     'fitness': fitness_scores[i],
+                    'raw_fitness': raw_scores[i] if i < len(raw_scores) else fitness_scores[i],
                     'games_played': agent.games_played,
                     'wins': agent.wins,
                     'total_vp': agent.total_victory_points,
+                    'behavior': agent.get_behavior_stats() if hasattr(agent, 'get_behavior_stats') else {},
                     'config': {
                         'learning_rate': agent.config.learning_rate,
                         'epsilon': agent.config.epsilon,

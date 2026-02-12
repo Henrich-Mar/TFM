@@ -60,6 +60,9 @@ def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
         "fallback_random_successes": 0,
         "fallback_passes": 0,
         "no_available_actions": 0,
+        "card_play_actions": 0,
+        "steel_spent": 0,
+        "titanium_spent": 0,
     }
     action_counts: Dict[str, int] = {}
     standard_project_counts: Dict[str, int] = {}
@@ -114,6 +117,8 @@ def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
         ),
         "fallback_pass_rate": _safe_ratio(totals["fallback_passes"], totals["total_decisions"]),
         "avg_available_actions": _safe_mean(avg_available_actions_samples),
+        "card_plays_per_game": _safe_ratio(totals["card_play_actions"], sum(max(0, int(getattr(a, "games_played", 0))) for a in population)),
+        "standard_project_ratio": _safe_ratio(total_standard_project_actions, totals["card_play_actions"] + total_standard_project_actions),
         "action_counts": action_counts,
         "action_mix": action_mix,
         "standard_project_counts": standard_project_counts,
@@ -158,9 +163,12 @@ async def get_stats():
         
         # Population stats
         eval_fitness_scores = []
+        raw_eval_fitness_scores = []
         for agent in coordinator.population:
-            eval_score = coordinator.last_eval_fitness.get(agent.id) if hasattr(coordinator, 'last_eval_fitness') else None
-            eval_fitness_scores.append(float(eval_score) if eval_score is not None else float(agent.get_fitness_score()))
+            gated_eval_score = coordinator.last_eval_fitness.get(agent.id) if hasattr(coordinator, 'last_eval_fitness') else None
+            raw_eval_score = coordinator.last_raw_eval_fitness.get(agent.id) if hasattr(coordinator, 'last_raw_eval_fitness') else None
+            eval_fitness_scores.append(float(gated_eval_score) if gated_eval_score is not None else float(agent.get_fitness_score()))
+            raw_eval_fitness_scores.append(float(raw_eval_score) if raw_eval_score is not None else float(agent.get_fitness_score()))
 
         population_stats = {
             "size": len(coordinator.population),
@@ -170,9 +178,15 @@ async def get_stats():
             "avg_fitness": sum(agent.get_fitness_score() for agent in coordinator.population) / len(coordinator.population) if coordinator.population else 0,
             "best_eval_fitness": max(eval_fitness_scores) if eval_fitness_scores else 0,
             "avg_eval_fitness": _safe_mean(eval_fitness_scores),
+            "best_raw_eval_fitness": max(raw_eval_fitness_scores) if raw_eval_fitness_scores else 0,
+            "avg_raw_eval_fitness": _safe_mean(raw_eval_fitness_scores),
         }
         behavior_stats = _aggregate_behavior_stats(coordinator.population)
         tournament_progress = coordinator.tournament_manager.get_progress_snapshot()
+        generation_metrics = dict(getattr(coordinator, "last_generation_behavior_metrics", {}) or {})
+        generation_gate = dict(getattr(coordinator, "last_generation_gate", {}) or {})
+        generation_gate_overview = dict(generation_gate)
+        generation_gate_overview.pop("per_agent", None)
         
         # Gather recent tournament/game end screens (shallow aggregation)
         recent_end_screens = []
@@ -206,6 +220,9 @@ async def get_stats():
         return {
             "population": population_stats,
             "behavior": behavior_stats,
+            "generation_metrics": generation_metrics,
+            "generation_gate": generation_gate_overview,
+            "generation_behavior_history": list(getattr(coordinator, "generation_behavior_history", [])[-50:]),
             "servers": server_stats,
             "evolution": evolution_stats,
             "tournaments": {
@@ -240,9 +257,13 @@ async def get_population():
         behavior_stats = agent.get_behavior_stats() if hasattr(agent, "get_behavior_stats") else {}
         # Show both lifetime fitness (agent.get_fitness_score) and last eval fitness used for selection
         last_eval = coordinator.last_eval_fitness.get(agent.id) if hasattr(coordinator, 'last_eval_fitness') else None
+        raw_eval = coordinator.last_raw_eval_fitness.get(agent.id) if hasattr(coordinator, 'last_raw_eval_fitness') else None
+        gate_per_agent = dict((getattr(coordinator, "last_generation_gate", {}) or {}).get("per_agent", {}) or {})
+        gate_info = gate_per_agent.get(agent.id, {})
         agent_data.update({
             "fitness_score": agent.get_fitness_score(),
             "last_eval_fitness": last_eval if last_eval is not None else agent.get_fitness_score(),
+            "last_raw_eval_fitness": raw_eval if raw_eval is not None else agent.get_fitness_score(),
             "win_rate": agent.wins / agent.games_played if agent.games_played > 0 else 0,
             "avg_vp": agent.total_victory_points / agent.games_played if agent.games_played > 0 else 0,
             "learning_rate": float(cfg.get("learning_rate", 0.0)),
@@ -253,6 +274,7 @@ async def get_population():
             "epsilon_random_rate": float(behavior_stats.get("epsilon_random_rate", 0.0)),
             "fallback_pass_rate": float(behavior_stats.get("fallback_pass_rate", 0.0)),
             "total_decisions": int(behavior_stats.get("total_decisions", 0)),
+            "promotion_gate": gate_info,
         })
         population_data.append(agent_data)
     
@@ -808,6 +830,8 @@ async def dashboard():
             function updateTrainingCards(stats) {
                 const p = stats.population || {};
                 const t = stats.tournaments || {};
+                const gm = stats.generation_metrics || {};
+                const gate = stats.generation_gate || {};
                 const planned = Number(t.planned_games || 0);
                 const finished = Number(t.finished_games || 0);
                 const progressPct = planned > 0 ? (finished / planned) : 0;
@@ -815,8 +839,15 @@ async def dashboard():
                     metricCard('Generation', fmt(p.current_generation || 0, 0)),
                     metricCard('Population', fmt(p.size || 0, 0)),
                     metricCard('Best Eval Fitness', fmt(p.best_eval_fitness || 0, 2)),
+                    metricCard('Best Raw Eval', fmt(p.best_raw_eval_fitness || 0, 2)),
                     metricCard('Avg Eval Fitness', fmt(p.avg_eval_fitness || 0, 2)),
                     metricCard('Total Games', fmt(p.total_games_played || 0, 0)),
+                    metricCard('Card Plays / Game', fmt(gm.card_plays_per_game || 0, 2), `${fmt(gm.card_play_actions || 0, 0)} card plays`),
+                    metricCard('SP Ratio', pct(gm.standard_project_ratio || 0, 1), `${fmt(gm.standard_project_actions || 0, 0)} SP actions`),
+                    metricCard('Steel Spent', fmt(gm.steel_spent || 0, 0), `${fmt(gm.steel_spent_per_game || 0, 2)}/game`),
+                    metricCard('Titanium Spent', fmt(gm.titanium_spent || 0, 0), `${fmt(gm.titanium_spent_per_game || 0, 2)}/game`),
+                    metricCard('Payment Rejects', fmt(gm.payment_reject_count || 0, 0), `${fmt(gm.payment_reject_count_total || 0, 0)} total`),
+                    metricCard('Gate Pass Rate', pct(gate.pass_rate || 0, 1), `${fmt(gate.failed_agents || 0, 0)} failed`),
                     metricCard('Active Tournaments', fmt(t.active || 0, 0)),
                     metricCard('Eval Progress', `${fmt(finished, 0)}/${fmt(planned, 0)}`, pct(progressPct, 1)),
                     metricCard('Eval Failures', fmt(t.failed_games || 0, 0), `${fmt(t.successful_games || 0, 0)} successful`),
@@ -826,6 +857,7 @@ async def dashboard():
 
             function updateBehaviorCards(stats) {
                 const b = stats.behavior || {};
+                const gm = stats.generation_metrics || {};
                 const html = [
                     metricCard('Policy Success', pct(b.policy_success_rate || 0), `${fmt(b.policy_successes || 0, 0)}/${fmt(b.policy_attempts || 0, 0)} accepted`),
                     metricCard('Epsilon Random Rate', pct(b.epsilon_random_rate || 0), `${fmt(b.epsilon_random_actions || 0, 0)} sampled`),
@@ -833,6 +865,10 @@ async def dashboard():
                     metricCard('Fallback Pass Rate', pct(b.fallback_pass_rate || 0), `${fmt(b.fallback_passes || 0, 0)} forced passes`),
                     metricCard('Avg Available Actions', fmt(b.avg_available_actions || 0, 1), 'signal breadth per decision'),
                     metricCard('Total Decisions', fmt(b.total_decisions || 0, 0)),
+                    metricCard('Card Plays (lifetime)', fmt(b.card_play_actions || 0, 0), `${fmt(b.card_plays_per_game || 0, 2)}/game`),
+                    metricCard('Steel Spent (lifetime)', fmt(b.steel_spent || 0, 0)),
+                    metricCard('Titanium Spent (lifetime)', fmt(b.titanium_spent || 0, 0)),
+                    metricCard('Generation Card Plays', fmt(gm.card_play_actions || 0, 0), `${fmt(gm.total_games_evaluated || 0, 0)} games`),
                 ].join('');
                 document.getElementById('behavior-stats').innerHTML = html;
             }
@@ -1069,6 +1105,8 @@ async def dashboard():
                 const hints = [];
                 const b = stats.behavior || {};
                 const p = stats.population || {};
+                const gm = stats.generation_metrics || {};
+                const gate = stats.generation_gate || {};
                 const evolution = stats.evolution || {};
                 const history = evolution.fitness_history || [];
 
@@ -1086,6 +1124,22 @@ async def dashboard():
 
                 if ((b.fallback_pass_rate || 0) > 0.15) {
                     hints.push(`Pass fallback is high (${pct(b.fallback_pass_rate || 0)}). This often means the policy cannot find valid productive actions.`);
+                }
+
+                if ((gm.standard_project_ratio || 0) > 0.6) {
+                    hints.push(`Standard project ratio is high (${pct(gm.standard_project_ratio || 0)}). Card-engine development may be underused.`);
+                }
+
+                if ((gm.card_plays_per_game || 0) < 0.5) {
+                    hints.push(`Card plays per game are low (${fmt(gm.card_plays_per_game || 0, 2)}). Consider stronger incentives for project-card execution.`);
+                }
+
+                if ((gm.payment_reject_count || 0) > 0) {
+                    hints.push(`Payment rejects detected in this generation (${fmt(gm.payment_reject_count || 0, 0)}). Decoder payment validation needs attention.`);
+                }
+
+                if ((gate.failed_agents || 0) > 0) {
+                    hints.push(`Promotion gate filtered ${fmt(gate.failed_agents || 0, 0)} agents this generation; pass rate ${pct(gate.pass_rate || 0)}.`);
                 }
 
                 if (history.length >= 12) {
@@ -1140,10 +1194,13 @@ async def dashboard():
                     <tr>
                         <td class="left mono">${String(agent.id || '').slice(0, 10)}</td>
                         <td>${fmt(agent.last_eval_fitness || 0, 2)}</td>
+                        <td>${fmt(agent.last_raw_eval_fitness || 0, 2)}</td>
                         <td>${fmt(agent.fitness_score || 0, 2)}</td>
                         <td>${fmt(agent.games_played || 0, 0)}</td>
                         <td>${pct(agent.win_rate || 0, 1)}</td>
                         <td>${fmt(agent.avg_vp || 0, 1)}</td>
+                        <td>${(agent.promotion_gate && agent.promotion_gate.passed) ? '<span class="good">pass</span>' : '<span class="bad">fail</span>'}</td>
+                        <td>${fmt((agent.promotion_gate && agent.promotion_gate.penalty) || 0, 1)}</td>
                         <td>${fmt(agent.epsilon || 0, 3)}</td>
                         <td>${fmt(agent.temperature || 0, 3)}</td>
                         <td>${fmt(agent.learning_rate || 0, 5)}</td>
@@ -1159,11 +1216,14 @@ async def dashboard():
                         <thead>
                             <tr>
                                 <th class="left">Agent</th>
-                                <th>Eval Fitness</th>
+                                <th>Gated Eval</th>
+                                <th>Raw Eval</th>
                                 <th>Lifetime Fitness</th>
                                 <th>Games</th>
                                 <th>Win Rate</th>
                                 <th>Avg VP</th>
+                                <th>Gate</th>
+                                <th>Penalty</th>
                                 <th>Epsilon</th>
                                 <th>Temperature</th>
                                 <th>Learning Rate</th>

@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 class StateEncoder:
     # Process-local cache keyed by metadata file path.
     _CARD_METADATA_CACHE: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    # Mirrors key tile groupings from terraforming-mars/src/common/TileType.ts.
+    _CITY_TILE_TYPES = {2, 3, 20, 37, 43}
+    _GREENERY_TILE_TYPES = {0, 36}
+    _OCEAN_TILE_TYPES = {1, 20, 21, 22, 36, 43}
 
     def __init__(self, state_size: int = 512):
         self.state_size = state_size
@@ -22,6 +26,43 @@ class StateEncoder:
         
         # Optional: load authoritative card metadata exported from TS server
         self.card_metadata_by_name: Dict[str, Dict[str, Any]] = self._load_card_metadata()
+
+    def _space_type_lower(self, value: Any) -> str:
+        return str(value or '').strip().lower()
+
+    def _safe_int(self, value: Any) -> Optional[int]:
+        try:
+            if isinstance(value, bool):
+                return None
+            return int(value)
+        except Exception:
+            return None
+
+    def _tile_flags(self, space: Dict[str, Any]) -> Tuple[bool, bool, bool]:
+        """Return (is_city, is_greenery, is_ocean) for a board space tile."""
+        tile_raw = space.get('tileType')
+        tile_num = self._safe_int(tile_raw)
+        tile_name = str(tile_raw or '').strip().lower()
+        tile_name = tile_name.replace('-', '_').replace(' ', '_')
+
+        is_city = False
+        is_greenery = False
+        is_ocean = False
+
+        if tile_num is not None:
+            is_city = tile_num in self._CITY_TILE_TYPES
+            is_greenery = tile_num in self._GREENERY_TILE_TYPES
+            is_ocean = tile_num in self._OCEAN_TILE_TYPES
+
+        if tile_name:
+            if 'city' in tile_name or tile_name in ('capital', 'new_holland'):
+                is_city = True
+            if 'greenery' in tile_name or 'wetland' in tile_name:
+                is_greenery = True
+            if 'ocean' in tile_name or 'wetland' in tile_name:
+                is_ocean = True
+
+        return is_city, is_greenery, is_ocean
     
     def _get_common_cards(self) -> List[str]:
         """Get list of most common cards for encoding"""
@@ -60,7 +101,7 @@ class StateEncoder:
             features.extend(self._encode_hand_cards(player_state))
             
             # Board state (100 features)
-            features.extend(self._encode_board_state(game_state))
+            features.extend(self._encode_board_state(game_state, player))
             
             # Game phase and generation (10 features)
             features.extend(self._encode_game_phase(game_state))
@@ -72,7 +113,7 @@ class StateEncoder:
             features.extend(self._encode_action_context(player_state))
             
             # Awards and milestones (32 features)
-            features.extend(self._encode_awards_milestones(game_state))
+            features.extend(self._encode_awards_milestones(game_state, player))
             
             # Pad or truncate to exact size
             features = features[:self.state_size]
@@ -513,71 +554,122 @@ class StateEncoder:
         logger.debug("Hand encoding: %s for player %s", encoding, player_state.get('id'))
         return encoding
     
-    def _encode_board_state(self, game_state: Dict[str, Any]) -> List[float]:
-        """Encode board state with spatial reasoning"""
+    def _encode_board_state(
+        self,
+        game_state: Dict[str, Any],
+        current_player: Optional[Dict[str, Any]] = None,
+    ) -> List[float]:
+        """Encode board state with robust tile parsing and city/greenery combo signals."""
         encoding = [0.0] * 100
-        
-        # Ocean tiles
+
         ocean_count = game_state.get('oceans', 0)
-        encoding[0] = ocean_count / 9.0  # Max 9 oceans
-        # Board spaces (simplified)
-        spaces = game_state.get('spaces', [])
-        
-        # Count different tile types
+        encoding[0] = min(float(ocean_count) / 9.0, 1.0)  # Max 9 oceans
+
+        spaces_raw = game_state.get('spaces', [])
+        spaces = [space for space in spaces_raw if isinstance(space, dict)]
+
         city_count = 0
         greenery_count = 0
         special_tile_count = 0
-        
+        available_land = 0
+        available_ocean = 0
+
+        own_city_tiles = 0
+        own_greenery_tiles = 0
+        own_special_tiles = 0
+        own_color = str((current_player or {}).get('color', '') or '').strip().lower()
+        vpb = (current_player or {}).get('victoryPointsBreakdown', {}) or {}
+
+        city_positions: List[Tuple[int, int]] = []
+        greenery_positions: List[Tuple[int, int]] = []
+        ocean_positions: List[Tuple[int, int]] = []
+
         for space in spaces:
-            tile_type = space.get('tileType')
-            if tile_type:
-                if tile_type == 'CITY':
-                    city_count += 1
-                elif tile_type == 'GREENERY':
-                    greenery_count += 1
-                else:
-                    special_tile_count += 1
-        
+            space_type = self._space_type_lower(space.get('spaceType'))
+            if space_type == 'colony':
+                # Mars-board interaction features should ignore colony spaces.
+                continue
+
+            tile_raw = space.get('tileType')
+            has_tile = tile_raw is not None
+            if not has_tile:
+                if space_type in ('land', 'restricted'):
+                    available_land += 1
+                elif space_type == 'ocean':
+                    available_ocean += 1
+                continue
+
+            is_city, is_greenery, is_ocean = self._tile_flags(space)
+            if is_city:
+                city_count += 1
+                city_positions.append(self._get_space_coordinates(space))
+            if is_greenery:
+                greenery_count += 1
+                greenery_positions.append(self._get_space_coordinates(space))
+            if is_ocean:
+                ocean_positions.append(self._get_space_coordinates(space))
+            if not (is_city or is_greenery or is_ocean):
+                special_tile_count += 1
+
+            if own_color and str(space.get('color', '') or '').strip().lower() == own_color:
+                if is_city:
+                    own_city_tiles += 1
+                if is_greenery:
+                    own_greenery_tiles += 1
+                if not (is_city or is_greenery or is_ocean):
+                    own_special_tiles += 1
+
         encoding[1] = min(city_count / 20.0, 1.0)
         encoding[2] = min(greenery_count / 30.0, 1.0)
         encoding[3] = min(special_tile_count / 20.0, 1.0)
-        
-        # Available spaces by type (simplified)
-        available_land = sum(1 for space in spaces if not space.get('tileType') and space.get('spaceType') == 'LAND')
-        available_ocean = sum(1 for space in spaces if not space.get('tileType') and space.get('spaceType') == 'OCEAN')
-        
         encoding[4] = min(available_land / 50.0, 1.0)
         encoding[5] = min(available_ocean / 9.0, 1.0)
-        
-        # Add spatial reasoning features
-        city_positions = []
-        greenery_positions = []
-        ocean_positions = []
-        
-        for space in spaces:
-            if space.get('tileType') == 'CITY':
-                city_positions.append(self._get_space_coordinates(space))
-            elif space.get('tileType') == 'GREENERY':
-                greenery_positions.append(self._get_space_coordinates(space))
-            elif space.get('tileType') == 'OCEAN':
-                ocean_positions.append(self._get_space_coordinates(space))
-        
+
+        # Map-level ownership footprint.
+        encoding[6] = min(own_city_tiles / 8.0, 1.0)
+        encoding[7] = min(own_greenery_tiles / 20.0, 1.0)
+        encoding[8] = min(own_special_tiles / 12.0, 1.0)
+        encoding[9] = min((own_city_tiles + own_greenery_tiles) / 24.0, 1.0)
+
         # Encode spatial patterns
         encoding[50] = self._calculate_city_clustering(city_positions)
         encoding[51] = self._calculate_greenery_spread(greenery_positions)
         encoding[52] = self._calculate_ocean_coverage(ocean_positions)
-        
+
+        # Direct city-greenery scoring signal (combo utilization).
+        own_city_vp = float(vpb.get('city', 0) or 0)
+        own_greenery_vp = float(vpb.get('greenery', 0) or 0)
+        own_city_count_stat = float((current_player or {}).get('citiesCount', 0) or 0)
+        own_greenery_count_stat = float(max(own_greenery_tiles, own_greenery_vp))
+        max_city_combo = max(1.0, own_city_count_stat * 6.0)
+
+        encoding[53] = min(own_city_vp / 20.0, 1.0)
+        encoding[54] = min(own_greenery_vp / 20.0, 1.0)
+        encoding[55] = min(own_city_count_stat / 8.0, 1.0)
+        encoding[56] = min(own_greenery_count_stat / 20.0, 1.0)
+        encoding[57] = min(own_city_vp / max_city_combo, 1.0)
+        encoding[58] = min(own_city_vp / max(1.0, own_greenery_count_stat), 1.0)
+        encoding[59] = min(
+            ((0.70 * own_city_vp) + (0.30 * own_greenery_vp)) / max(1.0, (5.0 * own_city_count_stat)),
+            1.0,
+        )
+        encoding[60] = min((own_city_vp + own_greenery_vp) / 30.0, 1.0)
+
         return encoding
 
     def _get_space_coordinates(self, space: Dict[str, Any]) -> Tuple[int, int]:
-        """Extract coordinates from space ID"""
-        space_id = space.get('id', '')
-        # Parse coordinates from space ID (e.g., "01" -> (0,1))
+        """Extract coordinates from explicit x/y fields, fallback to space ID parsing."""
+        x_raw = self._safe_int(space.get('x'))
+        y_raw = self._safe_int(space.get('y'))
+        if x_raw is not None and y_raw is not None:
+            return (x_raw, y_raw)
+
+        space_id = str(space.get('id', '') or '')
         try:
             x = int(space_id[0]) if len(space_id) > 0 else 0
             y = int(space_id[1]) if len(space_id) > 1 else 0
             return (x, y)
-        except:
+        except Exception:
             return (0, 0)
     
     def _calculate_city_clustering(self, city_positions: List[Tuple[int, int]]) -> float:
@@ -760,21 +852,180 @@ class StateEncoder:
         logger.debug("Action context: %s for player %s", encoding, player_state.get('id'))
         return encoding
     
-    def _encode_awards_milestones(self, game_state: Dict[str, Any]) -> List[float]:
-        """Encode awards and milestones state"""
+    def _project_award_points_for_color(
+        self,
+        scores: List[Dict[str, Any]],
+        own_color: str,
+    ) -> float:
+        if not scores or not own_color:
+            return 0.0
+
+        own_color_l = own_color.strip().lower()
+        normalized: List[Tuple[str, float]] = []
+        for row in scores:
+            if not isinstance(row, dict):
+                continue
+            color = str(row.get('playerColor', '') or '').strip().lower()
+            if not color:
+                continue
+            try:
+                score = float(row.get('playerScore', 0) or 0)
+            except Exception:
+                score = 0.0
+            normalized.append((color, score))
+
+        if not normalized:
+            return 0.0
+
+        # Replicate game logic: 1st = 5 VP, 2nd = 2 VP, ties receive full VP for that rank.
+        normalized.sort(key=lambda pair: pair[1], reverse=True)
+        top_score = normalized[0][1]
+        top_colors = [color for color, score in normalized if score == top_score]
+        if own_color_l in top_colors:
+            return 5.0
+        if len(top_colors) > 1:
+            return 0.0
+
+        remaining = normalized[len(top_colors):]
+        if not remaining:
+            return 0.0
+
+        second_score = remaining[0][1]
+        second_colors = [color for color, score in remaining if score == second_score]
+        if own_color_l in second_colors:
+            return 2.0
+        return 0.0
+
+    def _encode_awards_milestones(
+        self,
+        game_state: Dict[str, Any],
+        current_player: Optional[Dict[str, Any]] = None,
+    ) -> List[float]:
+        """Encode milestones/awards with ownership and VP-centric pressure signals."""
         encoding = [0.0] * 32
-        
-        # Milestones (16 slots)
-        milestones = game_state.get('milestones', [])
-        for i, milestone in enumerate(milestones[:16]):
+        milestones = [m for m in (game_state.get('milestones', []) or []) if isinstance(m, dict)]
+        awards = [a for a in (game_state.get('awards', []) or []) if isinstance(a, dict)]
+
+        own_name = str((current_player or {}).get('name', '') or '').strip()
+        own_color = str((current_player or {}).get('color', '') or '').strip().lower()
+        vpb = (current_player or {}).get('victoryPointsBreakdown', {}) or {}
+
+        claimed_milestones = [m for m in milestones if m.get('playerName')]
+        funded_awards = [a for a in awards if a.get('playerName')]
+
+        own_milestones_claimed = 0
+        for milestone in claimed_milestones:
+            claimant_name = str(milestone.get('playerName', '') or '').strip()
+            claimant_color = str(milestone.get('playerColor', '') or '').strip().lower()
+            if (own_name and claimant_name == own_name) or (own_color and claimant_color == own_color):
+                own_milestones_claimed += 1
+
+        own_awards_funded = 0
+        own_award_projected_vp = 0.0
+        own_awards_first = 0
+        own_awards_second = 0
+        projected_award_vp_by_color: Dict[str, float] = {}
+        for award in funded_awards:
+            funder_name = str(award.get('playerName', '') or '').strip()
+            funder_color = str(award.get('playerColor', '') or '').strip().lower()
+            if (own_name and funder_name == own_name) or (own_color and funder_color == own_color):
+                own_awards_funded += 1
+
+            scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
+            own_points = self._project_award_points_for_color(scores, own_color)
+            own_award_projected_vp += own_points
+            if own_points >= 4.99:
+                own_awards_first += 1
+            elif own_points >= 1.99:
+                own_awards_second += 1
+
+            contender_colors = {
+                str(row.get('playerColor', '') or '').strip().lower()
+                for row in scores
+                if isinstance(row, dict)
+            }
+            for contender_color in contender_colors:
+                if not contender_color:
+                    continue
+                contender_points = self._project_award_points_for_color(scores, contender_color)
+                projected_award_vp_by_color[contender_color] = (
+                    float(projected_award_vp_by_color.get(contender_color, 0.0)) + contender_points
+                )
+
+        best_other_projected_award_vp = 0.0
+        for contender_color, projected_vp in projected_award_vp_by_color.items():
+            if contender_color == own_color:
+                continue
+            if projected_vp > best_other_projected_award_vp:
+                best_other_projected_award_vp = float(projected_vp)
+
+        # Scalar summary features (0-15)
+        milestone_total = max(1.0, float(len(milestones)))
+        award_total = max(1.0, float(len(awards)))
+        claimed_count = float(len(claimed_milestones))
+        funded_count = float(len(funded_awards))
+        unclaimed_count = max(0.0, milestone_total - claimed_count)
+        unfunded_count = max(0.0, award_total - funded_count)
+
+        own_milestone_vp = float(vpb.get('milestones', 0) or 0)
+        own_award_vp = float(vpb.get('awards', 0) or 0)
+        milestone_vp_gap = own_milestone_vp - (5.0 * max(0.0, claimed_count - float(own_milestones_claimed)))
+        award_vp_gap = own_award_projected_vp - best_other_projected_award_vp
+
+        # How close current player is on still-open milestones based on score preview.
+        best_unclaimed_ratio = 0.0
+        for milestone in milestones:
             if milestone.get('playerName'):
-                encoding[i] = 1.0
-        
-        # Awards (16 slots)
-        awards = game_state.get('awards', [])
-        for i, award in enumerate(awards[:16]):
-            if award.get('playerName'):
-                encoding[16 + i] = 1.0
+                continue
+            scores = [row for row in (milestone.get('scores', []) or []) if isinstance(row, dict)]
+            if not scores:
+                continue
+            own_score = 0.0
+            max_score = 0.0
+            for row in scores:
+                try:
+                    score = float(row.get('playerScore', 0) or 0)
+                except Exception:
+                    score = 0.0
+                max_score = max(max_score, score)
+                row_color = str(row.get('playerColor', '') or '').strip().lower()
+                if own_color and row_color == own_color:
+                    own_score = score
+            if max_score > 0.0:
+                best_unclaimed_ratio = max(best_unclaimed_ratio, min(own_score / max_score, 1.0))
+
+        encoding[0] = min(claimed_count / milestone_total, 1.0)
+        encoding[1] = min(float(own_milestones_claimed) / 3.0, 1.0)
+        encoding[2] = min(unclaimed_count / milestone_total, 1.0)
+        encoding[3] = min(own_milestone_vp / 15.0, 1.0)
+        encoding[4] = min(max((milestone_vp_gap + 15.0) / 30.0, 0.0), 1.0)
+        encoding[5] = min(funded_count / award_total, 1.0)
+        encoding[6] = min(float(own_awards_funded) / 3.0, 1.0)
+        encoding[7] = min(own_award_projected_vp / 15.0, 1.0)
+        encoding[8] = min(own_award_vp / 20.0, 1.0)
+        encoding[9] = min(max((award_vp_gap + 5.0) / 10.0, 0.0), 1.0)
+        encoding[10] = min(float(own_awards_first) / 3.0, 1.0)
+        encoding[11] = min(float(own_awards_second) / 3.0, 1.0)
+        encoding[12] = min(unfunded_count / award_total, 1.0)
+        encoding[13] = 1.0 if unclaimed_count > 0 else 0.0
+        encoding[14] = 1.0 if unfunded_count > 0 else 0.0
+        encoding[15] = min(max(best_unclaimed_ratio, 0.0), 1.0)
+
+        # Compact slot-level ownership signals (16-31).
+        for idx, milestone in enumerate(milestones[:8]):
+            owner = str(milestone.get('playerName', '') or '').strip()
+            owner_color = str(milestone.get('playerColor', '') or '').strip().lower()
+            if not owner:
+                continue
+            encoding[16 + idx] = 1.0 if ((own_name and owner == own_name) or (own_color and owner_color == own_color)) else 0.5
+
+        for idx, award in enumerate(awards[:8]):
+            funder = str(award.get('playerName', '') or '').strip()
+            funder_color = str(award.get('playerColor', '') or '').strip().lower()
+            if not funder:
+                continue
+            encoding[24 + idx] = 1.0 if ((own_name and funder == own_name) or (own_color and funder_color == own_color)) else 0.5
+
         logger.debug("Awards/milestones: %s for game/player %s", encoding, game_state.get('id'))
         return encoding
 

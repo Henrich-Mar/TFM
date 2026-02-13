@@ -22,6 +22,8 @@ from scoring import calculate_terminal_reward, calculate_step_reward
 import random
 import aiohttp
 
+from .ppo import PPORolloutStep, PPOHyperParameters, optimize_ppo_policy
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -103,6 +105,23 @@ class RLAgent:
         )
         self.self_play_reward_scale = float(os.getenv("SELF_PLAY_REWARD_SCALE", "1.0"))
         self.training_lock = asyncio.Lock()
+        self.ppo_enable = str(os.getenv("PPO_ENABLE", "1")).strip().lower() not in ("0", "false", "no", "off")
+        self.ppo_rollout_steps = self._safe_env_int("PPO_ROLLOUT_STEPS", 8192)
+        self.ppo_buffer_max_steps = self._safe_env_int("PPO_BUFFER_MAX_STEPS", 65536)
+        self.state_schema_version = str(os.getenv("STATE_SCHEMA_VERSION", "v1")).strip() or "v1"
+        self.ppo_hparams = PPOHyperParameters(
+            clip_eps=self._safe_env_float("PPO_CLIP_EPS", 0.2),
+            value_clip_eps=self._safe_env_float("PPO_VALUE_CLIP_EPS", 0.2),
+            gamma=self._safe_env_float("PPO_GAMMA", 0.99),
+            gae_lambda=self._safe_env_float("PPO_GAE_LAMBDA", 0.95),
+            epochs=self._safe_env_int("PPO_EPOCHS", 4),
+            minibatch_size=self._safe_env_int("PPO_MINIBATCH_SIZE", 1024),
+            entropy_coef=self._safe_env_float("PPO_ENTROPY_COEF", 0.01),
+            value_coef=self._safe_env_float("PPO_VALUE_COEF", 0.5),
+            max_grad_norm=self._safe_env_float("PPO_MAX_GRAD_NORM", 1.0),
+            target_kl=self._safe_env_float("PPO_TARGET_KL", 0.02),
+        )
+        self.rollout_buffer: deque[PPORolloutStep] = deque(maxlen=max(1, int(self.ppo_buffer_max_steps)))
         self.poll_interval_sec = float(os.getenv("AGENT_POLL_INTERVAL_SEC", "0.2"))
         self.post_move_sleep_sec = float(os.getenv("AGENT_POST_MOVE_SLEEP_SEC", "0.0"))
         self.failure_pause_sec = float(os.getenv("AGENT_FAILURE_PAUSE_SEC", "0.0"))
@@ -132,11 +151,28 @@ class RLAgent:
             'card_play_actions': 0,
             'steel_spent': 0,
             'titanium_spent': 0,
+            'action_mask_observations': 0,
+            'action_legal_count_total': 0,
+            'action_rejected_by_server': 0,
         }
+
+    @staticmethod
+    def _safe_env_float(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, str(default)))
+        except Exception:
+            return float(default)
+
+    @staticmethod
+    def _safe_env_int(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except Exception:
+            return int(default)
         
     async def play_game(self, game_instance: GameInstance, player_name: str):
         """Play a complete game"""
-        episode_steps: List[Tuple[np.ndarray, int, float]] = []
+        episode_steps: List[Dict[str, Any]] = []
         try:
             # Join the game
             player_id = await game_instance.join_player(player_name)
@@ -174,7 +210,7 @@ class RLAgent:
             final_state = await game_instance.get_final_state()
             game_outcome = await self._record_game_result(final_state, player_name, game_instance)
 
-            # Sparse-reward policy/value update from self-play trajectory
+            # Queue PPO trajectory for coordinator-driven optimization.
             if self.train_from_self_play and game_outcome.get("completed", False):
                 reward = self._compute_terminal_reward(
                     game_outcome.get("rank", 4),
@@ -182,7 +218,10 @@ class RLAgent:
                     game_outcome.get("completed", False),
                 )
                 reward *= self.self_play_reward_scale
-                await self._train_from_episode(episode_steps, reward)
+                if self.ppo_enable:
+                    await self._queue_episode_rollout(episode_steps, reward)
+                else:
+                    await self._train_from_episode(episode_steps, reward)
             
         except Exception as e:
             logger.error(f"Agent {self.id[:8]} failed during game: {e}")
@@ -260,7 +299,7 @@ class RLAgent:
         game_instance: GameInstance,
         player_id: str,
         player_state: Dict[str, Any],
-        episode_steps: List[Tuple[np.ndarray, int, float]],
+        episode_steps: List[Dict[str, Any]],
     ):
         """Make a single move in the game, with robust fallbacks."""
         try:
@@ -289,7 +328,7 @@ class RLAgent:
                     await self._sleep_if_needed(self.failure_pause_sec)
 
             # 1. Try a policy-driven action
-            policy_action, policy_action_idx, sampled_from_policy = await self._get_action_from_network(
+            policy_action, policy_action_idx, sampled_from_policy, action_meta = await self._get_action_from_network(
                 state_vector, player_state, force_random=False
             )
             tried_action_indices = set()
@@ -318,11 +357,22 @@ class RLAgent:
                                     after_state=post_action_state,
                                     action_input=policy_action,
                                 )
-                            episode_steps.append((state_vector.astype(np.float32), int(policy_action_idx), float(step_reward)))
+                            if action_meta is not None:
+                                episode_steps.append(
+                                    {
+                                        "state": state_vector.astype(np.float32),
+                                        "action": int(policy_action_idx),
+                                        "reward": float(step_reward),
+                                        "logp_old": float(action_meta.get("logp_old", 0.0)),
+                                        "value_old": float(action_meta.get("value_old", 0.0)),
+                                        "legal_actions": list(action_meta.get("legal_actions", [])),
+                                    }
+                                )
                     await self._sleep_if_needed(self.post_move_sleep_sec)
                     return  # Success
                 else:
                     self._bump_decision_stat('policy_rejections')
+                    self._bump_decision_stat('action_rejected_by_server')
                     if policy_action_idx is not None:
                         tried_action_indices.add(int(policy_action_idx))
                     logger.warning(f"Agent {self.id[:8]} policy action was rejected by game")
@@ -623,12 +673,12 @@ class RLAgent:
                         stack.append(item)
     
     async def _get_action_from_network(self, state_vector: np.ndarray, 
-                                    player_state: Dict[str, Any], force_random: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool]:
+                                    player_state: Dict[str, Any], force_random: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool, Optional[Dict[str, Any]]]:
         """Get action from neural network"""
         try:
             # Convert to tensor
             state_tensor = torch.FloatTensor(state_vector).unsqueeze(0)
-            
+             
             with torch.no_grad():
                 policy_logits, value = self.network(state_tensor)
                 
@@ -642,6 +692,8 @@ class RLAgent:
             waiting_for = player_state.get('waitingFor', {})
             self._bump_decision_stat('available_action_observations')
             self._bump_decision_stat('sum_available_actions', len(available_actions))
+            self._bump_decision_stat('action_mask_observations')
+            self._bump_decision_stat('action_legal_count_total', len(available_actions))
             prefer_project_cards = False
             waiting_type = str(waiting_for.get('type', '') or '').lower()
             if waiting_type in ['projectcard', 'selectprojectcardtoplay']:
@@ -665,7 +717,7 @@ class RLAgent:
                 prefer_project_cards = bool(has_project_card_option and has_standard_project_option)
                
             if not available_actions:
-                return None, None, False
+                return None, None, False, None
                  
             # Log available action types for debugging
             action_types = []
@@ -739,22 +791,30 @@ class RLAgent:
                 pass
 
             # Sample action based on policy
-            action_index, sampled_from_policy = self._sample_action(
+            action_index, sampled_from_policy, sampled_distribution = self._sample_action(
                 policy_probs.squeeze(),
                 available_actions,
                 force_random=force_random,
                 action_weight_adjustments=action_weight_adjustments,
                 prefer_project_cards=prefer_project_cards,
             )
-            
+             
             # Convert to game input
             action_input = self.action_decoder.decode_action(action_index, player_state)
-            
-            return action_input, action_index, sampled_from_policy
-            
+            action_meta: Optional[Dict[str, Any]] = None
+            if sampled_from_policy and sampled_distribution is not None:
+                action_prob = float(sampled_distribution[int(action_index)].item())
+                action_meta = {
+                    "logp_old": float(np.log(max(1e-8, action_prob))),
+                    "value_old": float(value.squeeze().item()),
+                    "legal_actions": [int(a) for a in available_actions],
+                }
+
+            return action_input, action_index, sampled_from_policy, action_meta
+             
         except Exception as e:
             logger.error(f"Error getting action from network: {e}")
-            return None, None, False
+            return None, None, False, None
     
     def _sample_action(
         self,
@@ -763,11 +823,11 @@ class RLAgent:
         force_random: bool = False,
         action_weight_adjustments: Optional[Dict[int, float]] = None,
         prefer_project_cards: bool = False,
-    ) -> Tuple[int, bool]:
+    ) -> Tuple[int, bool, Optional[torch.Tensor]]:
         """Sample action from policy, restricted to available actions"""
         # Reduce epsilon-greedy for more policy-driven behavior
         if force_random or np.random.random() < max(0.05, self.config.epsilon * 0.5):
-            return np.random.choice(available_actions), False
+            return np.random.choice(available_actions), False, None
 
         # Mask unavailable actions (strict mask; never sample hidden actions).
         masked_probs = torch.zeros_like(policy_probs)
@@ -777,7 +837,7 @@ class RLAgent:
             if 0 <= int(action_idx) < len(policy_probs)
         ]
         if not valid_actions:
-            return np.random.choice(available_actions), False
+            return np.random.choice(available_actions), False, None
         for action_idx in valid_actions:
             masked_probs[action_idx] = torch.clamp(policy_probs[action_idx], min=0.0)
         
@@ -809,7 +869,7 @@ class RLAgent:
                 priority_prob = 0.90
             priority_prob = max(0.0, min(1.0, priority_prob))
             if np.random.random() < priority_prob:
-                return int(np.random.choice(play_card_actions)), True
+                return int(np.random.choice(play_card_actions)), False, None
         
         for i, action_idx in enumerate(valid_actions):
             if action_idx >= pass_action_base:
@@ -849,18 +909,18 @@ class RLAgent:
         # Renormalize after adjustment
         total_prob = float(masked_probs.sum().item())
         if total_prob <= 0:
-            return np.random.choice(valid_actions), False
+            return np.random.choice(valid_actions), False, None
         masked_probs = masked_probs / total_prob
 
         # Sample from policy
         try:
-            return torch.multinomial(masked_probs, 1).item(), True
+            return torch.multinomial(masked_probs, 1).item(), True, masked_probs
         except RuntimeError:
             # Fallback to non-pass action if possible
             non_pass_actions = [a for a in available_actions if a < pass_action_base]
             if non_pass_actions:
-                return np.random.choice(non_pass_actions), False
-            return np.random.choice(available_actions), False
+                return np.random.choice(non_pass_actions), False, None
+            return np.random.choice(available_actions), False, None
     
     async def _record_game_result(self, final_state: Dict[str, Any], player_name: str, game_instance: GameInstance) -> Dict[str, Any]:
         """Record the result of a completed game"""
@@ -924,7 +984,102 @@ class RLAgent:
         """Convert game outcome into a bounded terminal reward for policy updates."""
         return calculate_terminal_reward(rank=rank, victory_points=vp, completed=completed)
 
-    async def _train_from_episode(self, episode_steps: List[Tuple[np.ndarray, int, float]], terminal_reward: float):
+    async def _queue_episode_rollout(self, episode_steps: List[Dict[str, Any]], terminal_reward: float):
+        """Queue rollout transitions for coordinator-driven PPO optimization."""
+        if not episode_steps:
+            return
+
+        steps = episode_steps[-max(1, self.config.max_episode_steps):]
+        rollout_steps: List[PPORolloutStep] = []
+        for idx, step in enumerate(steps):
+            try:
+                state_vector = np.asarray(step.get("state"), dtype=np.float32).reshape(-1)
+                if int(state_vector.size) != int(self.config.state_size):
+                    continue
+                if not np.isfinite(state_vector).all():
+                    continue
+                reward = float(step.get("reward", 0.0))
+                if idx == len(steps) - 1:
+                    reward += float(terminal_reward)
+                rollout_steps.append(
+                    PPORolloutStep(
+                        state=state_vector,
+                        action=int(step.get("action", 0)),
+                        logp_old=float(step.get("logp_old", 0.0)),
+                        value_old=float(step.get("value_old", 0.0)),
+                        reward=reward,
+                        done=(idx == len(steps) - 1),
+                        legal_actions=[int(a) for a in step.get("legal_actions", [])],
+                        state_schema_version=self.state_schema_version,
+                    )
+                )
+            except Exception:
+                continue
+
+        if not rollout_steps:
+            return
+
+        async with self.training_lock:
+            for step in rollout_steps:
+                self.rollout_buffer.append(step)
+
+        logger.info(
+            "Agent %s queued PPO rollout: steps=%d terminal_reward=%.3f buffer_size=%d",
+            self.id[:8],
+            len(rollout_steps),
+            float(terminal_reward),
+            len(self.rollout_buffer),
+        )
+
+    async def optimize_from_rollout_buffer(self, max_steps: Optional[int] = None) -> Dict[str, Any]:
+        """Run PPO optimization from buffered rollout data."""
+        if not self.ppo_enable:
+            return {}
+
+        take = int(max_steps) if max_steps is not None else int(self.ppo_rollout_steps)
+        take = max(1, take)
+        expected_schema_version = str(self.state_schema_version or "v1")
+        schema_filtered = 0
+
+        async with self.training_lock:
+            if not self.rollout_buffer:
+                return {}
+            steps: List[PPORolloutStep] = []
+            while self.rollout_buffer and len(steps) < take:
+                candidate = self.rollout_buffer.popleft()
+                if str(getattr(candidate, "state_schema_version", "")) != expected_schema_version:
+                    schema_filtered += 1
+                    continue
+                steps.append(candidate)
+
+            if not steps:
+                return {"rollout/steps": 0, "rollout/schema_filtered": int(schema_filtered)}
+
+            metrics = optimize_ppo_policy(
+                network=self.network,
+                optimizer=self.optimizer,
+                steps=steps,
+                ppo=self.ppo_hparams,
+                policy_temperature=max(float(self.config.temperature), 1e-3),
+            )
+            self.network.eval()
+
+        metrics["rollout/schema_filtered"] = int(schema_filtered)
+        if metrics:
+            logger.info(
+                "Agent %s PPO update: steps=%d policy_loss=%.4f value_loss=%.4f approx_kl=%.4f",
+                self.id[:8],
+                int(metrics.get("rollout/steps", 0)),
+                float(metrics.get("ppo/policy_loss", 0.0)),
+                float(metrics.get("ppo/value_loss", 0.0)),
+                float(metrics.get("ppo/approx_kl", 0.0)),
+            )
+        return metrics
+
+    def get_rollout_buffer_size(self) -> int:
+        return int(len(self.rollout_buffer))
+
+    async def _train_from_episode(self, episode_steps: List[Dict[str, Any]], terminal_reward: float):
         """Policy/value update from one self-play episode with terminal reward."""
         if not episode_steps:
             return
@@ -932,10 +1087,10 @@ class RLAgent:
         # Protect optimizer/network updates when the same agent appears in concurrent games.
         async with self.training_lock:
             steps = episode_steps[-max(1, self.config.max_episode_steps):]
-            states = torch.from_numpy(np.stack([step[0] for step in steps], axis=0)).float()
-            actions = torch.tensor([int(step[1]) for step in steps], dtype=torch.long)
+            states = torch.from_numpy(np.stack([np.asarray(step.get("state"), dtype=np.float32) for step in steps], axis=0)).float()
+            actions = torch.tensor([int(step.get("action", 0)) for step in steps], dtype=torch.long)
             step_rewards = [
-                float(step[2]) if len(step) >= 3 else 0.0
+                float(step.get("reward", 0.0))
                 for step in steps
             ]
 
@@ -1014,6 +1169,9 @@ class RLAgent:
         card_play_actions = int(self.decision_stats.get('card_play_actions', 0))
         steel_spent = int(self.decision_stats.get('steel_spent', 0))
         titanium_spent = int(self.decision_stats.get('titanium_spent', 0))
+        action_mask_observations = int(self.decision_stats.get('action_mask_observations', 0))
+        action_legal_count_total = int(self.decision_stats.get('action_legal_count_total', 0))
+        action_rejected_by_server = int(self.decision_stats.get('action_rejected_by_server', 0))
 
         def _ratio(numerator: int, denominator: int) -> float:
             return float(numerator) / float(denominator) if denominator > 0 else 0.0
@@ -1056,6 +1214,10 @@ class RLAgent:
             'steel_spent_per_game': _ratio(steel_spent, int(self.games_played)),
             'titanium_spent': titanium_spent,
             'titanium_spent_per_game': _ratio(titanium_spent, int(self.games_played)),
+            'action_legal_count_mean': _ratio(action_legal_count_total, action_mask_observations),
+            'action_mask_coverage_rate': _ratio(action_mask_observations, total_decisions),
+            'action_rejected_by_server': action_rejected_by_server,
+            'rollout_buffer_size': int(len(self.rollout_buffer)),
             'action_counts': action_counts,
             'action_mix': action_mix,
             'standard_project_counts': standard_project_counts,

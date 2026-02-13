@@ -42,13 +42,15 @@ class TournamentManager:
     def create_tournaments(self, 
                          population: List[RLAgent], 
                          tournament_size: int,
-                         games_per_evaluation: int) -> List[TournamentBracket]:
+                         games_per_evaluation: int,
+                         shuffle_population: bool = True) -> List[TournamentBracket]:
         """Create tournament brackets from population"""
         tournaments = []
         
-        # Shuffle population for random matchups
+        # Shuffle population for random matchups unless caller provides an ordered list.
         shuffled_population = population.copy()
-        random.shuffle(shuffled_population)
+        if shuffle_population:
+            random.shuffle(shuffled_population)
         
         # Create tournaments
         for i in range(0, len(shuffled_population), tournament_size):
@@ -240,38 +242,9 @@ class TournamentManager:
                 }
             )
             logger.info("Game %s created with fastModeOption=%s", game_instance.game_id, fast_mode_option)
-            # Record a visitable URL for this game id in coordinator.recent_games:
+            # Record game URL for dashboard using canonical public URL resolver.
             try:
-                public_base = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')
-                # Spectator URL in UI typically is /game?id={game_id}
-                game_url = f"{public_base}/game?id={game_instance.game_id}"
-                # Stash in cluster scratchpad
-                if hasattr(self.game_cluster, 'recent_games'):
-                    self.game_cluster.recent_games.append({"game_id": game_instance.game_id, "url": game_url})
-                # Also attempt to store on coordinator if reachable via app global
-                from api.server import coordinator as api_coordinator
-                if api_coordinator is not None and hasattr(api_coordinator, 'recent_games'):
-                    api_coordinator.recent_games.append({"game_id": game_instance.game_id, "url": game_url})
-            except Exception:
-                pass
-            
-            # Record game URL for dashboard with correct public base per server
-            try:
-                # Build mapping from env PUBLIC_TM_MAP if provided, else fallback to PUBLIC_TM_URL
-                mapping_str = os.getenv('PUBLIC_TM_MAP', '')
-                public_map: Dict[str, str] = {}
-                if mapping_str:
-                    for pair in mapping_str.split(','):
-                        if not pair:
-                            continue
-                        k, v = pair.split('=')
-                        public_map[k.strip()] = v.strip()
-                server_key = f"{game_instance.server.host}:{game_instance.server.port}"
-                public_base = public_map.get(server_key)
-                if not public_base:
-                    pub = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')
-                    public_base = (pub.split(',')[0] if ',' in pub else pub)
-                game_url = f"{public_base}/game?id={game_instance.game_id}"
+                game_url = game_instance.get_public_game_url()
                 if hasattr(self.game_cluster, 'recent_games'):
                     self.game_cluster.recent_games.append({"game_id": game_instance.game_id, "url": game_url})
                 from api.server import coordinator as api_coordinator
@@ -307,22 +280,8 @@ class TournamentManager:
 
             # Build end-screen URLs for convenience.
             internal_base = game_instance.base_url
-            mapping_str = os.getenv('PUBLIC_TM_MAP', '')
-            public_map: Dict[str, str] = {}
-            if mapping_str:
-                try:
-                    for pair in mapping_str.split(','):
-                        if not pair:
-                            continue
-                        k, v = pair.split('=')
-                        public_map[k.strip()] = v.strip()
-                except Exception:
-                    logger.warning("Failed to parse PUBLIC_TM_MAP; falling back to PUBLIC_TM_URL")
-            server_key = f"{game_instance.server.host}:{game_instance.server.port}"
-            public_base = public_map.get(server_key)
-            if not public_base:
-                pub = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')
-                public_base = (pub.split(',')[0] if ',' in pub else pub)
+            public_game_url = game_instance.get_public_game_url()
+            public_base = public_game_url.split("/game?id=", 1)[0]
             end_screens: List[str] = []  # public links for UI
             try:
                 for p in game_state.get('players', []):
@@ -372,6 +331,7 @@ class TournamentManager:
             for agent in agents:
                 disp_name = f"Agent_{agent.id[:8]}"
                 source = view_players_by_name.get(disp_name) or game_players_by_name.get(disp_name, {})
+                vp_breakdown = dict(source.get('victoryPointsBreakdown', {}) or {})
 
                 vp = int(((source.get('victoryPointsBreakdown', {}) or {}).get('total', source.get('terraformRating', 0)) or 0))
                 tr = int(source.get('terraformRating', 0) or 0)
@@ -383,6 +343,14 @@ class TournamentManager:
                     'total': vp,
                     'tr': tr,
                     'mc': mc,
+                    'vp_terraforming': int(vp_breakdown.get('terraformRating', tr) or 0),
+                    'vp_milestones': int(vp_breakdown.get('milestones', 0) or 0),
+                    'vp_awards': int(vp_breakdown.get('awards', 0) or 0),
+                    'vp_greenery': int(vp_breakdown.get('greenery', 0) or 0),
+                    'vp_city': int(vp_breakdown.get('city', 0) or 0),
+                    'vp_cards': int(vp_breakdown.get('victoryPoints', 0) or 0),
+                    'town_placements': int(source.get('citiesCount', 0) or 0),
+                    'greenery_placements': int(vp_breakdown.get('greenery', 0) or 0),
                 })
 
             scored_list.sort(key=lambda x: (x['total'], x['mc'], x['tr']), reverse=True)
@@ -433,6 +401,14 @@ class TournamentManager:
                     'victory_points': entry['total'],
                     'terraform_rating': entry['tr'],
                     'megacredits': entry['mc'],
+                    'vp_terraforming': entry.get('vp_terraforming', 0),
+                    'vp_milestones': entry.get('vp_milestones', 0),
+                    'vp_awards': entry.get('vp_awards', 0),
+                    'vp_greenery': entry.get('vp_greenery', 0),
+                    'vp_city': entry.get('vp_city', 0),
+                    'vp_cards': entry.get('vp_cards', 0),
+                    'town_placements': entry.get('town_placements', 0),
+                    'greenery_placements': entry.get('greenery_placements', 0),
                     'completed': True,
                 })
 
@@ -451,8 +427,7 @@ class TournamentManager:
                     if hasattr(api_coordinator, 'recent_end_screens'):
                         api_coordinator.recent_end_screens.append({"game_id": actual_game_id, "end_screens": end_screens})
                     if hasattr(api_coordinator, 'recent_games'):
-                        public_base = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')
-                        api_coordinator.recent_games.append({"game_id": actual_game_id, "url": f"{public_base}/ui/game?id={actual_game_id}"})
+                        api_coordinator.recent_games.append({"game_id": actual_game_id, "url": game_instance.get_public_game_url()})
             except Exception:
                 logger.warning("Failed adding recent game/end screen to coordinator")
             return result

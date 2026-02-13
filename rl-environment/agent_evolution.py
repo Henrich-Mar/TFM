@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass, asdict
 import asyncio
 import torch
+import os
 
 from models.agent import RLAgent, AgentConfig
 
@@ -33,6 +34,24 @@ class EvolutionManager:
         self.generation_count = 0
         self.fitness_history = []
         self.diversity_history = []
+        self.rl_first_enabled = str(os.getenv("RL_FIRST_ENABLE", "1")).strip().lower() not in ("0", "false", "no", "off")
+        self.immigrant_ratio = self._safe_env_float("EVOLUTION_IMMIGRANT_RATIO", 0.10)
+        self.immigrant_interval = self._safe_env_int("EVOLUTION_IMMIGRANT_INTERVAL", 3)
+        self.immigrant_mutation_rate = self._safe_env_float("EVOLUTION_IMMIGRANT_MUTATION_RATE", 0.30)
+
+    @staticmethod
+    def _safe_env_float(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, str(default)))
+        except Exception:
+            return float(default)
+
+    @staticmethod
+    def _safe_env_int(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except Exception:
+            return int(default)
         
     async def create_initial_population(self, population_size: int) -> List[RLAgent]:
         """Create initial diverse population of agents"""
@@ -81,6 +100,9 @@ class EvolutionManager:
                    f"Max eval fitness: {max(fitness_scores):.2f}, "
                    f"Mean eval fitness: {np.mean(fitness_scores):.2f}, "
                    f"Diversity: {diversity:.3f}")
+
+        if self.rl_first_enabled:
+            return await self._evolve_population_rl_first(population, fitness_scores)
         
         # Apply diversity bonus to fitness scores
         adjusted_fitness = self._apply_diversity_bonus(population, fitness_scores)
@@ -92,6 +114,59 @@ class EvolutionManager:
         new_population = await self._create_new_generation(elite_agents, breeding_pool)
         
         return new_population
+
+    async def _evolve_population_rl_first(
+        self,
+        population: List[RLAgent],
+        fitness_scores: List[float],
+    ) -> List[RLAgent]:
+        """RL-first mode: keep PPO-trained population, inject immigrants periodically."""
+        if not population:
+            return []
+
+        ranked_indices = sorted(
+            range(len(population)),
+            key=lambda i: float(fitness_scores[i]) if i < len(fitness_scores) else 0.0,
+            reverse=True,
+        )
+        ranked_population = [population[i] for i in ranked_indices]
+        new_population = ranked_population[: self.population_size]
+
+        interval = max(1, int(self.immigrant_interval))
+        if (self.generation_count % interval) != 0:
+            logger.info(
+                "RL-first evolution: no immigrants this generation (interval=%d).",
+                interval,
+            )
+            return new_population
+
+        immigrant_count = max(1, int(len(new_population) * max(0.0, min(0.5, float(self.immigrant_ratio)))))
+        parent_pool = new_population[: max(2, len(new_population) // 2)]
+        for idx in range(immigrant_count):
+            immigrant = self._create_immigrant(parent_pool)
+            replace_idx = max(0, len(new_population) - 1 - idx)
+            new_population[replace_idx] = immigrant
+
+        logger.info(
+            "RL-first evolution: introduced %d immigrants (ratio=%.2f, interval=%d).",
+            immigrant_count,
+            float(self.immigrant_ratio),
+            interval,
+        )
+        return new_population
+
+    def _create_immigrant(self, parent_pool: List[RLAgent]) -> RLAgent:
+        if len(parent_pool) >= 2 and random.random() < float(self.crossover_rate):
+            parent1 = random.choice(parent_pool)
+            parent2 = random.choice(parent_pool)
+            if parent1.id != parent2.id:
+                child = parent1.crossover(parent2)
+            else:
+                child = self._clone_agent(parent1)
+        else:
+            child = self._clone_agent(random.choice(parent_pool))
+        child.mutate(mutation_rate=max(0.01, float(self.immigrant_mutation_rate)))
+        return child
     
     def _apply_diversity_bonus(self, population: List[RLAgent], fitness_scores: List[float]) -> List[float]:
         """Apply bonus for genetic diversity"""

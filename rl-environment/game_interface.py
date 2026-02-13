@@ -10,6 +10,7 @@ import json
 import os
 from datetime import datetime
 from copy import deepcopy
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,30 @@ class GameInstance:
         if not public_base:
             pub = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')
             public_base = pub.split(',')[0] if ',' in pub else pub
-        return str(public_base).rstrip('/')
+        return self._normalize_public_base(public_base)
+
+    @staticmethod
+    def _normalize_public_base(value: Any) -> str:
+        """Return normalized public base URL: scheme://host[:port] (no path/query/fragment)."""
+        fallback = "http://localhost:8081"
+        raw = str(value or "").strip()
+        if not raw:
+            raw = fallback
+        # Handle accidental comma-separated env values.
+        if "," in raw:
+            parts = [part.strip() for part in raw.split(",") if part.strip()]
+            raw = parts[0] if parts else fallback
+        if "://" not in raw:
+            raw = f"http://{raw}"
+        try:
+            parsed = urlsplit(raw)
+            scheme = parsed.scheme if parsed.scheme in ("http", "https") else "http"
+            netloc = parsed.netloc or parsed.path
+            if not netloc:
+                return fallback
+            return urlunsplit((scheme, netloc, "", "", "")).rstrip("/")
+        except Exception:
+            return fallback
 
     def get_public_game_url(self) -> str:
         return f"{self._resolve_public_base()}/game?id={self.game_id}"

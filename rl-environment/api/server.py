@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional, List
 import uvicorn
 import os
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,80 @@ def _summarize_values(values: List[float]) -> Dict[str, float]:
         "mean": _safe_mean(values),
         "max": max(values),
     }
+
+
+def _normalize_external_url(raw_url: Any) -> str:
+    raw = str(raw_url or "").strip()
+    if not raw:
+        return ""
+    raw = raw.replace("/ui/game?", "/game?")
+
+    if "," in raw:
+        parts = [part.strip() for part in raw.split(",") if part.strip()]
+        preferred = None
+        for part in parts:
+            low = part.lower()
+            if "/game?" in low or "/the-end?" in low or "/player?" in low:
+                preferred = part
+                break
+        raw = preferred or (parts[0] if parts else raw)
+
+    if "://" not in raw:
+        raw = f"http://{raw}"
+
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return ""
+
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        return ""
+
+    netloc = parsed.netloc or parsed.path
+    if not netloc:
+        return ""
+
+    return urlunsplit((scheme, netloc, parsed.path if parsed.netloc else "", parsed.query, ""))
+
+
+def _sanitize_recent_games(entries: Any) -> List[Dict[str, str]]:
+    sanitized: List[Dict[str, str]] = []
+    if not isinstance(entries, list):
+        return sanitized
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        game_id = str(entry.get("game_id", "") or "").strip()
+        normalized_url = _normalize_external_url(entry.get("url", ""))
+        if not game_id and not normalized_url:
+            continue
+        payload: Dict[str, str] = {"game_id": game_id}
+        if normalized_url:
+            payload["url"] = normalized_url
+        sanitized.append(payload)
+    return sanitized
+
+
+def _sanitize_recent_end_screens(entries: Any) -> List[Dict[str, Any]]:
+    sanitized: List[Dict[str, Any]] = []
+    if not isinstance(entries, list):
+        return sanitized
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        game_id = str(entry.get("game_id", "") or "").strip()
+        raw_screens = entry.get("end_screens", [])
+        screens: List[str] = []
+        if isinstance(raw_screens, list):
+            for raw_url in raw_screens:
+                normalized = _normalize_external_url(raw_url)
+                if normalized:
+                    screens.append(normalized)
+        if not game_id and not screens:
+            continue
+        sanitized.append({"game_id": game_id, "end_screens": screens})
+    return sanitized
 
 
 def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
@@ -213,6 +288,7 @@ async def get_stats():
                 recent_games = getattr(coordinator.game_cluster, 'recent_games', [])[-20:]
             except Exception:
                 recent_games = []
+        recent_games = _sanitize_recent_games(recent_games)
 
         # Recently completed end-screen URLs
         recent_end = []
@@ -220,6 +296,7 @@ async def get_stats():
             recent_end = getattr(coordinator, 'recent_end_screens', [])[-20:]
         except Exception:
             recent_end = []
+        recent_end = _sanitize_recent_end_screens(recent_end)
 
         return {
             "population": population_stats,
@@ -324,6 +401,7 @@ async def get_server_status():
         recent_games = getattr(coordinator.game_cluster, 'recent_games', [])[-20:]
     except Exception:
         recent_games = []
+    recent_games = _sanitize_recent_games(recent_games)
 
     return {
         "health": health_status,

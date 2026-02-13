@@ -142,6 +142,13 @@ def _can_afford_card_now(card: Dict[str, Any], player: Dict[str, Any]) -> bool:
     return purchasing_power >= cost
 
 
+def _vp_component(player: Dict[str, Any], key: str) -> float:
+    breakdown = player.get('victoryPointsBreakdown', {})
+    if not isinstance(breakdown, dict):
+        return 0.0
+    return _safe_float(breakdown.get(key, 0), 0.0)
+
+
 def calculate_step_reward(
     before_state: Optional[Dict[str, Any]],
     after_state: Optional[Dict[str, Any]],
@@ -176,6 +183,19 @@ def calculate_step_reward(
     for key in production_keys:
         production_delta += _safe_float(after_player.get(key, 0), 0.0) - _safe_float(before_player.get(key, 0), 0.0)
     reward += max(-0.10, min(0.14, 0.02 * production_delta))
+
+    # Reward direct VP improvements from milestones and awards.
+    milestone_delta = _vp_component(after_player, 'milestones') - _vp_component(before_player, 'milestones')
+    reward += max(-0.06, min(0.20, 0.035 * milestone_delta))
+
+    award_delta = _vp_component(after_player, 'awards') - _vp_component(before_player, 'awards')
+    reward += max(-0.08, min(0.18, 0.030 * award_delta))
+
+    # Reward greener-city map synergy (city VP component is adjacency-driven).
+    city_combo_delta = _vp_component(after_player, 'city') - _vp_component(before_player, 'city')
+    greenery_delta = _vp_component(after_player, 'greenery') - _vp_component(before_player, 'greenery')
+    combo_delta = city_combo_delta + (0.25 * greenery_delta)
+    reward += max(-0.10, min(0.15, 0.05 * combo_delta))
 
     # Reward card quality improvements in hand.
     before_hand = _extract_hand(before_state, before_player)

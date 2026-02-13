@@ -22,7 +22,15 @@ from models.agent import RLAgent
 from metrics.tracker import MetricsTracker
 from api.server import start_api_server
 from logging_setup import setup_logging
-from scoring import calculate_selection_score
+from training.fitness import (
+    PromotionGateConfig,
+    apply_promotion_gates,
+    calculate_selection_fitness,
+    compute_generation_behavior_metrics,
+    snapshot_population_behavior,
+)
+from training.ppo_cycle import optimize_population_with_ppo
+from training.league import LeagueConfig, LeagueManager
 
 # Configure logging with rotation (env toggles)
 LOG_DIR = os.getenv('RL_LOG_DIR', '/app/rl-logs')
@@ -105,6 +113,16 @@ class RLCoordinator:
         self.gate_max_payment_reject_count = self._safe_env_int("GATE_MAX_PAYMENT_REJECT_COUNT", 0)
         self.gate_penalty_points = self._safe_env_float("GATE_PENALTY_POINTS", 8.0)
         self.gate_global_payment_penalty_points = self._safe_env_float("GATE_GLOBAL_PAYMENT_PENALTY_POINTS", 6.0)
+        self.ppo_enable = str(os.getenv("PPO_ENABLE", "1")).strip().lower() not in ("0", "false", "no", "off")
+        self.ppo_rollout_steps = self._safe_env_int("PPO_ROLLOUT_STEPS", 8192)
+        self.league_manager = LeagueManager(
+            LeagueConfig(
+                enabled=str(os.getenv("LEAGUE_ENABLE", "1")).strip().lower() not in ("0", "false", "no", "off"),
+                historical_ratio=self._safe_env_float("LEAGUE_HISTORICAL_RATIO", 0.4),
+                exploiter_ratio=self._safe_env_float("LEAGUE_EXPLOITER_RATIO", 0.2),
+                snapshot_interval=self._safe_env_int("LEAGUE_SNAPSHOT_INTERVAL", 5),
+            )
+        )
 
     @staticmethod
     def _safe_env_float(name: str, default: float) -> float:
@@ -177,10 +195,12 @@ class RLCoordinator:
                 self.current_generation,
                 len(self.population),
             )
+            self.evolution_manager.generation_count = int(self.current_generation)
             return
 
         # No checkpoint found or resume disabled: start fresh.
         self.current_generation = 0
+        self.evolution_manager.generation_count = 0
         self.population = await self.evolution_manager.create_initial_population(
             self.config.population_size
         )
@@ -252,12 +272,21 @@ class RLCoordinator:
         logger.info(f"Evaluating population of {len(self.population)} agents...")
         before_behavior = self._snapshot_population_behavior()
         payment_reject_before = int(getattr(self.game_cluster, "payment_reject_count", 0))
-        
+
+        matchmaking_population = self.league_manager.order_population_for_matchmaking(
+            self.population,
+            generation=int(self.current_generation),
+        )
+        matchmaking_ordering_applied = [
+            agent.id for agent in matchmaking_population
+        ] != [agent.id for agent in self.population]
+         
         # Create tournament brackets
         tournaments = self.tournament_manager.create_tournaments(
-            self.population, 
+            matchmaking_population,
             self.config.tournament_size,
-            self.config.games_per_evaluation
+            self.config.games_per_evaluation,
+            shuffle_population=not matchmaking_ordering_applied,
         )
         
         # Run tournaments in parallel with a global cap on in-flight games.
@@ -276,8 +305,17 @@ class RLCoordinator:
             for tournament in tournaments
         ])
         
-        # Calculate fitness scores
+        # Evaluate selection fitness from tournament outcomes.
         raw_fitness_scores = self._calculate_fitness_scores(all_results)
+
+        # RL-first: optimize policies from collected rollouts after rollout collection.
+        ppo_metrics: Dict[str, Any] = {}
+        if self.ppo_enable:
+            ppo_metrics = await optimize_population_with_ppo(
+                population=self.population,
+                target_rollout_steps=int(self.ppo_rollout_steps),
+            )
+
         after_behavior = self._snapshot_population_behavior()
         payment_reject_after = int(getattr(self.game_cluster, "payment_reject_count", 0))
 
@@ -286,12 +324,21 @@ class RLCoordinator:
             after_behavior,
             payment_reject_before,
             payment_reject_after,
+            all_results,
         )
+        generation_metrics["league/matchmaking_ordering_applied"] = bool(matchmaking_ordering_applied)
         selection_fitness_scores, gate_summary, per_agent_gate = self._apply_promotion_gates(
             raw_fitness_scores,
             per_agent_behavior,
             generation_metrics,
         )
+        league_metrics = self.league_manager.update_generation(
+            generation=int(self.current_generation),
+            population=self.population,
+            fitness_scores=selection_fitness_scores,
+        )
+        generation_metrics.update(ppo_metrics)
+        generation_metrics.update(league_metrics)
 
         try:
             self.last_raw_eval_fitness = {
@@ -320,30 +367,20 @@ class RLCoordinator:
             self.generation_behavior_history = self.generation_behavior_history[-200:]
 
         logger.info(
-            "Generation %d behavior: card_plays_per_game=%.3f standard_project_ratio=%.3f steel_spent=%d titanium_spent=%d payment_reject_count=%d",
+            "Generation %d behavior: card_plays_per_game=%.3f standard_project_ratio=%.3f steel_spent=%d titanium_spent=%d payment_reject_count=%d ppo_steps=%d",
             int(self.current_generation),
             float(generation_metrics.get("card_plays_per_game", 0.0)),
             float(generation_metrics.get("standard_project_ratio", 0.0)),
             int(generation_metrics.get("steel_spent", 0)),
             int(generation_metrics.get("titanium_spent", 0)),
             int(generation_metrics.get("payment_reject_count", 0)),
+            int(generation_metrics.get("rollout/steps_collected", 0)),
         )
 
         return selection_fitness_scores
 
     def _snapshot_population_behavior(self) -> Dict[str, Dict[str, float]]:
-        snapshot: Dict[str, Dict[str, float]] = {}
-        for agent in self.population:
-            stats = getattr(agent, "decision_stats", {}) or {}
-            action_counts = dict(stats.get("action_type_counts", {}) or {})
-            snapshot[agent.id] = {
-                "games_played": float(getattr(agent, "games_played", 0) or 0),
-                "card_play_actions": float(stats.get("card_play_actions", 0) or 0),
-                "standard_project_actions": float(action_counts.get("standard_project", 0) or 0),
-                "steel_spent": float(stats.get("steel_spent", 0) or 0),
-                "titanium_spent": float(stats.get("titanium_spent", 0) or 0),
-            }
-        return snapshot
+        return snapshot_population_behavior(self.population)
 
     def _compute_generation_behavior_metrics(
         self,
@@ -351,64 +388,18 @@ class RLCoordinator:
         after: Dict[str, Dict[str, float]],
         payment_reject_before: int,
         payment_reject_after: int,
+        tournament_results: List[Dict[str, Any]],
     ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, float]]]:
-        per_agent: Dict[str, Dict[str, float]] = {}
-        totals = {
-            "games_played": 0.0,
-            "card_play_actions": 0.0,
-            "standard_project_actions": 0.0,
-            "steel_spent": 0.0,
-            "titanium_spent": 0.0,
-        }
-
-        for agent in self.population:
-            agent_id = agent.id
-            prev = before.get(agent_id, {})
-            curr = after.get(agent_id, {})
-            games_delta = max(0.0, float(curr.get("games_played", 0.0)) - float(prev.get("games_played", 0.0)))
-            card_plays_delta = max(0.0, float(curr.get("card_play_actions", 0.0)) - float(prev.get("card_play_actions", 0.0)))
-            standard_projects_delta = max(0.0, float(curr.get("standard_project_actions", 0.0)) - float(prev.get("standard_project_actions", 0.0)))
-            steel_spent_delta = max(0.0, float(curr.get("steel_spent", 0.0)) - float(prev.get("steel_spent", 0.0)))
-            titanium_spent_delta = max(0.0, float(curr.get("titanium_spent", 0.0)) - float(prev.get("titanium_spent", 0.0)))
-
-            totals["games_played"] += games_delta
-            totals["card_play_actions"] += card_plays_delta
-            totals["standard_project_actions"] += standard_projects_delta
-            totals["steel_spent"] += steel_spent_delta
-            totals["titanium_spent"] += titanium_spent_delta
-
-            action_denom = card_plays_delta + standard_projects_delta
-            per_agent[agent_id] = {
-                "games_played": games_delta,
-                "card_play_actions": card_plays_delta,
-                "standard_project_actions": standard_projects_delta,
-                "steel_spent": steel_spent_delta,
-                "titanium_spent": titanium_spent_delta,
-                "card_plays_per_game": (card_plays_delta / games_delta) if games_delta > 0 else 0.0,
-                "standard_project_ratio": (standard_projects_delta / action_denom) if action_denom > 0 else 0.0,
-                "steel_spent_per_game": (steel_spent_delta / games_delta) if games_delta > 0 else 0.0,
-                "titanium_spent_per_game": (titanium_spent_delta / games_delta) if games_delta > 0 else 0.0,
-            }
-
-        card_actions_total = totals["card_play_actions"] + totals["standard_project_actions"]
-        games_total = totals["games_played"]
-        payment_reject_delta = max(0, int(payment_reject_after) - int(payment_reject_before))
-        generation_metrics: Dict[str, Any] = {
-            "generation": int(self.current_generation),
-            "total_games_evaluated": int(games_total),
-            "card_play_actions": int(totals["card_play_actions"]),
-            "standard_project_actions": int(totals["standard_project_actions"]),
-            "card_plays_per_game": (float(totals["card_play_actions"]) / games_total) if games_total > 0 else 0.0,
-            "standard_project_ratio": (float(totals["standard_project_actions"]) / card_actions_total) if card_actions_total > 0 else 0.0,
-            "steel_spent": int(totals["steel_spent"]),
-            "titanium_spent": int(totals["titanium_spent"]),
-            "steel_spent_per_game": (float(totals["steel_spent"]) / games_total) if games_total > 0 else 0.0,
-            "titanium_spent_per_game": (float(totals["titanium_spent"]) / games_total) if games_total > 0 else 0.0,
-            "payment_reject_count": int(payment_reject_delta),
-            "input_reject_count_total": int(getattr(self.game_cluster, "input_reject_count", 0)),
-            "payment_reject_count_total": int(getattr(self.game_cluster, "payment_reject_count", 0)),
-        }
-        return generation_metrics, per_agent
+        return compute_generation_behavior_metrics(
+            population=self.population,
+            before=before,
+            after=after,
+            payment_reject_before=payment_reject_before,
+            payment_reject_after=payment_reject_after,
+            current_generation=int(self.current_generation),
+            game_cluster=self.game_cluster,
+            tournament_results=tournament_results,
+        )
 
     def _apply_promotion_gates(
         self,
@@ -416,130 +407,26 @@ class RLCoordinator:
         per_agent_behavior: Dict[str, Dict[str, float]],
         generation_metrics: Dict[str, Any],
     ) -> Tuple[List[float], Dict[str, Any], Dict[str, Dict[str, Any]]]:
-        gated_scores = [float(score) for score in raw_scores]
-        per_agent_gate: Dict[str, Dict[str, Any]] = {}
-        total_penalty = 0.0
-        failed_agents = 0
-
-        global_payment_reject = int(generation_metrics.get("payment_reject_count", 0))
-        global_payment_gate_failed = global_payment_reject > int(self.gate_max_payment_reject_count)
-
-        for idx, agent in enumerate(self.population):
-            agent_id = agent.id
-            behavior = per_agent_behavior.get(agent_id, {})
-            fail_reasons: List[str] = []
-            severity_penalty = 0.0
-            card_plays_per_game = float(behavior.get("card_plays_per_game", 0.0))
-            standard_project_ratio = float(behavior.get("standard_project_ratio", 0.0))
-            steel_spent_per_game = float(behavior.get("steel_spent_per_game", 0.0))
-            titanium_spent_per_game = float(behavior.get("titanium_spent_per_game", 0.0))
-            if self.promotion_gate_enabled and float(behavior.get("games_played", 0.0)) > 0.0:
-                if card_plays_per_game < float(self.gate_min_card_plays_per_game):
-                    fail_reasons.append("card_plays_per_game")
-                if standard_project_ratio > float(self.gate_max_standard_project_ratio):
-                    fail_reasons.append("standard_project_ratio")
-                if steel_spent_per_game < float(self.gate_min_steel_spent_per_game):
-                    fail_reasons.append("steel_spent_per_game")
-                if titanium_spent_per_game < float(self.gate_min_titanium_spent_per_game):
-                    fail_reasons.append("titanium_spent_per_game")
-
-            penalty = 0.0
-            if self.promotion_gate_enabled:
-                penalty += float(self.gate_penalty_points) * float(len(fail_reasons))
-                # Apply proportional penalties so behavior quality differences matter in selection.
-                if float(behavior.get("games_played", 0.0)) > 0.0:
-                    card_floor = max(1e-6, float(self.gate_min_card_plays_per_game))
-                    sp_cap = max(1e-6, float(self.gate_max_standard_project_ratio))
-                    steel_floor = max(1e-6, float(self.gate_min_steel_spent_per_game))
-                    titanium_floor = max(1e-6, float(self.gate_min_titanium_spent_per_game))
-
-                    card_deficit = max(0.0, card_floor - card_plays_per_game) / card_floor
-                    sp_excess = max(0.0, standard_project_ratio - sp_cap) / sp_cap
-                    steel_deficit = max(0.0, steel_floor - steel_spent_per_game) / steel_floor
-                    titanium_deficit = max(0.0, titanium_floor - titanium_spent_per_game) / titanium_floor
-
-                    # Cap each component to keep penalty bounded but still strongly differentiating.
-                    card_deficit = min(card_deficit, 2.0)
-                    sp_excess = min(sp_excess, 2.0)
-                    steel_deficit = min(steel_deficit, 2.0)
-                    titanium_deficit = min(titanium_deficit, 2.0)
-
-                    severity_penalty += float(self.gate_penalty_points) * (
-                        (2.0 * card_deficit)
-                        + (1.5 * sp_excess)
-                        + (0.6 * steel_deficit)
-                        + (0.6 * titanium_deficit)
-                    )
-                    penalty += severity_penalty
-                if global_payment_gate_failed:
-                    penalty += float(self.gate_global_payment_penalty_points)
-
-            raw_score = float(raw_scores[idx]) if idx < len(raw_scores) else 0.0
-            gated_score = raw_score - penalty
-            gated_scores[idx] = gated_score
-            total_penalty += penalty
-
-            passed = len(fail_reasons) == 0 and not global_payment_gate_failed
-            if not passed:
-                failed_agents += 1
-            per_agent_gate[agent_id] = {
-                "passed": bool(passed),
-                "fail_reasons": fail_reasons,
-                "raw_fitness": raw_score,
-                "gated_fitness": gated_score,
-                "penalty": penalty,
-                "severity_penalty": severity_penalty,
-                "behavior": behavior,
-            }
-
-        summary: Dict[str, Any] = {
-            "enabled": bool(self.promotion_gate_enabled),
-            "thresholds": {
-                "min_card_plays_per_game": float(self.gate_min_card_plays_per_game),
-                "max_standard_project_ratio": float(self.gate_max_standard_project_ratio),
-                "min_steel_spent_per_game": float(self.gate_min_steel_spent_per_game),
-                "min_titanium_spent_per_game": float(self.gate_min_titanium_spent_per_game),
-                "max_payment_reject_count": int(self.gate_max_payment_reject_count),
-            },
-            "penalty_points": float(self.gate_penalty_points),
-            "global_payment_penalty_points": float(self.gate_global_payment_penalty_points),
-            "global_payment_gate_failed": bool(global_payment_gate_failed),
-            "global_payment_reject_count": int(global_payment_reject),
-            "failed_agents": int(failed_agents),
-            "passed_agents": int(max(0, len(self.population) - failed_agents)),
-            "pass_rate": (float(max(0, len(self.population) - failed_agents)) / float(len(self.population))) if self.population else 0.0,
-            "total_penalty": float(total_penalty),
-        }
-        return gated_scores, summary, per_agent_gate
+        return apply_promotion_gates(
+            population=self.population,
+            raw_scores=raw_scores,
+            per_agent_behavior=per_agent_behavior,
+            generation_metrics=generation_metrics,
+            gate_config=PromotionGateConfig(
+                enabled=bool(self.promotion_gate_enabled),
+                min_card_plays_per_game=float(self.gate_min_card_plays_per_game),
+                max_standard_project_ratio=float(self.gate_max_standard_project_ratio),
+                min_steel_spent_per_game=float(self.gate_min_steel_spent_per_game),
+                min_titanium_spent_per_game=float(self.gate_min_titanium_spent_per_game),
+                max_payment_reject_count=int(self.gate_max_payment_reject_count),
+                penalty_points=float(self.gate_penalty_points),
+                global_payment_penalty_points=float(self.gate_global_payment_penalty_points),
+            ),
+        )
     
     def _calculate_fitness_scores(self, tournament_results: List[Dict]) -> List[float]:
         """Calculate fitness scores based on tournament performance"""
-        agent_scores = {agent.id: 0.0 for agent in self.population}
-        agent_games = {agent.id: 0 for agent in self.population}
-        
-        for tournament_result in tournament_results:
-            for game_result in tournament_result['games']:
-                for player_result in game_result['players']:
-                    agent_id = player_result['agent_id']
-
-                    total_score = calculate_selection_score(
-                        rank=player_result.get('rank', 4),
-                        victory_points=player_result.get('victory_points', 0),
-                        completed=player_result.get('completed', False),
-                    )
-                    agent_scores[agent_id] += total_score
-                    agent_games[agent_id] += 1
-        
-        # Average scores and handle agents with no games
-        fitness_scores = []
-        for agent in self.population:
-            if agent_games[agent.id] > 0:
-                avg_score = agent_scores[agent.id] / agent_games[agent.id]
-            else:
-                avg_score = 0.0  # Penalty for not playing
-            fitness_scores.append(avg_score)
-        
-        return fitness_scores
+        return calculate_selection_fitness(self.population, tournament_results)
     
     async def save_generation_models(self, generation: int, fitness_scores: List[float]):
         """Save models from current generation"""
@@ -579,6 +466,18 @@ class RLCoordinator:
             cfg['generation_behavior_metrics'] = dict(self.last_generation_behavior_metrics or {})
             cfg['generation_gate_summary'] = gate_summary
             cfg['promotion_gate'] = gate_per_agent.get(agent.id, {})
+            gate_behavior = dict((gate_per_agent.get(agent.id, {}) or {}).get("behavior", {}) or {})
+            cfg['end_screen_tracking'] = {
+                "vp_terraforming_per_game": float(gate_behavior.get("vp_terraforming_per_game", 0.0)),
+                "vp_milestones_per_game": float(gate_behavior.get("vp_milestones_per_game", 0.0)),
+                "vp_awards_per_game": float(gate_behavior.get("vp_awards_per_game", 0.0)),
+                "vp_greenery_per_game": float(gate_behavior.get("vp_greenery_per_game", 0.0)),
+                "vp_city_per_game": float(gate_behavior.get("vp_city_per_game", 0.0)),
+                "vp_cards_per_game": float(gate_behavior.get("vp_cards_per_game", 0.0)),
+                "vp_total_per_game": float(gate_behavior.get("vp_total_per_game", 0.0)),
+                "town_placements_per_game": float(gate_behavior.get("town_placements_per_game", 0.0)),
+                "greenery_placements_per_game": float(gate_behavior.get("greenery_placements_per_game", 0.0)),
+            }
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, indent=2)
 
@@ -635,8 +534,10 @@ class RLCoordinator:
                 "next_generation": int(next_generation),
                 "population_size": len(self.population),
                 "updated_at": datetime.utcnow().isoformat() + "Z",
+                "evolution_generation_count": int(self.evolution_manager.generation_count),
                 "last_generation_behavior_metrics": dict(self.last_generation_behavior_metrics or {}),
                 "last_generation_gate": dict(self.last_generation_gate or {}),
+                "league_state": self.league_manager.get_state(),
             }
             with open(tmp_state_path, "w", encoding="utf-8") as f:
                 json.dump(state_payload, f, indent=2)
@@ -668,8 +569,12 @@ class RLCoordinator:
             with open(self.checkpoint_state_path, "r", encoding="utf-8") as f:
                 state = json.load(f)
             next_generation = int(state.get("next_generation", 0))
+            self.evolution_manager.generation_count = int(
+                state.get("evolution_generation_count", next_generation)
+            )
             self.last_generation_behavior_metrics = dict(state.get("last_generation_behavior_metrics", {}) or {})
             self.last_generation_gate = dict(state.get("last_generation_gate", {}) or {})
+            self.league_manager.load_state(dict(state.get("league_state", {}) or {}))
         except Exception as e:
             logger.warning(f"Failed loading checkpoint state file: {e}")
             return False
@@ -699,6 +604,7 @@ class RLCoordinator:
 
         self.population = loaded_population
         self.current_generation = max(0, min(next_generation, self.config.generations))
+        self.evolution_manager.generation_count = int(self.current_generation)
         return True
 
     def _load_population_from_latest_saved_generation(self) -> bool:
@@ -727,6 +633,7 @@ class RLCoordinator:
                 0,
                 min(int(latest_generation) + 1, self.config.generations),
             )
+            self.evolution_manager.generation_count = int(self.current_generation)
             logger.info(
                 "Bootstrapped resume from generation_%d using %d saved agents",
                 latest_generation,
@@ -767,6 +674,9 @@ class RLCoordinator:
             # Record the game URL
             try:
                 public_base = os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')
+                public_base = public_base.split(',')[0] if ',' in public_base else public_base
+                if '://' not in public_base:
+                    public_base = f"http://{public_base}"
                 game_url = f"{public_base}/game?id={game_result.game_id}"
                 self.recent_games.append({"game_id": game_result.game_id, "url": game_url})
             except Exception as e:

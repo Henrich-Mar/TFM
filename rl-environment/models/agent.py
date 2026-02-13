@@ -581,16 +581,24 @@ class RLAgent:
                 project_counts = self.decision_stats.setdefault('standard_project_counts', {})
                 project_counts[project_name] = int(project_counts.get(project_name, 0)) + 1
 
-        # Track project card plays separately from selection-card prompts.
-        if isinstance(action_input, dict):
-            action_type = str(action_input.get('type', '') or '')
+        # Track project card plays and resource spend, including nested OR/AND payloads.
+        if not isinstance(action_input, dict):
+            return
+
+        stack: List[Dict[str, Any]] = [action_input]
+        while stack:
+            payload = stack.pop()
+            if not isinstance(payload, dict):
+                continue
+
+            action_type = str(payload.get('type', '') or '')
             if category != 'standard_project' and (
                 action_type == 'projectCard'
-                or (action_type == 'card' and 'card' in action_input)
+                or (action_type == 'card' and 'card' in payload)
             ):
                 self._bump_decision_stat('card_play_actions')
 
-            payment = action_input.get('payment')
+            payment = payload.get('payment')
             if isinstance(payment, dict):
                 try:
                     steel_units = int(payment.get('steel', 0) or 0)
@@ -604,6 +612,15 @@ class RLAgent:
                     self._bump_decision_stat('steel_spent', steel_units)
                 if titanium_units > 0:
                     self._bump_decision_stat('titanium_spent', titanium_units)
+
+            nested_response = payload.get('response')
+            if isinstance(nested_response, dict):
+                stack.append(nested_response)
+            nested_responses = payload.get('responses')
+            if isinstance(nested_responses, list):
+                for item in nested_responses:
+                    if isinstance(item, dict):
+                        stack.append(item)
     
     async def _get_action_from_network(self, state_vector: np.ndarray, 
                                     player_state: Dict[str, Any], force_random: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool]:
@@ -709,7 +726,7 @@ class RLAgent:
                         # Blue card actions entry
                         adjustments[idx] = 1.7
                     elif 'standard project' in title_l:
-                        adjustments[idx] = 1.5
+                        adjustments[idx] = 0.85
                     elif 'convert heat' in title_l or 'convert 8 heat' in title_l or 'convert plants' in title_l:
                         adjustments[idx] = 1.3
                 if adjustments:
@@ -787,9 +804,9 @@ class RLAgent:
         # force a project-card attempt with configurable probability.
         if prefer_project_cards and play_card_actions and standard_project_actions:
             try:
-                priority_prob = float(os.getenv("PLAY_CARD_PRIORITY_PROB", "0.75"))
+                priority_prob = float(os.getenv("PLAY_CARD_PRIORITY_PROB", "0.90"))
             except Exception:
-                priority_prob = 0.75
+                priority_prob = 0.90
             priority_prob = max(0.0, min(1.0, priority_prob))
             if np.random.random() < priority_prob:
                 return int(np.random.choice(play_card_actions)), True

@@ -11,8 +11,9 @@ services:
       - "8081:8080"
     environment:
       - NODE_ENV=production
-    volumes:
-      - tm-db-1:/usr/src/app/db
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     networks:
       - rl-network
 
@@ -27,8 +28,9 @@ services:
       - "8082:8080"
     environment:
       - NODE_ENV=production
-    volumes:
-      - tm-db-2:/usr/src/app/db
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     networks:
       - rl-network
 
@@ -43,8 +45,9 @@ services:
       - "8083:8080"
     environment:
       - NODE_ENV=production
-    volumes:
-      - tm-db-3:/usr/src/app/db
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     networks:
       - rl-network
 
@@ -59,8 +62,9 @@ services:
       - "8084:8080"
     environment:
       - NODE_ENV=production
-    volumes:
-      - tm-db-4:/usr/src/app/db
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     networks:
       - rl-network
 
@@ -75,8 +79,9 @@ services:
       - "8085:8080"
     environment:
       - NODE_ENV=production
-    volumes:
-      - tm-db-5:/usr/src/app/db
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     networks:
       - rl-network
 
@@ -91,8 +96,9 @@ services:
       - "8086:8080"
     environment:
       - NODE_ENV=production
-    volumes:
-      - tm-db-6:/usr/src/app/db
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     networks:
       - rl-network
 
@@ -112,9 +118,9 @@ services:
       - GENERATIONS=1000
       - POPULATION_SIZE=16
       - TOURNAMENT_SIZE=4
-      - GAMES_PER_EVAL=20
+      - GAMES_PER_EVAL=10
       - TOURNAMENT_CONCURRENCY=10
-      - GLOBAL_GAME_CONCURRENCY=18
+      - GLOBAL_GAME_CONCURRENCY=36
       - MAX_ACTIVE_GAMES_PER_SERVER=6
       - TM_HTTP_CONNECTOR_LIMIT=768
       - TM_HTTP_CONNECTOR_LIMIT_PER_HOST=192
@@ -176,12 +182,6 @@ services:
       - rl-network
 
 volumes:
-  tm-db-1:
-  tm-db-2:
-  tm-db-3:
-  tm-db-4:
-  tm-db-5:
-  tm-db-6:
   postgres-data:
 
 networks:

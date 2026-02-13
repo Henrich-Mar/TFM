@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TFM RL Strategy Dashboard</title>
+  <style>
+    body{font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;margin:0}
+    .wrap{max-width:1300px;margin:auto;padding:16px}
+    .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:12px}
+    .card{background:#111827;border:1px solid #334155;border-radius:10px;padding:12px}
+    h1,h2,h3{margin:.2rem 0}.muted{color:#94a3b8;font-size:.9rem}
+    table{width:100%;border-collapse:collapse;font-size:.86rem}th,td{border-bottom:1px solid #334155;padding:6px;text-align:right}
+    th:first-child,td:first-child{text-align:left}
+    .pill{display:inline-block;background:#1d4ed8;padding:2px 8px;border-radius:999px;font-size:.78rem}
+    .ok{color:#22c55e}.warn{color:#f59e0b}.bad{color:#ef4444}
+    .bar{height:10px;background:#1e293b;border-radius:8px;overflow:hidden}.fill{height:100%;background:#22c55e}
+    ul{margin:.4rem 0 .2rem 1rem;padding:0}
+    .kv{display:grid;grid-template-columns:1fr auto;gap:6px;font-size:.9rem}
+    button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:8px 10px;cursor:pointer}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+    <div>
+      <h1>Terraforming Mars Agent Insight Dashboard</h1>
+      <div class="muted">Template file: easier to iterate/upload than inline Python HTML.</div>
+      <div id="status" class="muted">Loading…</div>
+    </div>
+    <div><button onclick="refreshAll()">Refresh</button></div>
+  </div>
+
+  <div class="row">
+    <div class="card"><h3>Training Snapshot</h3><div id="training"></div></div>
+    <div class="card"><h3>Behavior Reliability</h3><div id="behavior"></div></div>
+    <div class="card"><h3>Server Health</h3><div id="servers"></div></div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h3>Agent "Thinking" Proxies (from API telemetry)</h3>
+      <div class="muted">These are inferred from action logs, not hidden internal thoughts.</div>
+      <div id="thinking"></div>
+    </div>
+    <div class="card">
+      <h3>Resource / Production / Card Utilization</h3>
+      <div id="utilization"></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h3>Board Control & Blocking Indicators</h3>
+      <div id="blocking"></div>
+    </div>
+    <div class="card">
+      <h3>Milestones, Awards, Synergy & Combo Signals</h3>
+      <div id="synergy"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Top Agents (selection fitness)</h3>
+    <div id="population"></div>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <h3>API vs UI parity audit checklist</h3>
+    <ul>
+      <li>Track per-turn API payload hash and check for stale repeats.</li>
+      <li>Persist legal action masks and rejection reasons from server response.</li>
+      <li>Compare API fields against UI-visible: resources, production, tags, milestones/awards, board occupancy, global parameters.</li>
+      <li>Flag missing critical fields as <span class="pill">blocking mismatch</span> in training reports.</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+const AUTO_REFRESH_MS = {{ auto_refresh_ms }};
+const KEYWORDS = {
+  card: ['play_card','card','prelude'],
+  resource: ['steel','titanium','megacredit','heat','plants','resource'],
+  production: ['production','increase','decrease'],
+  greenery: ['greenery','forest'],
+  city: ['city','town'],
+  milestone: ['milestone'],
+  award: ['award'],
+  block: ['block','adjacent','tile','place_tile','city','greenery'],
+  enemy: ['opponent','enemy','other_player']
+};
+
+function n(v,d=0){return Number(v??d)}
+function pct(v){return `${(100*n(v)).toFixed(1)}%`}
+function fmt(v){return Number(v||0).toLocaleString()}
+
+function keywordScore(actionCounts, words){
+  let total=0;
+  for (const [k,v] of Object.entries(actionCounts||{})) {
+    const key = String(k).toLowerCase();
+    if (words.some(w=>key.includes(w))) total += n(v);
+  }
+  return total;
+}
+
+function renderKV(target, pairs){
+  target.innerHTML = `<div class="kv">${pairs.map(([k,v])=>`<div>${k}</div><div>${v}</div>`).join('')}</div>`;
+}
+
+async function refreshAll(){
+  try {
+    const [statsRes, popRes] = await Promise.all([fetch('/stats'), fetch('/population')]);
+    const stats = await statsRes.json();
+    const pop = await popRes.json();
+
+    document.getElementById('status').textContent = `Generation ${n(stats.population?.current_generation)} • Updated ${new Date().toLocaleTimeString()}`;
+
+    renderKV(document.getElementById('training'), [
+      ['Population', fmt(stats.population?.size)],
+      ['Best eval fitness', n(stats.population?.best_eval_fitness).toFixed(2)],
+      ['Avg eval fitness', n(stats.population?.avg_eval_fitness).toFixed(2)],
+      ['Games played', fmt(stats.population?.total_games_played)],
+      ['Tournaments completion', pct(stats.tournaments?.completion_rate)],
+    ]);
+
+    renderKV(document.getElementById('behavior'), [
+      ['Policy success rate', pct(stats.behavior?.policy_success_rate)],
+      ['Policy sample rate', pct(stats.behavior?.policy_sample_rate)],
+      ['Fallback decision rate', pct(stats.behavior?.fallback_decision_rate)],
+      ['Fallback pass rate', pct(stats.behavior?.fallback_pass_rate)],
+      ['Rejected by server', fmt(stats.behavior?.policy_rejections)],
+    ]);
+
+    const servers = stats.servers || {};
+    renderKV(document.getElementById('servers'), [
+      ['Healthy servers', fmt(servers.healthy_servers ?? servers.healthy ?? 0)],
+      ['Total servers', fmt(servers.total_servers ?? servers.total ?? 0)],
+      ['Active games', fmt(servers.active_games ?? 0)],
+      ['Queue depth', fmt(servers.queue_depth ?? 0)],
+    ]);
+
+    const actions = stats.behavior?.action_counts || {};
+    const cardSel = keywordScore(actions, KEYWORDS.card);
+    const resourceUse = keywordScore(actions, KEYWORDS.resource);
+    const productionOps = keywordScore(actions, KEYWORDS.production);
+    const greenery = keywordScore(actions, KEYWORDS.greenery);
+    const city = keywordScore(actions, KEYWORDS.city);
+    const milestone = keywordScore(actions, KEYWORDS.milestone);
+    const award = keywordScore(actions, KEYWORDS.award);
+    const blockish = keywordScore(actions, KEYWORDS.block);
+    const enemyEval = keywordScore(actions, KEYWORDS.enemy);
+
+    renderKV(document.getElementById('thinking'), [
+      ['Card selection pressure', fmt(cardSel)],
+      ['Resource-sensitive actions', fmt(resourceUse)],
+      ['Production tuning actions', fmt(productionOps)],
+      ['Opponent-aware actions', fmt(enemyEval)],
+      ['Total decisions logged', fmt(stats.behavior?.total_decisions)],
+    ]);
+
+    renderKV(document.getElementById('utilization'), [
+      ['Steel spent', fmt(stats.behavior?.steel_spent)],
+      ['Titanium spent', fmt(stats.behavior?.titanium_spent)],
+      ['Card play actions', fmt(stats.behavior?.card_play_actions)],
+      ['Standard project ratio', pct(stats.behavior?.standard_project_ratio)],
+      ['Avg legal action count', n(stats.behavior?.avg_available_actions).toFixed(2)],
+    ]);
+
+    renderKV(document.getElementById('blocking'), [
+      ['Greenery placement proxy', fmt(greenery)],
+      ['Town/city placement proxy', fmt(city)],
+      ['Blocking tile behavior proxy', fmt(blockish)],
+      ['Policy rejections (invalid moves)', fmt(stats.behavior?.policy_rejections)],
+      ['Recent games tracked', fmt((stats.recent_games||[]).length)],
+    ]);
+
+    renderKV(document.getElementById('synergy'), [
+      ['Milestone interactions', fmt(milestone)],
+      ['Award interactions', fmt(award)],
+      ['Standard project actions', fmt(Object.values(stats.behavior?.standard_project_counts||{}).reduce((a,b)=>a+n(b),0))],
+      ['Action type diversity', fmt(Object.keys(actions).length)],
+      ['Note', 'Add explicit combo tags telemetry in state encoder'],
+    ]);
+
+    const rows = (pop.population||[]).slice(0,12).map(a=>`<tr>
+      <td>${a.id?.slice(0,8)}</td>
+      <td>${n(a.last_eval_fitness).toFixed(2)}</td>
+      <td>${pct(a.win_rate)}</td>
+      <td>${n(a.avg_vp).toFixed(2)}</td>
+      <td>${pct(a.policy_success_rate)}</td>
+      <td>${pct(a.fallback_pass_rate)}</td>
+      <td>${n(a.total_decisions)}</td>
+    </tr>`).join('');
+    document.getElementById('population').innerHTML = `<table><thead><tr><th>Agent</th><th>Eval fitness</th><th>Win rate</th><th>Avg VP</th><th>Policy success</th><th>Pass rate</th><th>Decisions</th></tr></thead><tbody>${rows||'<tr><td colspan="7">No data</td></tr>'}</tbody></table>`;
+  } catch (e) {
+    document.getElementById('status').innerHTML = `<span class="bad">Failed to refresh dashboard: ${e}</span>`;
+  }
+}
+
+refreshAll();
+setInterval(refreshAll, AUTO_REFRESH_MS);
+</script>
+</body>
+</html>

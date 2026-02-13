@@ -66,6 +66,23 @@ def _all_generation_checkpoints(models_root: str, generation: int) -> List[str]:
     return sorted(glob.glob(pattern), key=_fitness_from_name, reverse=True)
 
 
+def _all_saved_checkpoints(models_root: str) -> List[str]:
+    checkpoints: List[str] = []
+    for generation in _parse_generation_dirs(models_root):
+        checkpoints.extend(_all_generation_checkpoints(models_root, generation))
+    return sorted(set(checkpoints), key=_fitness_from_name, reverse=True)
+
+
+def _generation_from_checkpoint(path: str) -> Optional[int]:
+    try:
+        generation_dir = os.path.basename(os.path.dirname(str(path)))
+        if generation_dir.startswith("generation_"):
+            return int(generation_dir.split("_", 1)[1])
+    except Exception:
+        return None
+    return None
+
+
 def _load_agent(checkpoint_path: str) -> RLAgent:
     agent = RLAgent()
     agent.load_model(checkpoint_path)
@@ -157,14 +174,38 @@ def _print_standings(final_state: dict):
 
 async def _run_match(args: argparse.Namespace):
     rng = random.Random(args.seed)
-    generation = _choose_generation(args, rng)
-    checkpoints = _choose_checkpoints(
-        models_root=args.models,
-        generation=generation,
-        bot_count=args.bots,
-        rng=rng,
-        requested_indices=_parse_agent_indices(args.agent_indices) if args.agent_indices else None,
-    )
+    if args.best:
+        all_checkpoints = _all_saved_checkpoints(args.models)
+        if not all_checkpoints:
+            raise FileNotFoundError(f"No checkpoints found under: {args.models}")
+        best_checkpoint = all_checkpoints[0]
+        generation = _generation_from_checkpoint(best_checkpoint)
+        checkpoints = [best_checkpoint]
+        same_generation = (
+            [path for path in _all_generation_checkpoints(args.models, int(generation)) if path != best_checkpoint]
+            if generation is not None else []
+        )
+        fallback = [path for path in all_checkpoints if path != best_checkpoint and path not in same_generation]
+        pool = same_generation + fallback
+        while len(checkpoints) < args.bots:
+            if pool:
+                checkpoints.append(pool.pop(0))
+            else:
+                checkpoints.append(best_checkpoint)
+        if len(checkpoints) > 1:
+            tail = checkpoints[1:]
+            rng.shuffle(tail)
+            checkpoints = [checkpoints[0]] + tail
+        generation = int(generation) if generation is not None else -1
+    else:
+        generation = _choose_generation(args, rng)
+        checkpoints = _choose_checkpoints(
+            models_root=args.models,
+            generation=generation,
+            bot_count=args.bots,
+            rng=rng,
+            requested_indices=_parse_agent_indices(args.agent_indices) if args.agent_indices else None,
+        )
 
     print(f"Using generation: {generation}")
     for i, ckpt in enumerate(checkpoints, start=1):
@@ -235,6 +276,11 @@ def main():
         help="Pick a random generation from models root.",
     )
     parser.add_argument(
+        "--best",
+        action="store_true",
+        help="Load the globally best saved checkpoint across all generations.",
+    )
+    parser.add_argument(
         "--agent-indices",
         type=str,
         default="",
@@ -257,7 +303,7 @@ def main():
         raise ValueError("--bots must be at least 1")
     if args.bots > 3:
         raise ValueError("--bots cannot exceed 3 for a 4-player game")
-    if args.generation is None and not args.random_generation:
+    if not args.best and args.generation is None and not args.random_generation:
         parser.error("Provide --generation N or --random-generation")
 
     try:

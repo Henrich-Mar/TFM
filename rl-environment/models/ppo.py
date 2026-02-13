@@ -220,6 +220,7 @@ def optimize_ppo_policy(
         "ppo/grad_norm": total_grad_norm / updates,
         "ppo/learning_rate": float(optimizer.param_groups[0].get("lr", 0.0)),
         "ppo/update_steps": int(num_updates),
-        "ppo/early_stop_kl": bool(early_stopped),
+        "ppo/early_stop_kl_ratio": 1.0 if early_stopped else 0.0,
+        "ppo/target_kl": float(ppo.target_kl),
         "rollout/steps": int(len(steps)),
     }

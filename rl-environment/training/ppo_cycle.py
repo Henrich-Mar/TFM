@@ -56,9 +56,18 @@ async def optimize_population_with_ppo(
         for key, value in metrics.items():
             if key in ("rollout/steps", "rollout/schema_filtered"):
                 continue
-            aggregate.setdefault(key, []).append(float(value))
+            normalized_key = str(key)
+            normalized_value = value
+            # Legacy compatibility: older agents may still emit a bool-like early-stop key.
+            if normalized_key == "ppo/early_stop_kl":
+                normalized_key = "ppo/early_stop_kl_ratio"
+                normalized_value = 1.0 if bool(value) else 0.0
+            aggregate.setdefault(normalized_key, []).append(float(normalized_value))
 
     merged = {key: _mean(values) for key, values in aggregate.items()}
+    # Compatibility mirror for API consumers that still read this key.
+    if "ppo/early_stop_kl_ratio" in merged:
+        merged["ppo/early_stop_kl"] = bool(float(merged["ppo/early_stop_kl_ratio"]) > 0.0)
     merged["ppo/agents_optimized"] = int(optimized_agents)
     merged["rollout/steps_collected"] = int(rollout_steps)
     merged["rollout/schema_filtered"] = int(schema_filtered)

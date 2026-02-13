@@ -34,6 +34,12 @@ class HumanVsGenerationRequest(BaseModel):
     seed: Optional[int] = None
 
 
+class HumanVsBestRequest(BaseModel):
+    human_name: str = "You"
+    bot_count: int = 3
+    seed: Optional[int] = None
+
+
 def _safe_ratio(numerator: float, denominator: float) -> float:
     return float(numerator) / float(denominator) if float(denominator) > 0 else 0.0
 
@@ -475,6 +481,24 @@ async def play_human_vs_generation(request: HumanVsGenerationRequest):
         seed=request.seed,
     )
 
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.post("/play/human-vs-best")
+async def play_human_vs_best(request: HumanVsBestRequest):
+    """Start a game with one human against the best saved agent checkpoint."""
+    if coordinator is None:
+        raise HTTPException(status_code=503, detail="Coordinator not initialized")
+    if request.bot_count < 1 or request.bot_count > 3:
+        raise HTTPException(status_code=400, detail="bot_count must be between 1 and 3")
+
+    result = await coordinator.run_human_vs_best_agent_game(
+        human_name=request.human_name,
+        bot_count=request.bot_count,
+        seed=request.seed,
+    )
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result

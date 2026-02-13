@@ -80,6 +80,13 @@ services:
         - TM_GAME_TIMEOUT_SEC=420
         - SELF_PLAY_LEARNING=1
         - SELF_PLAY_REWARD_SCALE=1.0
+        - PPO_ENABLE=1
+        - PPO_TARGET_KL=0.02
+        - PPO_LEARNING_RATE=0.0003
+        - PPO_LR_ADAPT_UP=1.03
+        - PPO_LR_ADAPT_DOWN=0.85
+        - PPO_LR_MIN=0.00005
+        - PPO_LR_MAX=0.0008
         - RESUME_TRAINING=1
         - RL_CHECKPOINT_DIR=/app/rl-models/checkpoints
         - REDIS_URL=redis://redis:6379

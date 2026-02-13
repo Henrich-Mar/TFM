@@ -83,6 +83,11 @@ PPO_ENTROPY_COEF=0.01
 PPO_VALUE_COEF=0.5
 PPO_MAX_GRAD_NORM=1.0
 PPO_TARGET_KL=0.02
+PPO_LEARNING_RATE=0.0003
+PPO_LR_ADAPT_UP=1.03
+PPO_LR_ADAPT_DOWN=0.85
+PPO_LR_MIN=0.00005
+PPO_LR_MAX=0.0008
 
 # Trajectory validation
 STATE_SCHEMA_VERSION=v1
@@ -147,6 +152,7 @@ The generation payload now includes PPO and league metrics, including:
 - `ppo/explained_variance`
 - `ppo/grad_norm`
 - `ppo/learning_rate`
+- `ppo/early_stop_kl_ratio`
 - `rollout/steps_collected`
 - `rollout/schema_filtered`
 - `league/matchmaking_ordering_applied`
@@ -158,6 +164,20 @@ The generation payload now includes PPO and league metrics, including:
 
 ```bash
 docker compose -f docker-compose.rl.yml up --build
+```
+
+## Test Best Agent
+
+Play manually against the best saved checkpoint across all generations:
+
+```bash
+python rl-environment/play_vs_generation.py --best --bots 3 --servers localhost:8081,localhost:8082,localhost:8083
+```
+
+Or via API:
+
+```bash
+curl -X POST http://localhost:5000/play/human-vs-best -H "Content-Type: application/json" -d "{\"human_name\":\"You\",\"bot_count\":3}"
 ```
 
 Monitor:

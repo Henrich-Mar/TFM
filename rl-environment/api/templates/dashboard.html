@@ -35,8 +35,12 @@
     .bad{color:var(--bad)}
     button{background:#1d4ed8;color:#fff;border:0;border-radius:8px;padding:8px 12px;cursor:pointer}
     button:hover{background:#2563eb}
+    button:disabled{opacity:.6;cursor:default}
     a{color:var(--link);text-decoration:none}
     a:hover{text-decoration:underline}
+    .actions{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+    .actions .row-btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+    .action-status{max-width:440px;text-align:right}
     .links{display:flex;flex-direction:column;gap:8px;max-height:320px;overflow:auto;padding-right:4px}
     .link-item{border:1px solid var(--line);border-radius:8px;padding:8px;background:#0d1527}
     .link-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -57,8 +61,12 @@
       <div class="muted">Live monitor for PPO rollout, league pools, promotion gates, and recent game links.</div>
       <div id="status" class="muted">Loading...</div>
     </div>
-    <div>
-      <button onclick="refreshAll()">Refresh</button>
+    <div class="actions">
+      <div class="row-btns">
+        <button onclick="refreshAll()">Refresh</button>
+        <button id="btnPlayBest" onclick="startHumanVsBest()">Play vs Best Agent</button>
+      </div>
+      <div id="playBestStatus" class="muted action-status"></div>
     </div>
   </div>
 
@@ -127,6 +135,7 @@ function pct(v) { return `${(100 * n(v)).toFixed(1)}%`; }
 function fmt(v) { return Number(v || 0).toLocaleString(); }
 function f2(v) { return n(v).toFixed(2); }
 function f4(v) { return n(v).toFixed(4); }
+function f6(v) { return n(v).toFixed(6); }
 function esc(v) {
   return String(v ?? "")
     .replaceAll("&", "&amp;")
@@ -222,6 +231,48 @@ function renderRecentEndScreens(entries) {
   target.innerHTML = rows;
 }
 
+async function startHumanVsBest() {
+  const button = document.getElementById("btnPlayBest");
+  const status = document.getElementById("playBestStatus");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Starting...";
+  }
+  if (status) {
+    status.textContent = "";
+  }
+
+  try {
+    const response = await fetch("/play/human-vs-best", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ human_name: "You", bot_count: 3 }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.detail || `HTTP ${response.status}`);
+    }
+
+    const gameLink = linkHtml(payload?.game_url, "Open Game");
+    const playerLink = linkHtml(payload?.player_url, "Open Player View");
+    const gameId = esc(String(payload?.game_id || ""));
+    if (status) {
+      status.innerHTML = `<span class="good">Started ${gameId}</span> | ${gameLink} | ${playerLink}`;
+    }
+    await refreshAll();
+  } catch (err) {
+    if (status) {
+      const message = err && err.message ? err.message : String(err);
+      status.innerHTML = `<span class="bad">Failed to start: ${esc(message)}</span>`;
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Play vs Best Agent";
+    }
+  }
+}
+
 async function refreshAll() {
   try {
     const [statsRes, popRes] = await Promise.all([fetch("/stats"), fetch("/population")]);
@@ -252,8 +303,12 @@ async function refreshAll() {
       ["Policy loss", f4(gm["ppo/policy_loss"])],
       ["Value loss", f4(gm["ppo/value_loss"])],
       ["Approx KL", f4(gm["ppo/approx_kl"])],
+      ["Target KL", f4(gm["ppo/target_kl"])],
       ["Entropy", f4(gm["ppo/entropy"])],
       ["Clip fraction", f4(gm["ppo/clip_fraction"])],
+      ["Early-stop ratio", pct(gm["ppo/early_stop_kl_ratio"])],
+      ["LR adj ratio", pct(gm["ppo/lr_adjustment_applied"])],
+      ["PPO LR", f6(gm["ppo/learning_rate"])],
       ["Explained variance", f4(gm["ppo/explained_variance"])],
     ]);
 

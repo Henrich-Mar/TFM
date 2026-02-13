@@ -748,6 +748,22 @@ class RLCoordinator:
         matches = sorted(glob.glob(pattern), key=self._checkpoint_fitness_from_name, reverse=True)
         return matches[0] if matches else None
 
+    def _generation_from_checkpoint(self, checkpoint_path: str) -> Optional[int]:
+        try:
+            generation_dir = os.path.basename(os.path.dirname(str(checkpoint_path)))
+            if generation_dir.startswith("generation_"):
+                return int(generation_dir.split("_", 1)[1])
+        except Exception:
+            return None
+        return None
+
+    def _all_saved_checkpoints(self, models_root: str) -> List[str]:
+        checkpoints: List[str] = []
+        for generation in self._available_generations(models_root):
+            checkpoints.extend(self._all_generation_checkpoints(models_root, generation))
+        deduped = sorted(set(checkpoints), key=self._checkpoint_fitness_from_name, reverse=True)
+        return deduped
+
     async def _monitor_human_vs_ai_game(self, game_instance: Any, bot_agents: List[RLAgent], bot_names: List[str]):
         """Run bot tasks to completion while a human plays, then cleanup and collect links."""
         try:
@@ -772,6 +788,51 @@ class RLCoordinator:
                 await game_instance.cleanup()
             except Exception:
                 pass
+
+    async def _start_human_vs_ai_from_checkpoints(
+        self,
+        generation: Optional[int],
+        human_name: str,
+        selected_checkpoints: List[str],
+    ) -> Dict[str, Any]:
+        bot_agents: List[RLAgent] = []
+        for ckpt in selected_checkpoints:
+            agent = RLAgent()
+            agent.load_model(ckpt)
+            # Dashboard test games should be inference-only.
+            agent.train_from_self_play = False
+            bot_agents.append(agent)
+
+        bot_names = [f"AI_{agent.id[:8]}" for agent in bot_agents]
+        player_names = [human_name] + bot_names
+        game_instance = await self.game_cluster.create_game(
+            game_id=str(uuid.uuid4()),
+            player_names=player_names,
+            game_options={
+                'soloMode': False,
+                'fastModeOption': False,
+                'removeNegativeGlobalEventsOption': True,
+                'undoOption': False,
+            }
+        )
+        human_player_id = await game_instance.join_player(human_name)
+        game_url = game_instance.get_public_game_url()
+        player_url = game_instance.get_public_player_url(human_player_id)
+        self.recent_games.append({"game_id": game_instance.game_id, "url": game_url})
+
+        monitor_task = asyncio.create_task(self._monitor_human_vs_ai_game(game_instance, bot_agents, bot_names))
+        self._track_background_task(monitor_task)
+
+        return {
+            "success": True,
+            "game_id": game_instance.game_id,
+            "generation": generation,
+            "game_url": game_url,
+            "player_url": player_url,
+            "human_name": human_name,
+            "bot_names": bot_names,
+            "checkpoints": selected_checkpoints,
+        }
 
     async def run_human_vs_generation_game(
         self,
@@ -816,44 +877,62 @@ class RLCoordinator:
             selected_checkpoints.append(rng.choice(all_checkpoints))
         selected_checkpoints = selected_checkpoints[:bot_count]
 
-        bot_agents: List[RLAgent] = []
-        for ckpt in selected_checkpoints:
-            agent = RLAgent()
-            agent.load_model(ckpt)
-            # Dashboard test games should be inference-only.
-            agent.train_from_self_play = False
-            bot_agents.append(agent)
-
-        bot_names = [f"AI_{agent.id[:8]}" for agent in bot_agents]
-        player_names = [human_name] + bot_names
-        game_instance = await self.game_cluster.create_game(
-            game_id=str(uuid.uuid4()),
-            player_names=player_names,
-            game_options={
-                'soloMode': False,
-                'fastModeOption': False,
-                'removeNegativeGlobalEventsOption': True,
-                'undoOption': False,
-            }
+        return await self._start_human_vs_ai_from_checkpoints(
+            generation=generation,
+            human_name=human_name,
+            selected_checkpoints=selected_checkpoints,
         )
-        human_player_id = await game_instance.join_player(human_name)
-        game_url = game_instance.get_public_game_url()
-        player_url = game_instance.get_public_player_url(human_player_id)
-        self.recent_games.append({"game_id": game_instance.game_id, "url": game_url})
 
-        monitor_task = asyncio.create_task(self._monitor_human_vs_ai_game(game_instance, bot_agents, bot_names))
-        self._track_background_task(monitor_task)
+    async def run_human_vs_best_agent_game(
+        self,
+        human_name: str = "You",
+        bot_count: int = 3,
+        seed: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Start a human game against the best saved checkpoint found across all generations."""
+        models_root = self._default_models_root()
+        rng = random.Random(seed)
+        all_checkpoints = self._all_saved_checkpoints(models_root)
+        if not all_checkpoints:
+            return {"error": f"No checkpoints found under {models_root}"}
 
-        return {
-            "success": True,
-            "game_id": game_instance.game_id,
-            "generation": generation,
-            "game_url": game_url,
-            "player_url": player_url,
-            "human_name": human_name,
-            "bot_names": bot_names,
-            "checkpoints": selected_checkpoints,
-        }
+        best_checkpoint = all_checkpoints[0]
+        best_generation = self._generation_from_checkpoint(best_checkpoint)
+
+        selected_checkpoints: List[str] = [best_checkpoint]
+        same_generation_pool: List[str] = []
+        if best_generation is not None:
+            same_generation_pool = [
+                path for path in self._all_generation_checkpoints(models_root, best_generation)
+                if path != best_checkpoint
+            ]
+        fallback_pool = [
+            path for path in all_checkpoints
+            if path != best_checkpoint and path not in same_generation_pool
+        ]
+        candidate_pool = same_generation_pool + fallback_pool
+        while len(selected_checkpoints) < bot_count:
+            if candidate_pool:
+                selected_checkpoints.append(candidate_pool.pop(0))
+            else:
+                selected_checkpoints.append(best_checkpoint)
+
+        # Randomize non-primary opponents for variety while keeping the best checkpoint included.
+        if len(selected_checkpoints) > 1:
+            tail = selected_checkpoints[1:]
+            rng.shuffle(tail)
+            selected_checkpoints = [selected_checkpoints[0]] + tail
+
+        result = await self._start_human_vs_ai_from_checkpoints(
+            generation=best_generation,
+            human_name=human_name,
+            selected_checkpoints=selected_checkpoints[:bot_count],
+        )
+        if "error" in result:
+            return result
+        result["best_checkpoint"] = best_checkpoint
+        result["selection_mode"] = "best_overall"
+        return result
     
     def pause_training(self):
         """Pause the training process"""
@@ -912,25 +991,50 @@ async def main():
         # Start API server and evolution loop concurrently.
         api_task = asyncio.create_task(start_api_server(coordinator))
         evolution_task = asyncio.create_task(coordinator.run_evolution_cycle())
+        api_restart_delay_sec = 2.0
 
-        done, _pending = await asyncio.wait(
-            {api_task, evolution_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        # Keep training independent from API liveness; restart API if it exits.
+        while True:
+            done, _pending = await asyncio.wait(
+                {api_task, evolution_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-        if evolution_task in done:
-            # If training completed (e.g., reached GENERATIONS), keep API alive.
-            exc = evolution_task.exception()
-            if exc is not None:
-                raise exc
-            logger.info("Evolution cycle finished. Keeping API server alive.")
-            await api_task
-        elif api_task in done:
-            # API should not exit during normal operation.
-            exc = api_task.exception()
-            if exc is not None:
-                raise exc
-            raise RuntimeError("API server stopped unexpectedly")
+            if evolution_task in done:
+                exc = evolution_task.exception()
+                if exc is not None:
+                    raise exc
+                logger.info("Evolution cycle finished. Keeping API server alive.")
+                while True:
+                    try:
+                        await api_task
+                    except Exception as api_exc:
+                        logger.exception(
+                            "API server task crashed after evolution completion: %s",
+                            api_exc,
+                        )
+                    logger.error(
+                        "API server stopped unexpectedly after evolution completion. Restarting in %.1fs.",
+                        api_restart_delay_sec,
+                    )
+                    await asyncio.sleep(api_restart_delay_sec)
+                    api_task = asyncio.create_task(start_api_server(coordinator))
+
+            if api_task in done:
+                api_exc = api_task.exception()
+                if api_exc is not None:
+                    logger.error(
+                        "API server task crashed (%s). Restarting in %.1fs while training continues.",
+                        str(api_exc),
+                        api_restart_delay_sec,
+                    )
+                else:
+                    logger.error(
+                        "API server stopped unexpectedly. Restarting in %.1fs while training continues.",
+                        api_restart_delay_sec,
+                    )
+                await asyncio.sleep(api_restart_delay_sec)
+                api_task = asyncio.create_task(start_api_server(coordinator))
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     except Exception as e:

@@ -88,10 +88,22 @@ class RLAgent:
     def __init__(self, config: AgentConfig = None, agent_id: str = None):
         self.id = agent_id or str(uuid.uuid4())
         self.config = config or AgentConfig()
+        # PPO optimizer LR is decoupled from evolutionary config learning_rate by default.
+        self.ppo_learning_rate = self._safe_env_float("PPO_LEARNING_RATE", 3e-4)
+        self.ppo_lr_min = self._safe_env_float(
+            "PPO_LR_MIN",
+            max(1e-6, float(self.ppo_learning_rate) * 0.2),
+        )
+        self.ppo_lr_max = self._safe_env_float(
+            "PPO_LR_MAX",
+            max(float(self.ppo_lr_min), float(self.ppo_learning_rate) * 5.0),
+        )
+        self.ppo_lr_adapt_up = self._safe_env_float("PPO_LR_ADAPT_UP", 1.03)
+        self.ppo_lr_adapt_down = self._safe_env_float("PPO_LR_ADAPT_DOWN", 0.85)
         
         # Neural network
         self.network = TerraformingMarsNetwork(self.config)
-        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.config.learning_rate)
+        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
         # Use eval mode for inference-only tournaments (disables dropout, speeds up forward pass)
         self.network.eval()
         
@@ -1062,6 +1074,10 @@ class RLAgent:
                 ppo=self.ppo_hparams,
                 policy_temperature=max(float(self.config.temperature), 1e-3),
             )
+            if metrics:
+                metrics.update(self._adapt_ppo_learning_rate(float(metrics.get("ppo/approx_kl", 0.0))))
+                metrics["ppo/learning_rate"] = float(self.optimizer.param_groups[0].get("lr", 0.0))
+                metrics["ppo/target_kl"] = float(self.ppo_hparams.target_kl)
             self.network.eval()
 
         metrics["rollout/schema_filtered"] = int(schema_filtered)
@@ -1075,6 +1091,34 @@ class RLAgent:
                 float(metrics.get("ppo/approx_kl", 0.0)),
             )
         return metrics
+
+    def _adapt_ppo_learning_rate(self, approx_kl: float) -> Dict[str, float]:
+        target_kl = float(self.ppo_hparams.target_kl)
+        prev_lr = float(self.optimizer.param_groups[0].get("lr", float(self.ppo_learning_rate)))
+
+        # Keep learning-rate adaptation deterministic and bounded.
+        up_factor = max(1.0, float(self.ppo_lr_adapt_up))
+        down_factor = min(1.0, max(1e-6, float(self.ppo_lr_adapt_down)))
+        min_lr = max(1e-7, float(self.ppo_lr_min))
+        max_lr = max(min_lr, float(self.ppo_lr_max))
+
+        next_lr = prev_lr
+        if target_kl > 0.0:
+            if approx_kl > (1.5 * target_kl):
+                next_lr = prev_lr * down_factor
+            elif approx_kl < (0.5 * target_kl):
+                next_lr = prev_lr * up_factor
+
+        next_lr = max(min_lr, min(max_lr, float(next_lr)))
+        if abs(next_lr - prev_lr) > 1e-12:
+            for group in self.optimizer.param_groups:
+                group["lr"] = float(next_lr)
+
+        return {
+            "ppo/learning_rate_prev": float(prev_lr),
+            "ppo/learning_rate_next": float(next_lr),
+            "ppo/lr_adjustment_applied": 1.0 if abs(next_lr - prev_lr) > 1e-12 else 0.0,
+        }
 
     def get_rollout_buffer_size(self) -> int:
         return int(len(self.rollout_buffer))
@@ -1301,7 +1345,7 @@ class RLAgent:
 
         # Rebuild model/optimizer from restored config before loading state dicts.
         self.network = TerraformingMarsNetwork(self.config)
-        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.config.learning_rate)
+        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
 
         self.network.load_state_dict(checkpoint['network_state_dict'])
 
@@ -1311,6 +1355,9 @@ class RLAgent:
                 self.optimizer.load_state_dict(optimizer_state)
             except Exception as e:
                 logger.warning(f"Failed to restore optimizer state from {path}: {e}")
+        # Keep PPO optimizer LR env-driven even after restoring optimizer state.
+        for group in self.optimizer.param_groups:
+            group["lr"] = float(self.ppo_learning_rate)
 
         self.network.eval()
         self.train_from_self_play = (

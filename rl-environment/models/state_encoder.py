@@ -2,7 +2,7 @@
 State Encoder - Converts game state to neural network input
 """
 import numpy as np
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 import os
 import json
 import logging
@@ -265,217 +265,250 @@ class StateEncoder:
         return encoding
     
     def _encode_hand_cards(self, player_state: Dict[str, Any]) -> List[float]:
-        """Encode cards in hand"""
-        hand = player_state.get('cardsInHand', [])
+        """Encode cards in hand with aggregate and top-K card-level features."""
         encoding = [0.0] * 50
-        logger.debug("Hand: %s for player %s", hand, player_state.get('id'))
-        # Basic hand info
-        encoding[0] = min(len(hand) / 10.0, 1.0)  # Hand size
-        
-        # Card costs
-        total_cost = sum(card.get('calculatedCost', 0) for card in hand)
-        encoding[1] = min(total_cost / 100.0, 1.0)
-        logger.debug("Hand total cost: %s for player %s", total_cost, player_state.get('id'))
-        
-        # Estimate affordable cards given current resources (rough heuristic)
-        player = player_state.get('thisPlayer', {})
+
+        hand_raw = player_state.get('cardsInHand', [])
+        hand_cards = [card for card in hand_raw if isinstance(card, dict)]
+        waiting_for = player_state.get('waitingFor', {}) or {}
+        waiting_type = str(waiting_for.get('type', '') or '')
+        prompt_cards_raw = waiting_for.get('cards', []) if isinstance(waiting_for, dict) else []
+        prompt_cards = [card for card in prompt_cards_raw if isinstance(card, dict)]
+
+        # Candidate cards are the immediately actionable cards (buy/play prompt),
+        # falling back to hand cards when no card prompt is active.
+        if waiting_type in ['card', 'projectCard', 'selectProjectCardToPlay'] and prompt_cards:
+            candidate_cards = prompt_cards
+        else:
+            candidate_cards = hand_cards
+
+        player = player_state.get('thisPlayer', {}) or {}
         mc = float(player.get('megaCredits', 0) or 0)
         steel = float(player.get('steel', 0) or 0)
         titanium = float(player.get('titanium', 0) or 0)
-        # Typical conversion values (base game defaults)
-        steel_value = 2.0
-        titanium_value = 3.0
-        effective_budget = mc + steel * steel_value + titanium * titanium_value
-        affordable_count = 0
-        for card in hand:
-            cost = float(card.get('calculatedCost', 0) or 0)
-            if cost <= effective_budget:
-                affordable_count += 1
-        encoding[2] = min(affordable_count / 10.0, 1.0)
-        # Card types in hand - all 17 tags
-        for card in hand:
-            tags = self._get_card_tags(card.get('name', ''), fallback=card.get('tags', {}))
-            # Building tag (index 3)
-            if tags.get('Building', 0) > 0:
-                encoding[3] += 0.1
-            # Space tag (index 4)
-            if tags.get('Space', 0) > 0:
-                encoding[4] += 0.1
-            # Science tag (index 5)
-            if tags.get('Science', 0) > 0:
-                encoding[5] += 0.1
-            # Power tag (index 6)
-            if tags.get('Power', 0) > 0:
-                encoding[6] += 0.1
-            # Earth tag (index 7)
-            if tags.get('Earth', 0) > 0:
-                encoding[7] += 0.1
-            # Jovian tag (index 8)
-            if tags.get('Jovian', 0) > 0:
-                encoding[8] += 0.1
-            # Venus tag (index 9)
-            if tags.get('Venus', 0) > 0:
-                encoding[9] += 0.1
-            # Plant tag (index 10)
-            if tags.get('Plant', 0) > 0:
-                encoding[10] += 0.1
-            # Microbe tag (index 11)
-            if tags.get('Microbe', 0) > 0:
-                encoding[11] += 0.1
-            # Animal tag (index 12)
-            if tags.get('Animal', 0) > 0:
-                encoding[12] += 0.1
-            # City tag (index 13)
-            if tags.get('City', 0) > 0:
-                encoding[13] += 0.1
-            # Moon tag (index 14)
-            if tags.get('Moon', 0) > 0:
-                encoding[14] += 0.1
-            # Mars tag (index 15)
-            if tags.get('Mars', 0) > 0:
-                encoding[15] += 0.1
-            # Crime tag (index 16)
-            if tags.get('Crime', 0) > 0:
-                encoding[16] += 0.1
-            # Wild tag (index 17)
-            if tags.get('Wild', 0) > 0:
-                encoding[17] += 0.1
-            # Event tag (index 18)
-            if tags.get('Event', 0) > 0:
-                encoding[18] += 0.1
-            # Clone tag (index 19)
-            if tags.get('Clone', 0) > 0:
-                encoding[19] += 0.1
-        
-        # Normalize
-        for i in range(3, 20):
-            encoding[i] = min(encoding[i], 1.0)
-
-        # Card-quality and resource-pressure signals.
         steel_prod = float(player.get('steelProduction', 0) or 0)
         titanium_prod = float(player.get('titaniumProduction', 0) or 0)
+        steel_value = float(player.get('steelValue', 2) or 2)
+        titanium_value = float(player.get('titaniumValue', 3) or 3)
+
+        tag_order = [
+            'Building', 'Space', 'Science', 'Power', 'Earth', 'Jovian',
+            'Venus', 'Plant', 'Microbe', 'Animal', 'City', 'Moon',
+            'Mars', 'Crime', 'Wild', 'Event', 'Clone',
+        ]
+
+        def _affordability(cost: float, tags: Dict[str, int]) -> float:
+            purchasing_power = mc
+            if tags.get('Building', 0) > 0:
+                purchasing_power += steel * steel_value
+            if tags.get('Space', 0) > 0:
+                purchasing_power += titanium * titanium_value
+            if cost <= 0:
+                return 1.0
+            if purchasing_power >= cost:
+                return 1.0
+            return max(0.0, 1.0 - ((cost - purchasing_power) / 20.0))
+
+        logger.debug(
+            "Hand cards=%s candidate_cards=%s waiting_type=%s for player %s",
+            len(hand_cards),
+            len(candidate_cards),
+            waiting_type,
+            player_state.get('id'),
+        )
+
+        # Aggregate hand features
+        encoding[0] = min(len(hand_cards) / 10.0, 1.0)
+        total_hand_cost = sum(self._get_card_cost(card) for card in hand_cards)
+        encoding[1] = min(total_hand_cost / 100.0, 1.0)
+
+        affordable_count = 0
+        for card in hand_cards:
+            name = str(card.get('name', '') or '')
+            tags = self._get_card_tags(name, fallback=card.get('tags', {}))
+            cost = self._get_card_cost(card)
+            if _affordability(cost, tags) >= 0.99:
+                affordable_count += 1
+            for tag_idx, tag_name in enumerate(tag_order):
+                if tags.get(tag_name, 0) > 0:
+                    encoding[3 + tag_idx] += 0.1
+
+        encoding[2] = min(affordable_count / 10.0, 1.0)
+        for i in range(3, 20):
+            encoding[i] = min(encoding[i], 1.0)
 
         tableau = player.get('tableau', []) or []
         tableau_tag_profile: Dict[str, int] = {}
         for played in tableau:
-            played_name = played.get('name', '')
+            if not isinstance(played, dict):
+                continue
+            played_name = str(played.get('name', '') or '')
             played_tags = self._get_card_tags(played_name, fallback=played.get('tags', {}))
             for tag_name, present in played_tags.items():
                 if present:
                     tableau_tag_profile[tag_name] = int(tableau_tag_profile.get(tag_name, 0)) + 1
         max_tag_count = max(tableau_tag_profile.values(), default=1)
 
-        def _card_vp(card: Dict[str, Any]) -> float:
-            name = str(card.get('name', '') or '')
-            meta = self.card_metadata_by_name.get(name, {})
-            raw_vp = card.get('victoryPoints', meta.get('victoryPoints', 0))
-            try:
-                return float(raw_vp or 0)
-            except Exception:
-                return 0.0
-
         card_eval: List[Dict[str, Any]] = []
-        for idx, card in enumerate(hand):
+        type_counts = {'blue': 0, 'green': 0, 'red': 0}
+        for card in candidate_cards:
             name = str(card.get('name', '') or '')
             tags = self._get_card_tags(name, fallback=card.get('tags', {}))
-            cost = float(card.get('calculatedCost', card.get('cost', 0)) or 0)
+            cost = self._get_card_cost(card)
             cost_norm = min(max(cost, 0.0) / 40.0, 1.0)
-            vp_norm = min(max(_card_vp(card), 0.0) / 5.0, 1.0)
+            affordable = _affordability(cost, tags)
+            vp_proxy = self._get_card_vp_proxy(card, tags)
 
-            purchasing_power = mc
-            if tags.get('Building', 0) > 0:
-                purchasing_power += steel * steel_value
-            if tags.get('Space', 0) > 0:
-                purchasing_power += titanium * titanium_value
-            affordable = 1.0 if purchasing_power >= cost else max(0.0, 1.0 - ((cost - purchasing_power) / 20.0))
+            key_tags = ['Science', 'Building', 'Space', 'Earth', 'Jovian']
+            key_tag_density = sum(1 for tag in key_tags if tags.get(tag, 0) > 0) / float(len(key_tags))
 
-            synergy_score = 0.0
+            tableau_synergy_raw = 0.0
             for tag_name, present in tags.items():
                 if present:
-                    synergy_score += float(tableau_tag_profile.get(tag_name, 0)) / float(max_tag_count)
-            synergy_norm = min(synergy_score / 4.0, 1.0)
+                    tableau_synergy_raw += float(tableau_tag_profile.get(tag_name, 0)) / float(max_tag_count)
+            tableau_synergy = min(tableau_synergy_raw / 4.0, 1.0)
 
-            key_tags = ['Science', 'Building', 'Space', 'Earth']
-            key_density = sum(1 for t in key_tags if tags.get(t, 0) > 0) / float(len(key_tags))
-            cheapness = max(0.0, 1.0 - cost_norm)
-
-            quality_raw = (
-                (affordable * 1.20)
-                + (vp_norm * 0.80)
-                + (cheapness * 0.60)
-                + (synergy_norm * 0.70)
-                + (key_density * 0.35)
+            denom_cost = max(cost, 1.0)
+            steel_cover = min((steel * steel_value) / denom_cost, 1.0) if tags.get('Building', 0) > 0 else 0.0
+            titanium_cover = min((titanium * titanium_value) / denom_cost, 1.0) if tags.get('Space', 0) > 0 else 0.0
+            steel_prod_pull = min(max(steel_prod, 0.0) / 8.0, 1.0) if tags.get('Building', 0) > 0 else 0.0
+            titanium_prod_pull = min(max(titanium_prod, 0.0) / 8.0, 1.0) if tags.get('Space', 0) > 0 else 0.0
+            resource_synergy = min(
+                (0.30 * tableau_synergy)
+                + (0.30 * steel_cover)
+                + (0.30 * titanium_cover)
+                + (0.05 * steel_prod_pull)
+                + (0.05 * titanium_prod_pull),
+                1.0,
             )
-            quality = min(max(quality_raw / 3.0, 0.0), 1.0)
+
+            utility = min(
+                (
+                    (1.20 * affordable)
+                    + (0.95 * vp_proxy)
+                    + (0.55 * key_tag_density)
+                    + (0.85 * resource_synergy)
+                    + (0.35 * (1.0 - cost_norm))
+                ) / 3.0,
+                1.0,
+            )
+
+            card_type = self._get_card_type(name, fallback=card.get('type'))
+            if card_type == 'active':
+                type_counts['blue'] += 1
+            elif card_type == 'automated':
+                type_counts['green'] += 1
+            elif card_type == 'event':
+                type_counts['red'] += 1
 
             card_eval.append({
-                'index': idx,
-                'quality': quality,
                 'cost_norm': cost_norm,
                 'affordable': affordable,
-                'vp_norm': vp_norm,
-                'synergy_norm': synergy_norm,
+                'vp_proxy': vp_proxy,
+                'key_tag_density': key_tag_density,
+                'resource_synergy': resource_synergy,
+                'utility': utility,
                 'tags': tags,
             })
 
         if card_eval:
             ranked = sorted(
                 card_eval,
-                key=lambda item: (item['quality'], item['affordable'], item['vp_norm'], -item['cost_norm']),
+                key=lambda item: (
+                    item['utility'],
+                    item['affordable'],
+                    item['vp_proxy'],
+                    -item['cost_norm'],
+                ),
                 reverse=True,
             )
-            qualities = [float(item['quality']) for item in ranked]
-            encoding[20] = min(sum(qualities) / max(1, len(qualities)), 1.0)
-            encoding[21] = qualities[0]
-            encoding[22] = qualities[1] if len(qualities) > 1 else qualities[0]
+            utilities = [float(item['utility']) for item in ranked]
+            encoding[20] = min(len(ranked) / 10.0, 1.0)
+            encoding[21] = min(sum(utilities) / float(len(utilities)), 1.0)
+            encoding[22] = utilities[0]
 
-            affordable_qualities = [float(item['quality']) for item in ranked if item['affordable'] >= 0.99]
-            encoding[23] = min(
-                (sum(affordable_qualities) / len(affordable_qualities)) if affordable_qualities else 0.0,
-                1.0,
-            )
-            encoding[24] = min(sum(1 for item in ranked if item['quality'] >= 0.65) / float(len(ranked)), 1.0)
+            encoding[23] = min(float(type_counts['blue']) / float(len(ranked)), 1.0)
+            encoding[24] = min(float(type_counts['green']) / float(len(ranked)), 1.0)
+            encoding[25] = min(float(type_counts['red']) / float(len(ranked)), 1.0)
 
-            for slot in range(3):
-                base = 25 + (slot * 5)
-                if slot < len(ranked):
-                    item = ranked[slot]
-                    encoding[base] = float(item['quality'])
-                    encoding[base + 1] = float(item['cost_norm'])
-                    encoding[base + 2] = float(item['affordable'])
-                    encoding[base + 3] = float(item['vp_norm'])
-                    encoding[base + 4] = float(item['synergy_norm'])
-
-            hand_count = float(len(ranked))
-            building_ratio = sum(1 for item in ranked if item['tags'].get('Building', 0) > 0) / hand_count
-            space_ratio = sum(1 for item in ranked if item['tags'].get('Space', 0) > 0) / hand_count
-            affordable_building_ratio = sum(
-                1 for item in ranked if item['affordable'] >= 0.99 and item['tags'].get('Building', 0) > 0
-            ) / hand_count
-            affordable_space_ratio = sum(
-                1 for item in ranked if item['affordable'] >= 0.99 and item['tags'].get('Space', 0) > 0
-            ) / hand_count
+            top_k = 3
+            slot_width = 5
+            for slot in range(top_k):
+                base = 26 + (slot * slot_width)
+                if slot >= len(ranked):
+                    continue
+                item = ranked[slot]
+                encoding[base] = float(item['cost_norm'])
+                encoding[base + 1] = float(item['affordable'])
+                encoding[base + 2] = float(item['vp_proxy'])
+                encoding[base + 3] = float(item['key_tag_density'])
+                encoding[base + 4] = float(item['resource_synergy'])
         else:
-            building_ratio = 0.0
-            space_ratio = 0.0
-            affordable_building_ratio = 0.0
-            affordable_space_ratio = 0.0
+            ranked = []
 
-        steel_stock_norm = min(steel / 25.0, 1.0)
-        titanium_stock_norm = min(titanium / 20.0, 1.0)
+        # Spendability pressure for steel/titanium using stock + production +
+        # currently playable tag opportunities.
+        spend_pool = hand_cards if hand_cards else candidate_cards
+        pool_count = max(1.0, float(len(spend_pool)))
+
+        building_opp = 0
+        building_playable = 0
+        space_opp = 0
+        space_playable = 0
+        for card in spend_pool:
+            name = str(card.get('name', '') or '')
+            tags = self._get_card_tags(name, fallback=card.get('tags', {}))
+            cost = self._get_card_cost(card)
+            affordability = _affordability(cost, tags)
+            if tags.get('Building', 0) > 0:
+                building_opp += 1
+                if affordability >= 0.99:
+                    building_playable += 1
+            if tags.get('Space', 0) > 0:
+                space_opp += 1
+                if affordability >= 0.99:
+                    space_playable += 1
+
+        steel_stock_norm = min(max(steel, 0.0) / 25.0, 1.0)
         steel_prod_norm = min(max(steel_prod, 0.0) / 12.0, 1.0)
+        titanium_stock_norm = min(max(titanium, 0.0) / 20.0, 1.0)
         titanium_prod_norm = min(max(titanium_prod, 0.0) / 10.0, 1.0)
 
-        encoding[40] = steel_stock_norm
-        encoding[41] = titanium_stock_norm
+        building_opportunity_ratio = min(float(building_opp) / pool_count, 1.0)
+        building_playable_ratio = float(building_playable) / float(max(1, building_opp))
+        building_playable_now_ratio = min(float(building_playable) / pool_count, 1.0)
+
+        space_opportunity_ratio = min(float(space_opp) / pool_count, 1.0)
+        space_playable_ratio = float(space_playable) / float(max(1, space_opp))
+
+        steel_liquidity = min(((steel * steel_value) + (max(steel_prod, 0.0) * steel_value * 2.0)) / 80.0, 1.0)
+        steel_pressure = min(
+            steel_liquidity
+            * (0.20 + (0.80 * building_opportunity_ratio))
+            * (1.0 - building_playable_ratio),
+            1.0,
+        )
+
+        titanium_liquidity = min(
+            ((titanium * titanium_value) + (max(titanium_prod, 0.0) * titanium_value * 2.0)) / 90.0,
+            1.0,
+        )
+        titanium_pressure = min(
+            titanium_liquidity
+            * (0.20 + (0.80 * space_opportunity_ratio))
+            * (1.0 - space_playable_ratio),
+            1.0,
+        )
+
+        encoding[41] = steel_stock_norm
         encoding[42] = steel_prod_norm
-        encoding[43] = titanium_prod_norm
-        encoding[44] = min(building_ratio, 1.0)
-        encoding[45] = min(space_ratio, 1.0)
-        encoding[46] = min(affordable_building_ratio, 1.0)
-        encoding[47] = min(affordable_space_ratio, 1.0)
-        encoding[48] = min((steel_stock_norm + (0.5 * steel_prod_norm)) * max(building_ratio, 0.0), 1.0)
-        encoding[49] = min((titanium_stock_norm + (0.5 * titanium_prod_norm)) * max(space_ratio, 0.0), 1.0)
+        encoding[43] = building_opportunity_ratio
+        encoding[44] = building_playable_now_ratio
+        encoding[45] = steel_pressure
+        encoding[46] = titanium_stock_norm
+        encoding[47] = titanium_prod_norm
+        encoding[48] = space_opportunity_ratio
+        encoding[49] = titanium_pressure
 
         logger.debug("Hand encoding: %s for player %s", encoding, player_state.get('id'))
         return encoding
@@ -745,6 +778,80 @@ class StateEncoder:
         logger.debug("Awards/milestones: %s for game/player %s", encoding, game_state.get('id'))
         return encoding
 
+    def _normalize_tag_name(self, value: Any) -> str:
+        raw = str(value or '').strip()
+        if not raw:
+            return ''
+        if raw[0].islower():
+            return raw.capitalize()
+        return raw
+
+    def _normalize_card_type(self, value: Any) -> str:
+        raw = str(value or '').strip().lower()
+        if not raw:
+            return ''
+        mapping = {
+            'blue': 'active',
+            'green': 'automated',
+            'red': 'event',
+        }
+        return mapping.get(raw, raw)
+
+    def _get_card_cost(self, card: Dict[str, Any]) -> float:
+        name = str(card.get('name', '') or '')
+        meta = self.card_metadata_by_name.get(name, {}) if name else {}
+        raw = card.get('calculatedCost', card.get('cost', meta.get('cost', 0)))
+        try:
+            return max(float(raw or 0), 0.0)
+        except Exception:
+            return 0.0
+
+    def _get_card_type(self, card_name: str, fallback: Any = None) -> str:
+        fallback_type = self._normalize_card_type(fallback)
+        if fallback_type:
+            return fallback_type
+        if card_name and self.card_metadata_by_name:
+            meta = self.card_metadata_by_name.get(card_name, {})
+            meta_type = self._normalize_card_type(meta.get('type', ''))
+            if meta_type:
+                return meta_type
+        return ''
+
+    def _get_card_vp_proxy(self, card: Dict[str, Any], tags: Optional[Dict[str, int]] = None) -> float:
+        name = str(card.get('name', '') or '')
+        meta = self.card_metadata_by_name.get(name, {}) if name else {}
+        raw_vp = card.get('victoryPoints', meta.get('victoryPoints', 0))
+        try:
+            numeric_vp = float(raw_vp or 0)
+            if numeric_vp > 0:
+                return min(numeric_vp / 5.0, 1.0)
+        except Exception:
+            pass
+
+        resolved_tags = tags or self._get_card_tags(name, fallback=card.get('tags', {}))
+        proxy = 0.0
+        if resolved_tags.get('Jovian', 0) > 0:
+            proxy += 0.20
+        if resolved_tags.get('Science', 0) > 0:
+            proxy += 0.12
+        if resolved_tags.get('City', 0) > 0:
+            proxy += 0.12
+        if resolved_tags.get('Animal', 0) > 0:
+            proxy += 0.10
+        if resolved_tags.get('Microbe', 0) > 0:
+            proxy += 0.08
+        if resolved_tags.get('Earth', 0) > 0:
+            proxy += 0.06
+        if resolved_tags.get('Plant', 0) > 0:
+            proxy += 0.05
+        card_type = self._get_card_type(name, fallback=card.get('type', ''))
+        if card_type == 'active':
+            proxy += 0.05
+        elif card_type == 'event':
+            proxy += 0.03
+        proxy += 0.10 * min(self._get_card_cost(card) / 40.0, 1.0)
+        return min(max(proxy, 0.0), 1.0)
+
     def _infer_tags_from_name(self, card_name: str) -> Dict[str, int]:
         """Heuristic tag inference when structured tags are missing.
         Returns a dict like {TagName: 1} for detected tags.
@@ -789,42 +896,65 @@ class StateEncoder:
         mapping of card display name to an object including at least {tags, type, cost}.
         Looks for TM_CARD_METADATA_PATH env var, else tries a default location.
         """
-        path = os.getenv('TM_CARD_METADATA_PATH')
-        if not path:
-            # Try a repo-relative default
-            candidate = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                                     'terraforming-mars', 'card_metadata.json')
-            path = candidate
+        module_dir = os.path.abspath(os.path.dirname(__file__))
+        one_up = os.path.abspath(os.path.join(module_dir, '..'))
+        two_up = os.path.abspath(os.path.join(module_dir, '..', '..'))
 
-        cache_key = os.path.abspath(path)
-        cached = StateEncoder._CARD_METADATA_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
+        candidate_paths: List[str] = []
+        env_path = os.getenv('TM_CARD_METADATA_PATH')
+        if env_path:
+            candidate_paths.append(env_path)
+        candidate_paths.extend([
+            os.path.join(one_up, 'card_metadata.json'),
+            os.path.join(two_up, 'card_metadata.json'),
+            os.path.join(two_up, 'terraforming-mars', 'card_metadata.json'),
+            os.path.join(one_up, 'terraforming-mars', 'card_metadata.json'),
+        ])
 
-        try:
-            if os.path.exists(path):
+        seen: set = set()
+        for candidate in candidate_paths:
+            if not candidate:
+                continue
+            path = os.path.abspath(candidate)
+            if path in seen:
+                continue
+            seen.add(path)
+
+            cached = StateEncoder._CARD_METADATA_CACHE.get(path)
+            if cached is not None:
+                if cached:
+                    return cached
+                continue
+            if not os.path.exists(path):
+                continue
+            if os.path.getsize(path) <= 0:
+                StateEncoder._CARD_METADATA_CACHE[path] = {}
+                continue
+            try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                # Normalize tag casing to our expected TitleCase keys used above
+                if not isinstance(data, dict):
+                    StateEncoder._CARD_METADATA_CACHE[path] = {}
+                    continue
                 normalized: Dict[str, Dict[str, Any]] = {}
                 for name, meta in (data or {}).items():
                     meta_copy = dict(meta or {})
                     tags = meta_copy.get('tags') or []
-                    # Accept both enums and strings; convert to TitleCase keys used in encoder
-                    norm_tags = []
-                    for t in tags:
-                        ts = str(t)
-                        # If enum-like 'plant' -> 'Plant'
-                        norm_tags.append(ts.strip().capitalize())
+                    norm_tags: List[str] = []
+                    for tag in tags:
+                        normalized_tag = self._normalize_tag_name(tag)
+                        if normalized_tag:
+                            norm_tags.append(normalized_tag)
                     meta_copy['tags'] = norm_tags
-                    normalized[name] = meta_copy
+                    meta_copy['type'] = self._normalize_card_type(meta_copy.get('type', ''))
+                    normalized[str(name)] = meta_copy
                 logger.info(f"Loaded card metadata for {len(normalized)} cards from {path}")
-                StateEncoder._CARD_METADATA_CACHE[cache_key] = normalized
+                StateEncoder._CARD_METADATA_CACHE[path] = normalized
                 return normalized
-        except Exception as e:
-            logger.warning(f"Failed to load card metadata from {path}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to load card metadata from {path}: {e}")
+                StateEncoder._CARD_METADATA_CACHE[path] = {}
 
-        StateEncoder._CARD_METADATA_CACHE[cache_key] = {}
         return {}
 
     def _get_card_tags(self, card_name: str, fallback: Any = None) -> Dict[str, int]:
@@ -837,11 +967,29 @@ class StateEncoder:
                 tag_map: Dict[str, int] = {}
                 for tag in meta['tags']:
                     # meta tags expected in TitleCase: e.g., 'Plant', 'Building'
-                    tag_map[tag] = 1
+                    normalized_tag = self._normalize_tag_name(tag)
+                    if normalized_tag:
+                        tag_map[normalized_tag] = 1
                 return tag_map
         # Fallback to provided structured tags if any
         if isinstance(fallback, dict) and fallback:
-            return fallback
+            normalized: Dict[str, int] = {}
+            for key, value in fallback.items():
+                if not value:
+                    continue
+                normalized_key = self._normalize_tag_name(key)
+                if normalized_key:
+                    normalized[normalized_key] = 1
+            if normalized:
+                return normalized
+        if isinstance(fallback, list) and fallback:
+            normalized = {}
+            for tag in fallback:
+                normalized_tag = self._normalize_tag_name(tag)
+                if normalized_tag:
+                    normalized[normalized_tag] = 1
+            if normalized:
+                return normalized
         # Final fallback to heuristics
         return self._infer_tags_from_name(card_name)
     

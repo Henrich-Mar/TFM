@@ -14,6 +14,28 @@ logger = logging.getLogger(__name__)
 _CARD_SELECTION_MASK_BASE = 520
 _CARD_SELECTION_MASK_LIMIT = 80
 _CARD_SELECTION_CANDIDATE_LIMIT = 12
+_PAYMENT_ACTION_BASE = 400
+_PAYMENT_ACTION_VARIANTS = 8
+_PAYMENT_ALL_KEYS = [
+    'megaCredits', 'steel', 'titanium', 'heat', 'plants',
+    'microbes', 'floaters', 'lunaArchivesScience', 'spireScience',
+    'seeds', 'auroraiData', 'graphene', 'kuiperAsteroids'
+]
+_PAYMENT_DEFAULT_VALUES = {
+    'megaCredits': 1,
+    'steel': 2,
+    'titanium': 3,
+    'heat': 1,
+    'plants': 3,
+    'microbes': 2,
+    'floaters': 3,
+    'lunaArchivesScience': 1,
+    'spireScience': 2,
+    'seeds': 5,
+    'auroraiData': 3,
+    'graphene': 4,
+    'kuiperAsteroids': 1,
+}
 
 def _title_text(value: Any) -> str:
     """Normalize title payloads from server into plain text for matching."""
@@ -549,6 +571,260 @@ def _build_initial_setup_response(waiting_for: Dict[str, Any], player_state: Opt
     ]
     return {'type': 'initialCards', 'responses': final_responses}
 
+def _payment_empty() -> Dict[str, int]:
+    return {k: 0 for k in _PAYMENT_ALL_KEYS}
+
+def _payment_signature(payment: Dict[str, int]) -> Tuple[int, ...]:
+    return tuple(int(payment.get(k, 0) or 0) for k in _PAYMENT_ALL_KEYS)
+
+def _payment_action_offset(action_index: Optional[int]) -> int:
+    idx = _safe_int(action_index, 0)
+    if _PAYMENT_ACTION_BASE <= idx < (_PAYMENT_ACTION_BASE + 100):
+        return int(idx - _PAYMENT_ACTION_BASE)
+    return 0
+
+def _extract_payment_project_name(waiting_for: Dict[str, Any]) -> str:
+    title = waiting_for.get('title')
+    if isinstance(title, dict):
+        try:
+            for item in title.get('data', []) or []:
+                value = item.get('value')
+                if isinstance(value, str) and value:
+                    return value
+        except Exception:
+            return ''
+        return ''
+    if isinstance(title, str):
+        return title
+    return ''
+
+def _payment_allowed(waiting_for: Dict[str, Any], resource: str) -> bool:
+    payment_options = waiting_for.get('paymentOptions', {}) or {}
+    if resource == 'megaCredits':
+        return True
+    if resource == 'titanium' and payment_options.get('lunaTradeFederationTitanium', False):
+        return True
+    return bool(payment_options.get(resource, False))
+
+def _payment_available_units(waiting_for: Dict[str, Any], player: Dict[str, Any], resource: str) -> int:
+    if resource in ['megaCredits', 'steel', 'titanium', 'heat', 'plants']:
+        return max(0, int(player.get(resource, 0) or 0))
+    if resource in waiting_for:
+        return max(0, int(waiting_for.get(resource, 0) or 0))
+    return max(0, int(player.get(resource, 0) or 0))
+
+def _payment_values(waiting_for: Dict[str, Any], player: Dict[str, Any]) -> Dict[str, int]:
+    values = dict(_PAYMENT_DEFAULT_VALUES)
+    steel_value = max(1, int(player.get('steelValue', 2) or 2))
+    titanium_value = max(1, int(player.get('titaniumValue', 3) or 3))
+    values['steel'] = steel_value
+    values['titanium'] = titanium_value
+
+    # Luna Trade Federation: titanium spent as MC loses one value point.
+    payment_options = waiting_for.get('paymentOptions', {}) or {}
+    if payment_options.get('lunaTradeFederationTitanium', False) and not payment_options.get('titanium', False):
+        values['titanium'] = max(1, titanium_value - 1)
+    return values
+
+def _apply_project_specific_payment_constraints(
+    payment: Dict[str, int],
+    waiting_for: Dict[str, Any],
+    player: Dict[str, Any],
+) -> None:
+    project_name_l = _extract_payment_project_name(waiting_for).lower()
+    if not project_name_l:
+        return
+
+    if ('road' in project_name_l) and ('infrastructure' in project_name_l or 'moon' in project_name_l):
+        if _payment_allowed(waiting_for, 'steel'):
+            have = _payment_available_units(waiting_for, player, 'steel')
+            if have > 0 and int(payment.get('steel', 0) or 0) < 1:
+                payment['steel'] = 1
+    if ('lunar mine' in project_name_l) or ('moon mine' in project_name_l):
+        if _payment_allowed(waiting_for, 'titanium'):
+            have = _payment_available_units(waiting_for, player, 'titanium')
+            if have > 0 and int(payment.get('titanium', 0) or 0) < 1:
+                payment['titanium'] = 1
+    if ('lunar habitat' in project_name_l) or ('moon habitat' in project_name_l):
+        if _payment_allowed(waiting_for, 'titanium'):
+            have = _payment_available_units(waiting_for, player, 'titanium')
+            if have > 0 and int(payment.get('titanium', 0) or 0) < 1:
+                payment['titanium'] = 1
+
+def _finalize_payment(payment: Dict[str, int]) -> Dict[str, int]:
+    out = _payment_empty()
+    for key in _PAYMENT_ALL_KEYS:
+        out[key] = max(0, int(payment.get(key, 0) or 0))
+    return out
+
+def _payment_total_value(payment: Dict[str, int], values: Dict[str, int]) -> int:
+    total = 0
+    for key in _PAYMENT_ALL_KEYS:
+        units = max(0, int(payment.get(key, 0) or 0))
+        unit_value = max(0, int(values.get(key, 0) or 0))
+        total += int(units * unit_value)
+    return int(total)
+
+def _is_valid_payment_candidate(
+    payment: Dict[str, int],
+    waiting_for: Dict[str, Any],
+    player: Dict[str, Any],
+    available_by_resource: Dict[str, int],
+    values: Dict[str, int],
+    amount: int,
+) -> bool:
+    normalized = _finalize_payment(payment)
+
+    # Enforce project-specific constraints and validate resulting usage.
+    _apply_project_specific_payment_constraints(normalized, waiting_for, player)
+    normalized = _finalize_payment(normalized)
+
+    for key in _PAYMENT_ALL_KEYS:
+        units = int(normalized.get(key, 0) or 0)
+        if units <= 0:
+            continue
+        if not _payment_allowed(waiting_for, key):
+            return False
+        available_units = max(0, int(available_by_resource.get(key, 0) or 0))
+        if units > available_units:
+            return False
+
+    paid_value = _payment_total_value(normalized, values)
+    if int(amount) > 0 and int(paid_value) < int(amount):
+        return False
+    return True
+
+def _enumerate_payment_candidates(
+    waiting_for: Dict[str, Any],
+    player_state: Optional[Dict[str, Any]],
+    max_candidates: int = _PAYMENT_ACTION_VARIANTS,
+) -> List[Dict[str, int]]:
+    player = (player_state or {}).get('thisPlayer', {}) if isinstance(player_state, dict) else {}
+    amount = max(0, int(waiting_for.get('amount', 0) or 0))
+    values = _payment_values(waiting_for, player)
+
+    available_by_resource: Dict[str, int] = {}
+    for res in _PAYMENT_ALL_KEYS:
+        if not _payment_allowed(waiting_for, res):
+            available_by_resource[res] = 0
+            continue
+        available_by_resource[res] = _payment_available_units(waiting_for, player, res)
+
+    mc_available = int(available_by_resource.get('megaCredits', 0) or 0)
+    non_mc_resources: List[Tuple[str, int, int]] = []
+    for res in _PAYMENT_ALL_KEYS:
+        if res == 'megaCredits':
+            continue
+        units = int(available_by_resource.get(res, 0) or 0)
+        value = int(values.get(res, 0) or 0)
+        if units > 0 and value > 0:
+            non_mc_resources.append((res, units, value))
+
+    max_unit_value = 1
+    if non_mc_resources:
+        max_unit_value = max(int(v) for _, _, v in non_mc_resources)
+    # Keep search bounded: enough to find minimal-overpay mixes.
+    cap = int(amount + (max_unit_value * 3))
+
+    # dp[payment_value] -> (units_used, {resource -> units})
+    dp: Dict[int, Tuple[int, Dict[str, int]]] = {0: (0, {})}
+    for res, units_avail, unit_value in non_mc_resources:
+        existing_items = list(dp.items())
+        for paid_value, (units_used, combo) in existing_items:
+            for used in range(1, units_avail + 1):
+                new_value = paid_value + (used * unit_value)
+                if new_value > cap:
+                    break
+                next_combo = dict(combo)
+                next_combo[res] = int(next_combo.get(res, 0) + used)
+                next_units = int(units_used + used)
+                existing = dp.get(new_value)
+                if existing is None or next_units < int(existing[0]):
+                    dp[new_value] = (next_units, next_combo)
+
+    scored_candidates: List[Tuple[Tuple[int, int, int, int], Dict[str, int]]] = []
+    for paid_non_mc, (units_used, combo) in dp.items():
+        needed_mc = max(0, int(amount - paid_non_mc))
+        if needed_mc > mc_available:
+            continue
+        total_paid = int(paid_non_mc + needed_mc)
+        overpay = max(0, int(total_paid - amount))
+
+        payment = _payment_empty()
+        for res, units in combo.items():
+            payment[res] = int(units)
+        payment['megaCredits'] = int(needed_mc)
+        _apply_project_specific_payment_constraints(payment, waiting_for, player)
+        payment = _finalize_payment(payment)
+
+        # Prefer exact/low-overpay, then lower MC usage, then higher non-MC usage.
+        score = (overpay, int(payment['megaCredits']), -int(paid_non_mc), int(units_used))
+        scored_candidates.append((score, payment))
+
+    scored_candidates.sort(key=lambda item: item[0])
+
+    candidates: List[Dict[str, int]] = []
+    seen = set()
+
+    def add_candidate(payment: Dict[str, int]) -> None:
+        nonlocal candidates
+        if len(candidates) >= max(1, int(max_candidates)):
+            return
+        normalized = _finalize_payment(payment)
+        if not _is_valid_payment_candidate(
+            normalized,
+            waiting_for,
+            player,
+            available_by_resource,
+            values,
+            amount,
+        ):
+            return
+        _apply_project_specific_payment_constraints(normalized, waiting_for, player)
+        normalized = _finalize_payment(normalized)
+        signature = _payment_signature(normalized)
+        if signature in seen:
+            return
+        seen.add(signature)
+        candidates.append(normalized)
+
+    for _, payment in scored_candidates:
+        add_candidate(payment)
+
+    # Add constrained fallbacks (must still pass legality checks).
+    if amount > 0:
+        if mc_available >= amount:
+            all_mc = _payment_empty()
+            all_mc['megaCredits'] = int(amount)
+            add_candidate(all_mc)
+
+        max_local = _payment_empty()
+        max_local['megaCredits'] = max(0, int(mc_available))
+        for res, units, _ in non_mc_resources:
+            max_local[res] = int(max(0, units))
+        add_candidate(max_local)
+
+        by_value_desc = sorted(non_mc_resources, key=lambda item: item[2], reverse=True)
+        for res, units_avail, unit_value in by_value_desc:
+            single_resource = _payment_empty()
+            needed_units = int((amount + unit_value - 1) // unit_value)
+            if needed_units <= int(units_avail):
+                single_resource[res] = int(needed_units)
+                add_candidate(single_resource)
+
+            hybrid = _payment_empty()
+            use_units = max(1, min(int(units_avail), int(amount // unit_value) if unit_value > 0 else 0))
+            hybrid[res] = int(use_units)
+            hybrid['megaCredits'] = max(0, int(amount - (use_units * unit_value)))
+            add_candidate(hybrid)
+
+    if not candidates:
+        if amount <= 0:
+            add_candidate(_payment_empty())
+        else:
+            return []
+    return candidates[:max(1, int(max_candidates))]
+
 # --- Action Response Builder for Terraforming Mars RL Agent ---
 def build_response_for_input(waiting_for, action_index=None, player_state=None):
     """
@@ -1027,127 +1303,18 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         party_name = parties[idx] if parties and 0 <= idx < len(parties) else (parties[0] if parties else '')
         return {'type': 'party', 'partyName': party_name}
     elif input_type == 'payment':
-        # Build a valid payment using per-resource unit values and allowed payment options.
-        # Server expects counts of resources; value conversion is done server-side.
-        all_keys = [
-            'megaCredits', 'steel', 'titanium', 'heat', 'plants',
-            'microbes', 'floaters', 'lunaArchivesScience', 'spireScience',
-            'seeds', 'auroraiData', 'graphene', 'kuiperAsteroids'
-        ]
-        payment: Dict[str, int] = {k: 0 for k in all_keys}
-        amount = int(waiting_for.get('amount', 0) or 0)
-        payment_options = waiting_for.get('paymentOptions', {}) or {}
-        player = (player_state or {}).get('thisPlayer', {}) if player_state else {}
+        payment_candidates = _enumerate_payment_candidates(
+            waiting_for,
+            player_state,
+            max_candidates=_PAYMENT_ACTION_VARIANTS,
+        )
+        offset = _payment_action_offset(action_index)
+        idx = max(0, min(offset, len(payment_candidates) - 1))
+        payment = dict(payment_candidates[idx]) if payment_candidates else _payment_empty()
 
-        # Try to detect which project/card this payment is for (e.g., Road Infrastructure / Lunar Mine / Lunar Habitat)
-        title = waiting_for.get('title')
-        project_name = ''
-        if isinstance(title, dict):
-            # title: { message: 'Select how to pay for the ${0} standard project', data: [{type:..., value: 'Road Infrastructure'}] }
-            try:
-                data_items = title.get('data', []) or []
-                for item in data_items:
-                    val = item.get('value')
-                    if isinstance(val, str) and len(val) > 0:
-                        project_name = val
-                        break
-            except Exception:
-                project_name = ''
-        elif isinstance(title, str):
-            project_name = title
-        project_name_l = project_name.lower() if isinstance(project_name, str) else ''
-
-        # Unit values aligning with Payment.DEFAULT_PAYMENT_VALUES and player-specific steel/titanium values
-        steel_value = int(player.get('steelValue', 2) or 2)
-        titanium_value = int(player.get('titaniumValue', 3) or 3)
-        # Special case: Luna Trade Federation titanium pays 2 M€ each via a special path
-        if payment_options.get('lunaTradeFederationTitanium', False) and not payment_options.get('titanium', False):
-            titanium_value = 2
-        value_by_resource: Dict[str, int] = {
-            'megaCredits': 1,
-            'steel': steel_value,
-            'titanium': titanium_value,
-            'heat': 1,
-            'plants': 3,
-            'microbes': 2,
-            'floaters': 3,
-            'lunaArchivesScience': 1,
-            'spireScience': 2,
-            'seeds': 5,
-            'auroraiData': 3,
-            'graphene': 4,
-            'kuiperAsteroids': 1,
-        }
-
-        # Determine allowed resources. Keys missing from paymentOptions are disallowed, except megaCredits.
-        def is_allowed(res: str) -> bool:
-            if res == 'megaCredits':
-                return True
-            # Luna Trade Federation grants a separate titanium path; expose it as 'titanium'
-            if res == 'titanium' and payment_options.get('lunaTradeFederationTitanium', False):
-                return True
-            return bool(payment_options.get(res, False))
-
-        # Determine available units. For card-resources, waiting_for often includes numeric counts.
-        def available_units(res: str) -> int:
-            if res in ['megaCredits', 'steel', 'titanium', 'heat', 'plants']:
-                return int(player.get(res, 0) or 0)
-            # card resources: prefer waiting_for value; fallback to 0
-            return int(waiting_for.get(res, 0) or 0)
-
-        # Spend non-MC resources first, sorted by unit value descending, then finish with MC
-        amount_remaining = amount
-        spend_order = [r for r in all_keys if r != 'megaCredits' and is_allowed(r)]
-        spend_order.sort(key=lambda r: value_by_resource.get(r, 0), reverse=True)
-
-        for res in spend_order:
-            units_avail = available_units(res)
-            unit_value = value_by_resource.get(res, 0)
-            if units_avail <= 0 or unit_value <= 0 or amount_remaining <= 0:
-                continue
-            # Use as many units as needed without overshooting; MC will cover the remainder
-            max_units_to_use = amount_remaining // unit_value
-            if max_units_to_use <= 0:
-                continue
-            use_units = min(units_avail, max_units_to_use)
-            payment[res] = int(use_units)
-            amount_remaining -= use_units * unit_value
-
-        # Finish with MC (always allowed)
-        if amount_remaining > 0:
-            payment['megaCredits'] = int(min(amount_remaining, available_units('megaCredits')))
-            amount_remaining -= payment['megaCredits']
-
-        # Enforce mandatory extra resource for certain standard projects (not included in 'amount')
-        try:
-            if project_name_l:
-                # Road Infrastructure requires at least 1 steel
-                if ('road' in project_name_l) and ('infrastructure' in project_name_l or 'moon' in project_name_l):
-                    if is_allowed('steel'):
-                        have = available_units('steel')
-                        if have > 0 and payment.get('steel', 0) < 1:
-                            payment['steel'] = 1
-                # Lunar Mine / Moon Mine requires at least 1 titanium
-                if ('lunar mine' in project_name_l) or ('moon mine' in project_name_l):
-                    if is_allowed('titanium') or payment_options.get('lunaTradeFederationTitanium', False):
-                        have = available_units('titanium')
-                        if have > 0 and payment.get('titanium', 0) < 1:
-                            payment['titanium'] = 1
-                # Lunar Habitat / Moon Habitat requires at least 1 titanium
-                if ('lunar habitat' in project_name_l) or ('moon habitat' in project_name_l):
-                    if is_allowed('titanium') or payment_options.get('lunaTradeFederationTitanium', False):
-                        have = available_units('titanium')
-                        if have > 0 and payment.get('titanium', 0) < 1:
-                            payment['titanium'] = 1
-        except Exception:
-            pass
-
-        # Ensure well-formed response with integer, non-negative counts
-        for k in payment:
-            v = int(payment[k] or 0)
-            payment[k] = 0 if v < 0 else v
-
-        return {'type': 'payment', 'payment': payment}
+        player = (player_state or {}).get('thisPlayer', {}) if isinstance(player_state, dict) else {}
+        _apply_project_specific_payment_constraints(payment, waiting_for, player)
+        return {'type': 'payment', 'payment': _finalize_payment(payment)}
     elif input_type == 'player':
         players = waiting_for.get('players', [])
         idx = normalize_index(action_index, 600) if action_index is not None else 0
@@ -1338,6 +1505,12 @@ def _calculate_card_payment(player_state: Dict[str, Any], card: Dict[str, Any]) 
     # Get card cost
     cost = card.get('calculatedCost', card.get('cost', 0))
     tags = card.get('tags', {}) or _metadata_tags(card.get('name', ''))
+    if isinstance(tags, list):
+        tags = {_normalize_tag_name(t): 1 for t in tags if _normalize_tag_name(t)}
+    elif not isinstance(tags, dict):
+        tags = {}
+    card_name_l = str(card.get('name', '') or '').lower()
+    card_type_l = str(card.get('type', '') or '').lower()
     
     payment = {
         'megaCredits': 0, 'steel': 0, 'titanium': 0, 'heat': 0, 'plants': 0
@@ -1415,11 +1588,17 @@ def _build_payment_with_options(player_state: Dict[str, Any], card: Dict[str, An
     player_titanium = int(player.get('titanium', 0) or 0)
     player_heat = int(player.get('heat', 0) or 0)
     player_plants = int(player.get('plants', 0) or 0)
-    steel_value = int(player.get('steelValue', 2) or 2)
-    titanium_value = int(player.get('titaniumValue', 3) or 3)
+    steel_value = max(1, int(player.get('steelValue', 2) or 2))
+    titanium_value = max(1, int(player.get('titaniumValue', 3) or 3))
 
     cost = int(card.get('calculatedCost', card.get('cost', 0)) or 0)
     tags = card.get('tags', {}) or _metadata_tags(card.get('name', ''))
+    if isinstance(tags, list):
+        tags = {_normalize_tag_name(t): 1 for t in tags if _normalize_tag_name(t)}
+    elif not isinstance(tags, dict):
+        tags = {}
+    card_name_l = str(card.get('name', '') or '').lower()
+    card_type_l = str(card.get('type', '') or '').lower()
 
     # Default zeroes for all known keys the server may accept
     payment = {
@@ -1428,8 +1607,37 @@ def _build_payment_with_options(player_state: Dict[str, Any], card: Dict[str, An
         'seeds': 0, 'auroraiData': 0, 'graphene': 0, 'kuiperAsteroids': 0
     }
 
+    def default_allowed(resource: str) -> bool:
+        if resource == 'steel':
+            return bool(tags.get('Building'))
+        if resource == 'titanium':
+            return bool(tags.get('Space'))
+        if resource in ['microbes', 'seeds']:
+            return bool(tags.get('Plant'))
+        if resource == 'floaters':
+            return bool(tags.get('Venus'))
+        if resource == 'lunaArchivesScience':
+            return bool(tags.get('Moon'))
+        if resource == 'graphene':
+            return bool(tags.get('City') or tags.get('Space'))
+        if resource in ['spireScience', 'auroraiData']:
+            return ('standard' in card_type_l and 'project' in card_type_l) or card_name_l.endswith(':sp')
+        if resource == 'kuiperAsteroids':
+            return ('aquifer' in card_name_l) or ('asteroid' in card_name_l)
+        return False
+
     def allowed(resource: str) -> bool:
-        return payment_options.get(resource, True)
+        if resource == 'megaCredits':
+            return True
+        if resource == 'titanium' and payment_options.get('lunaTradeFederationTitanium', False):
+            return True
+        if resource in payment_options:
+            return bool(payment_options.get(resource, False))
+        return default_allowed(resource)
+
+    # Luna Trade Federation: titanium spent as MC loses one value point.
+    if payment_options.get('lunaTradeFederationTitanium', False) and not payment_options.get('titanium', False):
+        titanium_value = max(1, int(titanium_value) - 1)
 
     cost_remaining = cost
 
@@ -1595,7 +1803,7 @@ class ActionDecoder:
             'SELECT_OPTION': 200,
             'SELECT_CARD_MASK': _CARD_SELECTION_MASK_BASE,
             'SELECT_SPACE': 300,
-            'SELECT_PAYMENT': 400,
+            'SELECT_PAYMENT': _PAYMENT_ACTION_BASE,
             'SELECT_AMOUNT': 500,
             'PASS': 900,
             'END_TURN': 950
@@ -1843,7 +2051,13 @@ class ActionDecoder:
                         continue
                     available_actions.append(self.action_types['SELECT_SPACE'] + i)
             elif input_type == 'selectPayment' or input_type == 'payment':
-                for i in range(10):
+                payment_candidates = _enumerate_payment_candidates(
+                    waiting_for,
+                    player_state,
+                    max_candidates=_PAYMENT_ACTION_VARIANTS,
+                )
+                variant_count = min(_PAYMENT_ACTION_VARIANTS, len(payment_candidates))
+                for i in range(variant_count):
                     available_actions.append(self.action_types['SELECT_PAYMENT'] + i)
             elif input_type == 'selectAmount' or input_type == 'amount':
                 min_amount = int(waiting_for.get('min', 0))
@@ -1903,7 +2117,9 @@ class ActionDecoder:
                 # Deduplicate while preserving order to reduce repeated retries.
                 available_actions = list(dict.fromkeys(available_actions))
             if not available_actions:
-                available_actions.append(self.action_types['PASS'])
+                # Avoid generating guaranteed-invalid pass payloads for mandatory payment prompts.
+                if str(input_type or '') not in ['payment', 'selectPayment']:
+                    available_actions.append(self.action_types['PASS'])
         except Exception as e:
             # logger.error(f"Error getting available actions: {e}")
             available_actions = [self.action_types['PASS']]

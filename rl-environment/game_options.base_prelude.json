@@ -25,7 +25,7 @@
     "starwars": false,
     "turmoil": false,
     "underworld": false,
-    "venus": false
+    "venus": true
   },
   "fastModeOption": false,
   "includeFanMA": false,
@@ -40,7 +40,7 @@
   "randomMA": "No randomization",
   "removeNegativeGlobalEventsOption": false,
   "requiresMoonTrackCompletion": false,
-  "requiresVenusTrackCompletion": false,
+  "requiresVenusTrackCompletion": true,
   "seed": "12345",
   "showOtherPlayersVP": false,
   "showTimers": true,

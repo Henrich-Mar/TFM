@@ -18,6 +18,7 @@ def snapshot_population_behavior(population: Sequence[Any]) -> Dict[str, Dict[st
             "games_played": float(getattr(agent, "games_played", 0) or 0),
             "card_play_actions": float(stats.get("card_play_actions", 0) or 0),
             "standard_project_actions": float(action_counts.get("standard_project", 0) or 0),
+            "sell_patents_actions": float(action_counts.get("sell_patents", 0) or 0),
             "steel_spent": float(stats.get("steel_spent", 0) or 0),
             "titanium_spent": float(stats.get("titanium_spent", 0) or 0),
         }
@@ -39,6 +40,7 @@ def compute_generation_behavior_metrics(
         "games_played": 0.0,
         "card_play_actions": 0.0,
         "standard_project_actions": 0.0,
+        "sell_patents_actions": 0.0,
         "steel_spent": 0.0,
         "titanium_spent": 0.0,
         "vp_terraforming": 0.0,
@@ -99,6 +101,7 @@ def compute_generation_behavior_metrics(
         games_delta = max(0.0, float(curr.get("games_played", 0.0)) - float(prev.get("games_played", 0.0)))
         card_plays_delta = max(0.0, float(curr.get("card_play_actions", 0.0)) - float(prev.get("card_play_actions", 0.0)))
         standard_projects_delta = max(0.0, float(curr.get("standard_project_actions", 0.0)) - float(prev.get("standard_project_actions", 0.0)))
+        sell_patents_delta = max(0.0, float(curr.get("sell_patents_actions", 0.0)) - float(prev.get("sell_patents_actions", 0.0)))
         steel_spent_delta = max(0.0, float(curr.get("steel_spent", 0.0)) - float(prev.get("steel_spent", 0.0)))
         titanium_spent_delta = max(0.0, float(curr.get("titanium_spent", 0.0)) - float(prev.get("titanium_spent", 0.0)))
         endscreen_games = max(0.0, float(endscreen.get("games", 0.0)))
@@ -116,6 +119,7 @@ def compute_generation_behavior_metrics(
         totals["games_played"] += games_delta
         totals["card_play_actions"] += card_plays_delta
         totals["standard_project_actions"] += standard_projects_delta
+        totals["sell_patents_actions"] += sell_patents_delta
         totals["steel_spent"] += steel_spent_delta
         totals["titanium_spent"] += titanium_spent_delta
         totals["vp_terraforming"] += vp_terraforming
@@ -134,6 +138,7 @@ def compute_generation_behavior_metrics(
             "endscreen_games": endscreen_games,
             "card_play_actions": card_plays_delta,
             "standard_project_actions": standard_projects_delta,
+            "sell_patents_actions": sell_patents_delta,
             "steel_spent": steel_spent_delta,
             "titanium_spent": titanium_spent_delta,
             "vp_terraforming": vp_terraforming,
@@ -147,6 +152,7 @@ def compute_generation_behavior_metrics(
             "greenery_placements": greenery_placements,
             "card_plays_per_game": (card_plays_delta / games_delta) if games_delta > 0 else 0.0,
             "standard_project_ratio": (standard_projects_delta / action_denom) if action_denom > 0 else 0.0,
+            "sell_patents_per_game": (sell_patents_delta / games_delta) if games_delta > 0 else 0.0,
             "steel_spent_per_game": (steel_spent_delta / games_delta) if games_delta > 0 else 0.0,
             "titanium_spent_per_game": (titanium_spent_delta / games_delta) if games_delta > 0 else 0.0,
             "vp_terraforming_per_game": (vp_terraforming / vp_denom) if vp_denom > 0 else 0.0,
@@ -168,8 +174,10 @@ def compute_generation_behavior_metrics(
         "total_games_evaluated": int(games_total),
         "card_play_actions": int(totals["card_play_actions"]),
         "standard_project_actions": int(totals["standard_project_actions"]),
+        "sell_patents_actions": int(totals["sell_patents_actions"]),
         "card_plays_per_game": (float(totals["card_play_actions"]) / games_total) if games_total > 0 else 0.0,
         "standard_project_ratio": (float(totals["standard_project_actions"]) / card_actions_total) if card_actions_total > 0 else 0.0,
+        "sell_patents_per_game": (float(totals["sell_patents_actions"]) / games_total) if games_total > 0 else 0.0,
         "steel_spent": int(totals["steel_spent"]),
         "titanium_spent": int(totals["titanium_spent"]),
         "steel_spent_per_game": (float(totals["steel_spent"]) / games_total) if games_total > 0 else 0.0,

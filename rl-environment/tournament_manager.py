@@ -38,6 +38,21 @@ class TournamentManager:
         self.game_cluster = game_cluster
         self.active_tournaments: Dict[str, TournamentBracket] = {}
         self.tournament_progress: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _agent_name_token(agent_id: Any, width: int = 8) -> str:
+        raw = ''.join(ch for ch in str(agent_id or '') if ch.isalnum())
+        if not raw:
+            raw = uuid.uuid4().hex
+        return raw[: max(4, int(width))].lower()
+
+    @classmethod
+    def _build_seat_player_names(cls, agents: List[RLAgent]) -> List[str]:
+        # Prefix with seat index so names are unique even when many agents share ID prefixes.
+        return [
+            f"A{idx + 1}_{cls._agent_name_token(getattr(agent, 'id', ''))}"
+            for idx, agent in enumerate(agents)
+        ]
         
     def create_tournaments(self, 
                          population: List[RLAgent], 
@@ -224,6 +239,7 @@ class TournamentManager:
         """Run a single 4-player game"""
         provisional_id = str(uuid.uuid4())
         start_time = datetime.now()
+        seat_player_names = self._build_seat_player_names(agents)
         
         try:
             fast_mode_env = str(os.getenv('TM_FAST_MODE_OPTION', '1')).strip().lower()
@@ -231,7 +247,7 @@ class TournamentManager:
             # Get available game server
             game_instance = await self.game_cluster.create_game(
                 game_id=provisional_id,
-                player_names=[f"Agent_{agent.id[:8]}" for agent in agents],
+                player_names=seat_player_names,
                 game_options={
                     'soloMode': False,
                     'randomMA': 'No randomization',
@@ -255,8 +271,8 @@ class TournamentManager:
 
             # Connect agents to game
             agent_tasks = [
-                agent.play_game(game_instance, f"Agent_{agent.id[:8]}")
-                for agent in agents
+                agent.play_game(game_instance, player_name)
+                for agent, player_name in zip(agents, seat_player_names)
             ]
             
             # Wait for game completion with configurable timeout.
@@ -328,8 +344,7 @@ class TournamentManager:
                     logger.warning("Fetching /api/player view failed for tournament scoring", exc_info=True)
 
             scored_list: List[Dict[str, Any]] = []
-            for agent in agents:
-                disp_name = f"Agent_{agent.id[:8]}"
+            for agent, disp_name in zip(agents, seat_player_names):
                 source = view_players_by_name.get(disp_name) or game_players_by_name.get(disp_name, {})
                 vp_breakdown = dict(source.get('victoryPointsBreakdown', {}) or {})
 

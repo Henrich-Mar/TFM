@@ -10,7 +10,7 @@ import shutil
 import asyncio
 import logging
 from typing import List, Dict, Optional, Any, Set, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import datetime
 import json
 import random
@@ -115,6 +115,18 @@ class RLCoordinator:
         self.gate_global_payment_penalty_points = self._safe_env_float("GATE_GLOBAL_PAYMENT_PENALTY_POINTS", 6.0)
         self.ppo_enable = str(os.getenv("PPO_ENABLE", "1")).strip().lower() not in ("0", "false", "no", "off")
         self.ppo_rollout_steps = self._safe_env_int("PPO_ROLLOUT_STEPS", 8192)
+        self.save_top_k = max(1, self._safe_env_int("SAVE_TOP_K", 3))
+        self.training_opponent_pool_enabled = str(os.getenv("TRAINING_OPPONENT_POOL_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off")
+        self.training_pool_games_per_agent = max(0, self._safe_env_int("TRAINING_POOL_GAMES_PER_AGENT", 1))
+        self.training_pool_generation_window = max(1, self._safe_env_int("TRAINING_POOL_GENERATION_WINDOW", 8))
+        self.training_pool_max_checkpoints = max(3, self._safe_env_int("TRAINING_POOL_MAX_CHECKPOINTS", 48))
+        self.training_pool_min_checkpoints = max(3, self._safe_env_int("TRAINING_POOL_MIN_CHECKPOINTS", 3))
+        self.fixed_benchmark_enabled = str(os.getenv("FIXED_BENCHMARK_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off")
+        self.fixed_benchmark_interval = max(1, self._safe_env_int("FIXED_BENCHMARK_INTERVAL", 5))
+        self.fixed_benchmark_games_per_agent = max(1, self._safe_env_int("FIXED_BENCHMARK_GAMES_PER_AGENT", 2))
+        self.fixed_benchmark_agent_count = max(1, self._safe_env_int("FIXED_BENCHMARK_AGENT_COUNT", 1))
+        self.fixed_benchmark_pool_size = max(3, self._safe_env_int("FIXED_BENCHMARK_POOL_SIZE", 12))
+        self.fixed_benchmark_checkpoints: List[str] = self._resolve_fixed_benchmark_checkpoints()
         self.league_manager = LeagueManager(
             LeagueConfig(
                 enabled=str(os.getenv("LEAGUE_ENABLE", "1")).strip().lower() not in ("0", "false", "no", "off"),
@@ -234,6 +246,11 @@ class RLCoordinator:
                     float(self.last_raw_eval_fitness.get(agent.id, fitness_scores[i]))
                     for i, agent in enumerate(self.population)
                 ]
+                benchmark_metrics = await self._maybe_run_fixed_benchmark(
+                    generation=int(generation),
+                    fitness_scores=fitness_scores,
+                )
+                self.last_generation_behavior_metrics.update(benchmark_metrics)
 
                 # Record metrics
                 await self.metrics_tracker.record_generation(
@@ -304,6 +321,12 @@ class RLCoordinator:
             )
             for tournament in tournaments
         ])
+        training_pool_results, training_pool_metrics = await self._evaluate_with_training_opponent_pool(
+            matchmaking_population,
+            global_game_semaphore=global_game_semaphore,
+        )
+        if training_pool_results:
+            all_results.extend(training_pool_results)
         
         # Evaluate selection fitness from tournament outcomes.
         raw_fitness_scores = self._calculate_fitness_scores(all_results)
@@ -327,6 +350,7 @@ class RLCoordinator:
             all_results,
         )
         generation_metrics["league/matchmaking_ordering_applied"] = bool(matchmaking_ordering_applied)
+        generation_metrics.update(training_pool_metrics)
         selection_fitness_scores, gate_summary, per_agent_gate = self._apply_promotion_gates(
             raw_fitness_scores,
             per_agent_behavior,
@@ -427,14 +451,386 @@ class RLCoordinator:
     def _calculate_fitness_scores(self, tournament_results: List[Dict]) -> List[float]:
         """Calculate fitness scores based on tournament performance"""
         return calculate_selection_fitness(self.population, tournament_results)
+
+    @staticmethod
+    def _dedupe_existing_checkpoints(paths: List[str]) -> List[str]:
+        deduped: List[str] = []
+        seen: Set[str] = set()
+        for path in paths:
+            normalized = os.path.abspath(str(path))
+            if normalized in seen or not os.path.isfile(normalized):
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped
+
+    def _resolve_fixed_benchmark_checkpoints(self) -> List[str]:
+        models_root = self._default_models_root()
+        explicit_raw = str(os.getenv("FIXED_BENCHMARK_CHECKPOINTS", "") or "").strip()
+        explicit_refs = [token.strip() for token in explicit_raw.split(",") if token.strip()]
+        explicit_paths: List[str] = []
+        for ref in explicit_refs:
+            candidate = ref
+            if not os.path.isabs(candidate):
+                candidate = os.path.join(models_root, candidate)
+            candidate = os.path.abspath(candidate)
+            if os.path.isfile(candidate):
+                explicit_paths.append(candidate)
+            else:
+                logger.warning("Ignoring missing FIXED_BENCHMARK_CHECKPOINTS entry: %s", ref)
+        if explicit_paths:
+            return self._dedupe_existing_checkpoints(explicit_paths)[: int(self.fixed_benchmark_pool_size)]
+
+        generation_refs = [token.strip() for token in str(os.getenv("FIXED_BENCHMARK_GENERATIONS", "") or "").split(",") if token.strip()]
+        checkpoint_candidates: List[str] = []
+        if generation_refs:
+            for token in generation_refs:
+                try:
+                    generation = int(token)
+                except Exception:
+                    continue
+                checkpoint_candidates.extend(
+                    self._all_generation_checkpoints(models_root, generation)[: max(1, int(self.save_top_k))]
+                )
+        else:
+            checkpoint_candidates.extend(self._all_saved_checkpoints(models_root))
+
+        return self._dedupe_existing_checkpoints(checkpoint_candidates)[: int(self.fixed_benchmark_pool_size)]
+
+    def _resolve_training_opponent_checkpoints(self) -> List[str]:
+        models_root = self._default_models_root()
+        generations = self._available_generations(models_root)
+        if not generations:
+            return []
+
+        window = max(1, int(self.training_pool_generation_window))
+        candidate_generations = generations[-window:]
+        checkpoint_candidates: List[str] = []
+        top_per_generation = max(1, int(self.save_top_k))
+        for generation in reversed(candidate_generations):
+            checkpoint_candidates.extend(
+                self._all_generation_checkpoints(models_root, generation)[:top_per_generation]
+            )
+        max_pool = max(3, int(self.training_pool_max_checkpoints))
+        return self._dedupe_existing_checkpoints(checkpoint_candidates)[:max_pool]
+
+    @staticmethod
+    def _sample_checkpoint_pool(checkpoint_pool: List[str], sample_size: int, rng: random.Random) -> List[str]:
+        if not checkpoint_pool:
+            return []
+        target = max(1, int(sample_size))
+        if len(checkpoint_pool) >= target:
+            return list(rng.sample(checkpoint_pool, k=target))
+        return [str(rng.choice(checkpoint_pool)) for _ in range(target)]
+
+    def _load_frozen_agent_from_checkpoint(self, checkpoint_path: str, label: str) -> Optional[RLAgent]:
+        try:
+            agent = RLAgent()
+            agent.load_model(checkpoint_path)
+            agent.train_from_self_play = False
+            agent.config.train_from_self_play = False
+            agent.ppo_enable = False
+            agent.id = f"{label}_{agent.id[:8]}_{uuid.uuid4().hex[:8]}"
+            return agent
+        except Exception as e:
+            logger.warning("Failed loading frozen checkpoint %s: %s", checkpoint_path, e)
+            return None
+
+    @staticmethod
+    def _clone_agent_for_evaluation(agent: RLAgent) -> Optional[RLAgent]:
+        try:
+            clone = RLAgent(config=type(agent.config)(**asdict(agent.config)))
+            clone.network.load_state_dict(agent.network.state_dict())
+            clone.network.eval()
+            clone.train_from_self_play = False
+            clone.config.train_from_self_play = False
+            clone.ppo_enable = False
+            clone.id = str(agent.id)
+            return clone
+        except Exception:
+            return None
+
+    async def _run_single_checkpoint_pool_game(
+        self,
+        anchor_agent: RLAgent,
+        opponent_checkpoints: List[str],
+        label: str,
+        global_game_semaphore: Optional[asyncio.Semaphore],
+    ) -> Optional[Any]:
+        opponents: List[RLAgent] = []
+        for checkpoint_path in opponent_checkpoints:
+            frozen_agent = self._load_frozen_agent_from_checkpoint(checkpoint_path, label=label)
+            if frozen_agent is None:
+                return None
+            opponents.append(frozen_agent)
+
+        if len(opponents) < 3:
+            return None
+
+        lineup = [anchor_agent] + opponents[:3]
+        tournament_id = f"{label}_{int(self.current_generation)}_{uuid.uuid4().hex[:8]}"
+        if global_game_semaphore is not None:
+            async with global_game_semaphore:
+                return await self.tournament_manager._run_single_game(lineup, tournament_id)
+        return await self.tournament_manager._run_single_game(lineup, tournament_id)
+
+    async def _run_checkpoint_pool_matchups(
+        self,
+        anchor_agents: List[RLAgent],
+        checkpoint_pool: List[str],
+        games_per_agent: int,
+        label: str,
+        global_game_semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> Dict[str, Any]:
+        start_time = datetime.now()
+        rounds = max(1, int(games_per_agent))
+        planned_games = int(len(anchor_agents) * rounds)
+        successful_games = 0
+        failed_games = 0
+        games: List[Dict[str, Any]] = []
+        rng = random.Random(f"{label}:{int(self.current_generation)}")
+
+        for _round_idx in range(rounds):
+            round_tasks = [
+                asyncio.create_task(
+                    self._run_single_checkpoint_pool_game(
+                        anchor_agent=anchor_agent,
+                        opponent_checkpoints=self._sample_checkpoint_pool(checkpoint_pool, 3, rng),
+                        label=label,
+                        global_game_semaphore=global_game_semaphore,
+                    )
+                )
+                for anchor_agent in anchor_agents
+            ]
+            round_results = await asyncio.gather(*round_tasks, return_exceptions=True)
+            for result in round_results:
+                if isinstance(result, Exception) or result is None:
+                    failed_games += 1
+                    continue
+                games.append(self.tournament_manager._game_result_to_dict(result))
+                if bool(getattr(result, "completed", False)):
+                    successful_games += 1
+                else:
+                    failed_games += 1
+
+        finished_games = successful_games + failed_games
+        return {
+            "tournament_id": f"{label}_{int(self.current_generation)}_{uuid.uuid4().hex[:8]}",
+            "agents": [agent.id for agent in anchor_agents],
+            "games": games,
+            "duration_seconds": (datetime.now() - start_time).total_seconds(),
+            "completed_games": int(finished_games),
+            "successful_games": int(successful_games),
+            "failed_games": int(failed_games),
+            "total_planned_games": int(planned_games),
+        }
+
+    @staticmethod
+    def _summarize_anchor_results(anchor_agents: List[RLAgent], matchup_result: Dict[str, Any]) -> Dict[str, Any]:
+        anchor_ids = [agent.id for agent in anchor_agents]
+        stats: Dict[str, Dict[str, float]] = {
+            agent_id: {
+                "games": 0.0,
+                "wins": 0.0,
+                "vp_sum": 0.0,
+                "rank_sum": 0.0,
+                "completed": 0.0,
+            }
+            for agent_id in anchor_ids
+        }
+
+        for game_result in matchup_result.get("games", []) or []:
+            if not isinstance(game_result, dict):
+                continue
+            for player_result in game_result.get("players", []) or []:
+                if not isinstance(player_result, dict):
+                    continue
+                agent_id = str(player_result.get("agent_id", "") or "")
+                if agent_id not in stats:
+                    continue
+                bucket = stats[agent_id]
+                bucket["games"] += 1.0
+                bucket["vp_sum"] += float(player_result.get("victory_points", 0) or 0)
+                bucket["rank_sum"] += float(player_result.get("rank", 4) or 4)
+                if int(player_result.get("rank", 4) or 4) == 1:
+                    bucket["wins"] += 1.0
+                if bool(player_result.get("completed", False)):
+                    bucket["completed"] += 1.0
+
+        aggregate = {
+            "games": 0.0,
+            "wins": 0.0,
+            "vp_sum": 0.0,
+            "rank_sum": 0.0,
+            "completed": 0.0,
+        }
+        per_agent: Dict[str, Dict[str, float]] = {}
+        for agent_id, bucket in stats.items():
+            games = float(bucket["games"])
+            aggregate["games"] += games
+            aggregate["wins"] += float(bucket["wins"])
+            aggregate["vp_sum"] += float(bucket["vp_sum"])
+            aggregate["rank_sum"] += float(bucket["rank_sum"])
+            aggregate["completed"] += float(bucket["completed"])
+            per_agent[agent_id] = {
+                "games": games,
+                "win_rate": (float(bucket["wins"]) / games) if games > 0 else 0.0,
+                "avg_vp": (float(bucket["vp_sum"]) / games) if games > 0 else 0.0,
+                "avg_rank": (float(bucket["rank_sum"]) / games) if games > 0 else 0.0,
+                "completion_rate": (float(bucket["completed"]) / games) if games > 0 else 0.0,
+            }
+
+        aggregate_games = float(aggregate["games"])
+        aggregate_summary = {
+            "games": aggregate_games,
+            "win_rate": (float(aggregate["wins"]) / aggregate_games) if aggregate_games > 0 else 0.0,
+            "avg_vp": (float(aggregate["vp_sum"]) / aggregate_games) if aggregate_games > 0 else 0.0,
+            "avg_rank": (float(aggregate["rank_sum"]) / aggregate_games) if aggregate_games > 0 else 0.0,
+            "completion_rate": (float(aggregate["completed"]) / aggregate_games) if aggregate_games > 0 else 0.0,
+        }
+        return {
+            "aggregate": aggregate_summary,
+            "per_agent": per_agent,
+        }
+
+    async def _evaluate_with_training_opponent_pool(
+        self,
+        matchmaking_population: List[RLAgent],
+        global_game_semaphore: Optional[asyncio.Semaphore],
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        metrics: Dict[str, Any] = {
+            "frozen_pool/enabled": bool(self.training_opponent_pool_enabled),
+            "frozen_pool/ran": False,
+            "frozen_pool/checkpoints_available": 0,
+            "frozen_pool/games_per_agent": int(self.training_pool_games_per_agent),
+            "frozen_pool/min_checkpoints": int(self.training_pool_min_checkpoints),
+        }
+        if not self.training_opponent_pool_enabled or int(self.training_pool_games_per_agent) <= 0:
+            metrics["frozen_pool/skip_reason"] = "disabled"
+            return [], metrics
+
+        checkpoint_pool = self._resolve_training_opponent_checkpoints()
+        metrics["frozen_pool/checkpoints_available"] = int(len(checkpoint_pool))
+        if len(checkpoint_pool) < int(self.training_pool_min_checkpoints):
+            metrics["frozen_pool/skip_reason"] = "insufficient_checkpoint_pool"
+            return [], metrics
+
+        anchors = list(matchmaking_population or self.population)
+        matchup_result = await self._run_checkpoint_pool_matchups(
+            anchor_agents=anchors,
+            checkpoint_pool=checkpoint_pool,
+            games_per_agent=int(self.training_pool_games_per_agent),
+            label="training_pool",
+            global_game_semaphore=global_game_semaphore,
+        )
+        summary = self._summarize_anchor_results(anchors, matchup_result)
+        aggregate = dict(summary.get("aggregate", {}) or {})
+
+        metrics.update(
+            {
+                "frozen_pool/ran": True,
+                "frozen_pool/games_planned": int(matchup_result.get("total_planned_games", 0)),
+                "frozen_pool/games_completed": int(matchup_result.get("completed_games", 0)),
+                "frozen_pool/games_successful": int(matchup_result.get("successful_games", 0)),
+                "frozen_pool/games_failed": int(matchup_result.get("failed_games", 0)),
+                "frozen_pool/win_rate": float(aggregate.get("win_rate", 0.0)),
+                "frozen_pool/avg_vp": float(aggregate.get("avg_vp", 0.0)),
+                "frozen_pool/avg_rank": float(aggregate.get("avg_rank", 0.0)),
+                "frozen_pool/completion_rate": float(aggregate.get("completion_rate", 0.0)),
+                "frozen_pool/sample_checkpoints": checkpoint_pool[: min(8, len(checkpoint_pool))],
+            }
+        )
+        return [matchup_result], metrics
+
+    async def _maybe_run_fixed_benchmark(
+        self,
+        generation: int,
+        fitness_scores: List[float],
+    ) -> Dict[str, Any]:
+        metrics: Dict[str, Any] = {
+            "benchmark/fixed/enabled": bool(self.fixed_benchmark_enabled),
+            "benchmark/fixed/interval": int(self.fixed_benchmark_interval),
+            "benchmark/fixed/ran": False,
+            "benchmark/fixed/checkpoints_available": int(len(self.fixed_benchmark_checkpoints)),
+        }
+        if not self.fixed_benchmark_enabled:
+            metrics["benchmark/fixed/skip_reason"] = "disabled"
+            return metrics
+        if (int(generation) + 1) % int(self.fixed_benchmark_interval) != 0:
+            metrics["benchmark/fixed/skip_reason"] = "interval_not_reached"
+            return metrics
+
+        if not self.fixed_benchmark_checkpoints:
+            self.fixed_benchmark_checkpoints = self._resolve_fixed_benchmark_checkpoints()
+        metrics["benchmark/fixed/checkpoints_available"] = int(len(self.fixed_benchmark_checkpoints))
+        if len(self.fixed_benchmark_checkpoints) < 3:
+            metrics["benchmark/fixed/skip_reason"] = "insufficient_checkpoint_pool"
+            return metrics
+
+        if not self.population:
+            metrics["benchmark/fixed/skip_reason"] = "empty_population"
+            return metrics
+
+        rank_indices = sorted(
+            range(len(self.population)),
+            key=lambda idx: float(fitness_scores[idx]) if idx < len(fitness_scores) else 0.0,
+            reverse=True,
+        )
+        eval_count = max(1, min(len(rank_indices), int(self.fixed_benchmark_agent_count)))
+        anchor_agents: List[RLAgent] = []
+        for idx in rank_indices[:eval_count]:
+            cloned = self._clone_agent_for_evaluation(self.population[idx])
+            if cloned is not None:
+                anchor_agents.append(cloned)
+        if not anchor_agents:
+            metrics["benchmark/fixed/skip_reason"] = "anchor_clone_failed"
+            return metrics
+        global_game_limit = self._resolve_global_game_concurrency()
+        global_game_semaphore = asyncio.Semaphore(global_game_limit)
+        matchup_result = await self._run_checkpoint_pool_matchups(
+            anchor_agents=anchor_agents,
+            checkpoint_pool=list(self.fixed_benchmark_checkpoints),
+            games_per_agent=int(self.fixed_benchmark_games_per_agent),
+            label="fixed_benchmark",
+            global_game_semaphore=global_game_semaphore,
+        )
+        summary = self._summarize_anchor_results(anchor_agents, matchup_result)
+        aggregate = dict(summary.get("aggregate", {}) or {})
+
+        metrics.update(
+            {
+                "benchmark/fixed/ran": True,
+                "benchmark/fixed/games_per_agent": int(self.fixed_benchmark_games_per_agent),
+                "benchmark/fixed/games_planned": int(matchup_result.get("total_planned_games", 0)),
+                "benchmark/fixed/games_completed": int(matchup_result.get("completed_games", 0)),
+                "benchmark/fixed/games_successful": int(matchup_result.get("successful_games", 0)),
+                "benchmark/fixed/games_failed": int(matchup_result.get("failed_games", 0)),
+                "benchmark/fixed/win_rate": float(aggregate.get("win_rate", 0.0)),
+                "benchmark/fixed/avg_vp": float(aggregate.get("avg_vp", 0.0)),
+                "benchmark/fixed/avg_rank": float(aggregate.get("avg_rank", 0.0)),
+                "benchmark/fixed/completion_rate": float(aggregate.get("completion_rate", 0.0)),
+                "benchmark/fixed/anchor_agent_ids": [agent.id for agent in anchor_agents],
+                "benchmark/fixed/per_agent": summary.get("per_agent", {}),
+            }
+        )
+        logger.info(
+            "Fixed benchmark generation %d: agents=%d games=%d win_rate=%.3f avg_vp=%.2f avg_rank=%.2f",
+            int(generation),
+            len(anchor_agents),
+            int(matchup_result.get("completed_games", 0)),
+            float(metrics.get("benchmark/fixed/win_rate", 0.0)),
+            float(metrics.get("benchmark/fixed/avg_vp", 0.0)),
+            float(metrics.get("benchmark/fixed/avg_rank", 0.0)),
+        )
+        return metrics
     
     async def save_generation_models(self, generation: int, fitness_scores: List[float]):
         """Save models from current generation"""
-        save_dir = f"/app/rl-models/generation_{generation}"
+        save_dir = os.path.join(self._default_models_root(), f"generation_{generation}")
         os.makedirs(save_dir, exist_ok=True)
         
-        # Save top 10% of agents
-        num_to_save = max(1, int(len(self.population) * 0.1))
+        # Save top-K agents so training can sample stronger frozen opponents.
+        num_to_save = max(1, min(len(self.population), int(self.save_top_k)))
         
         # Get fitness scores to find top agents
         top_indices = sorted(range(len(fitness_scores)), 
@@ -530,7 +926,7 @@ class RLCoordinator:
                 agent.save_model(os.path.join(tmp_population_dir, f"agent_{idx}.pth"))
 
             state_payload = {
-                "version": 1,
+                "version": 2,
                 "next_generation": int(next_generation),
                 "population_size": len(self.population),
                 "updated_at": datetime.utcnow().isoformat() + "Z",
@@ -538,6 +934,7 @@ class RLCoordinator:
                 "last_generation_behavior_metrics": dict(self.last_generation_behavior_metrics or {}),
                 "last_generation_gate": dict(self.last_generation_gate or {}),
                 "league_state": self.league_manager.get_state(),
+                "fixed_benchmark_checkpoints": list(self.fixed_benchmark_checkpoints or []),
             }
             with open(tmp_state_path, "w", encoding="utf-8") as f:
                 json.dump(state_payload, f, indent=2)
@@ -575,6 +972,11 @@ class RLCoordinator:
             self.last_generation_behavior_metrics = dict(state.get("last_generation_behavior_metrics", {}) or {})
             self.last_generation_gate = dict(state.get("last_generation_gate", {}) or {})
             self.league_manager.load_state(dict(state.get("league_state", {}) or {}))
+            restored_benchmark = self._dedupe_existing_checkpoints(
+                list(state.get("fixed_benchmark_checkpoints", []) or [])
+            )
+            if restored_benchmark:
+                self.fixed_benchmark_checkpoints = restored_benchmark[: int(self.fixed_benchmark_pool_size)]
         except Exception as e:
             logger.warning(f"Failed loading checkpoint state file: {e}")
             return False

@@ -52,6 +52,13 @@ def _extract_player(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return player if isinstance(player, dict) else {}
 
 
+def _extract_game(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    game = state.get('game', {})
+    return game if isinstance(game, dict) else {}
+
+
 def _extract_hand(state: Optional[Dict[str, Any]], player: Dict[str, Any]) -> List[Dict[str, Any]]:
     if isinstance(state, dict):
         cards = state.get('cardsInHand')
@@ -149,6 +156,165 @@ def _vp_component(player: Dict[str, Any], key: str) -> float:
     return _safe_float(breakdown.get(key, 0), 0.0)
 
 
+def _normalize_token(value: Any) -> str:
+    return str(value or '').strip().lower()
+
+
+def _matches_player_payload(payload: Dict[str, Any], player: Dict[str, Any]) -> bool:
+    own_name = _normalize_token(player.get('name'))
+    own_color = _normalize_token(player.get('color'))
+    payload_name = _normalize_token(payload.get('playerName'))
+    payload_color = _normalize_token(payload.get('playerColor'))
+    if own_name and payload_name and own_name == payload_name:
+        return True
+    if own_color and payload_color and own_color == payload_color:
+        return True
+    return False
+
+
+def _owned_milestone_count(game_state: Dict[str, Any], player: Dict[str, Any]) -> int:
+    count = 0
+    milestones = game_state.get('milestones', []) or []
+    for milestone in milestones:
+        if isinstance(milestone, dict) and _matches_player_payload(milestone, player):
+            count += 1
+    return int(count)
+
+
+def _owned_funded_awards(game_state: Dict[str, Any], player: Dict[str, Any]) -> List[Dict[str, Any]]:
+    owned: List[Dict[str, Any]] = []
+    awards = game_state.get('awards', []) or []
+    for award in awards:
+        if not isinstance(award, dict):
+            continue
+        if _matches_player_payload(award, player):
+            owned.append(award)
+    return owned
+
+
+def _funded_award_count(game_state: Dict[str, Any]) -> int:
+    count = 0
+    awards = game_state.get('awards', []) or []
+    for award in awards:
+        if not isinstance(award, dict):
+            continue
+        if award.get('playerName') or award.get('playerColor'):
+            count += 1
+    return int(count)
+
+
+def _award_identity(award: Dict[str, Any]) -> str:
+    name = _normalize_token(award.get('name') or award.get('title'))
+    color = _normalize_token(award.get('playerColor'))
+    player_name = _normalize_token(award.get('playerName'))
+    return f"{name}|{player_name}|{color}"
+
+
+def _award_expected_points_for_player(scores: List[Dict[str, Any]], player: Dict[str, Any]) -> float:
+    own_name = _normalize_token(player.get('name'))
+    own_color = _normalize_token(player.get('color'))
+    rows: List[Dict[str, Any]] = []
+    for row in scores:
+        if not isinstance(row, dict):
+            continue
+        row_name = _normalize_token(row.get('playerName'))
+        row_color = _normalize_token(row.get('playerColor'))
+        if not row_name and not row_color:
+            continue
+        rows.append(
+            {
+                "name": row_name,
+                "color": row_color,
+                "score": _safe_float(row.get('score', 0), 0.0),
+            }
+        )
+    if not rows:
+        return 0.0
+
+    rows.sort(key=lambda item: item["score"], reverse=True)
+    top_score = rows[0]["score"]
+    top_rows = [row for row in rows if row["score"] == top_score]
+
+    def _is_own(row: Dict[str, Any]) -> bool:
+        if own_color and row["color"] and own_color == row["color"]:
+            return True
+        if own_name and row["name"] and own_name == row["name"]:
+            return True
+        return False
+
+    if top_score > 0.0 and any(_is_own(row) for row in top_rows):
+        return 5.0
+
+    remaining_rows = [row for row in rows if row["score"] < top_score]
+    if not remaining_rows:
+        return 0.0
+    second_score = remaining_rows[0]["score"]
+    second_rows = [row for row in remaining_rows if row["score"] == second_score]
+    if second_score > 0.0 and any(_is_own(row) for row in second_rows):
+        return 2.0
+    return 0.0
+
+
+def _estimate_award_funding_cost(prior_funded_count: int) -> float:
+    # Terraforming Mars award costs: 8, 14, 20 MC.
+    return float(8 + (6 * max(0, int(prior_funded_count))))
+
+
+def _extract_selected_card_name(action_input: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(action_input, dict):
+        return None
+    stack: List[Dict[str, Any]] = [action_input]
+    while stack:
+        payload = stack.pop()
+        if not isinstance(payload, dict):
+            continue
+        action_type = _normalize_token(payload.get('type'))
+        if action_type == 'projectcard':
+            card_name = str(payload.get('card', '') or '').strip()
+            if card_name:
+                return card_name
+        if action_type == 'card':
+            selected = payload.get('cards', []) or []
+            if selected:
+                first = selected[0]
+                if isinstance(first, dict):
+                    card_name = str(first.get('name', '') or '').strip()
+                else:
+                    card_name = str(first or '').strip()
+                if card_name:
+                    return card_name
+            card_name = str(payload.get('card', '') or '').strip()
+            if card_name:
+                return card_name
+        nested_response = payload.get('response')
+        if isinstance(nested_response, dict):
+            stack.append(nested_response)
+        nested_responses = payload.get('responses')
+        if isinstance(nested_responses, list):
+            for item in nested_responses:
+                if isinstance(item, dict):
+                    stack.append(item)
+    return None
+
+
+def _find_card_by_name(cards: List[Dict[str, Any]], card_name: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not card_name:
+        return None
+    needle = _normalize_token(card_name)
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        if _normalize_token(card.get('name')) == needle:
+            return card
+    return None
+
+
+def _card_nominal_vp(card: Optional[Dict[str, Any]]) -> float:
+    if not isinstance(card, dict):
+        return 0.0
+    return max(0.0, _safe_float(card.get('victoryPoints', 0), 0.0))
+
+
 def calculate_step_reward(
     before_state: Optional[Dict[str, Any]],
     after_state: Optional[Dict[str, Any]],
@@ -160,6 +326,8 @@ def calculate_step_reward(
 
     before_player = _extract_player(before_state)
     after_player = _extract_player(after_state)
+    before_game = _extract_game(before_state)
+    after_game = _extract_game(after_state)
     if not before_player or not after_player:
         return 0.0
 
@@ -232,5 +400,79 @@ def calculate_step_reward(
     # Light penalty for pass to discourage low-value inactivity.
     if action_type == 'pass':
         reward -= 0.02
+
+    # Penalize routine sell-patents behavior, especially when playable cards were already affordable.
+    before_waiting = before_state.get('waitingFor', {}) if isinstance(before_state, dict) else {}
+    before_title = before_waiting.get('title', '')
+    if isinstance(before_title, dict):
+        before_title = before_title.get('message', '')
+    before_title_l = str(before_title or '').lower()
+    sold_cards = action_input.get('cards', []) if isinstance(action_input, dict) else []
+    is_sell_patents_action = (
+        action_type == 'card'
+        and isinstance(sold_cards, list)
+        and len(sold_cards) > 0
+        and 'sell patent' in before_title_l
+    )
+    if is_sell_patents_action:
+        reward -= min(0.10, 0.04 * float(len(sold_cards)))
+        affordable_cards = sum(1 for card in before_hand if _can_afford_card_now(card, before_player))
+        if affordable_cards > 0:
+            reward -= min(0.10, 0.02 * float(affordable_cards))
+
+    generation_raw = _safe_float(before_game.get('generation', 1), 1.0)
+    generation_progress = max(0.0, min(generation_raw / 14.0, 1.0))
+    endgame_pressure = max(0.0, min((generation_progress - 0.60) / 0.40, 1.0))
+
+    # Milestone closing pressure: reward milestone claims more when they happen earlier.
+    before_owned_milestones = _owned_milestone_count(before_game, before_player)
+    after_owned_milestones = _owned_milestone_count(after_game, after_player)
+    milestone_claim_delta = max(0, after_owned_milestones - before_owned_milestones)
+    if milestone_claim_delta > 0:
+        early_factor = max(0.10, 1.0 - generation_progress)
+        milestone_claim_reward = 0.09 * float(milestone_claim_delta) * early_factor
+        if before_mc >= 8.0:
+            milestone_claim_reward += 0.04 * float(milestone_claim_delta) * early_factor
+        reward += min(0.18, milestone_claim_reward)
+
+    # Awards closing pressure: reinforce positive EV funding and discourage poor-value funding.
+    before_owned_awards = _owned_funded_awards(before_game, before_player)
+    after_owned_awards = _owned_funded_awards(after_game, after_player)
+    if len(after_owned_awards) > len(before_owned_awards):
+        before_keys = {_award_identity(award) for award in before_owned_awards}
+        newly_funded = [
+            award for award in after_owned_awards
+            if _award_identity(award) not in before_keys
+        ]
+        if not newly_funded:
+            newly_funded = after_owned_awards[len(before_owned_awards):]
+        prior_funded_total = _funded_award_count(before_game)
+        for idx, award in enumerate(newly_funded):
+            scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
+            expected_vp = _award_expected_points_for_player(scores, after_player)
+            estimated_cost = _estimate_award_funding_cost(prior_funded_total + idx)
+            expected_net_vp = expected_vp - (estimated_cost / 5.0)
+            timing_factor = 0.5 + (0.5 * generation_progress)
+            if expected_net_vp > 0.0:
+                reward += min(0.18, (0.04 + (0.035 * expected_net_vp)) * timing_factor)
+            else:
+                reward -= min(0.14, (0.03 + (0.04 * abs(expected_net_vp))) * timing_factor)
+
+    # Final-generation card VP pressure: prefer affordable VP cards over low-ceiling alternatives.
+    selected_card_name = _extract_selected_card_name(action_input)
+    selected_card = _find_card_by_name(before_hand, selected_card_name)
+    selected_card_vp = _card_nominal_vp(selected_card)
+    affordable_vp_cards = [
+        card for card in before_hand
+        if _card_nominal_vp(card) > 0.0 and _can_afford_card_now(card, before_player)
+    ]
+    best_affordable_vp = max((_card_nominal_vp(card) for card in affordable_vp_cards), default=0.0)
+    if endgame_pressure > 0.0:
+        if selected_card_vp > 0.0:
+            reward += min(0.16, endgame_pressure * (0.05 + (0.03 * min(selected_card_vp, 4.0))))
+        elif action_type == 'standardproject' and best_affordable_vp > 0.0:
+            reward -= min(0.16, endgame_pressure * (0.05 + (0.02 * min(best_affordable_vp, 5.0))))
+        elif action_type == 'pass' and best_affordable_vp > 0.0:
+            reward -= min(0.12, endgame_pressure * (0.03 + (0.02 * min(best_affordable_vp, 5.0))))
 
     return max(-0.35, min(0.35, float(reward)))

@@ -525,7 +525,10 @@ class RLAgent:
             # If the only alternative to pass is sell patents, keep pass.
             if not productive_actions:
                 return available_actions
-            return filtered if filtered else available_actions
+            # When at least one non-sell productive action exists, hide sell-patents
+            # choices so they are only used as a last-resort liquidity tool.
+            filtered_non_sell = [a for a in filtered if not _is_sell_patents_action(int(a))]
+            return filtered_non_sell if filtered_non_sell else (filtered if filtered else available_actions)
 
         # If the only non-pass action is sell patents, keep pass to avoid forced selling.
         if non_pass_actions and all(int(a) == 702 for a in non_pass_actions):
@@ -782,7 +785,7 @@ class RLAgent:
                     if 'pass' in title_l:
                         adjustments[idx] = 0.2
                     elif 'sell patents' in title_l:
-                        adjustments[idx] = 0.4
+                        adjustments[idx] = 0.08
                     # Upweight productive actions
                     elif 'play project card' in title_l:
                         adjustments[idx] = 1.8
@@ -887,7 +890,7 @@ class RLAgent:
             if action_idx >= pass_action_base:
                 masked_probs[action_idx] *= 0.3  # Reduce pass action probability
             elif action_idx == sell_patents_action:
-                masked_probs[action_idx] *= 0.5  # Reduce sell patents probability to encourage diversity
+                masked_probs[action_idx] *= 0.08  # Strongly discourage routine sell-patents usage
             elif action_idx < 100:  # Play project card
                 masked_probs[action_idx] *= 1.55
             elif action_idx >= 100 and action_idx < 200:  # Standard projects

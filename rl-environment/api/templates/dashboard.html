@@ -58,7 +58,7 @@
   <div class="top">
     <div>
       <h1 class="title">Terraforming Mars RL Training Dashboard</h1>
-      <div class="muted">Live monitor for PPO rollout, league pools, promotion gates, and recent game links.</div>
+      <div class="muted">Live monitor for PPO rollout, league pools, frozen-opponent benchmarks, promotion gates, and recent game links.</div>
       <div id="status" class="muted">Loading...</div>
     </div>
     <div class="actions">
@@ -82,6 +82,10 @@
     <div class="card">
       <h3>League + Promotion Gate</h3>
       <div id="leagueGate"></div>
+    </div>
+    <div class="card">
+      <h3>Frozen Pool + Fixed Benchmark</h3>
+      <div id="benchmark"></div>
     </div>
     <div class="card">
       <h3>Server Health</h3>
@@ -327,6 +331,34 @@ async function refreshAll() {
       ["Steel floor / game", f2(gateThresholds.min_steel_spent_per_game)],
       ["Titanium floor / game", f2(gateThresholds.min_titanium_spent_per_game)],
       ["Global payment gate", gate.global_payment_gate_failed ? `<span class="bad">failed</span>` : `<span class="good">ok</span>`],
+    ]);
+
+    const frozenRan = Boolean(gm["frozen_pool/ran"]);
+    const benchmarkRan = Boolean(gm["benchmark/fixed/ran"]);
+    const frozenSkipReason = String(gm["frozen_pool/skip_reason"] || "n/a");
+    const benchmarkSkipReason = String(gm["benchmark/fixed/skip_reason"] || "n/a");
+    renderKV(document.getElementById("benchmark"), [
+      ["Frozen pool enabled", gm["frozen_pool/enabled"] ? "yes" : "no"],
+      ["Frozen pool ran", frozenRan ? `<span class="good">yes</span>` : `<span class="warn">no</span>`],
+      ["Frozen pool checkpoints", fmt(gm["frozen_pool/checkpoints_available"])],
+      ["Frozen games / agent", fmt(gm["frozen_pool/games_per_agent"])],
+      ["Frozen games completed", fmt(gm["frozen_pool/games_completed"])],
+      ["Frozen win rate", pct(gm["frozen_pool/win_rate"])],
+      ["Frozen avg VP", f2(gm["frozen_pool/avg_vp"])],
+      ["Frozen avg rank", f2(gm["frozen_pool/avg_rank"])],
+      ["Frozen completion", pct(gm["frozen_pool/completion_rate"])],
+      ["Frozen skip reason", esc(frozenSkipReason)],
+      ["Benchmark enabled", gm["benchmark/fixed/enabled"] ? "yes" : "no"],
+      ["Benchmark interval", fmt(gm["benchmark/fixed/interval"])],
+      ["Benchmark ran", benchmarkRan ? `<span class="good">yes</span>` : `<span class="warn">no</span>`],
+      ["Benchmark checkpoints", fmt(gm["benchmark/fixed/checkpoints_available"])],
+      ["Benchmark games / agent", fmt(gm["benchmark/fixed/games_per_agent"])],
+      ["Benchmark games completed", fmt(gm["benchmark/fixed/games_completed"])],
+      ["Benchmark win rate", pct(gm["benchmark/fixed/win_rate"])],
+      ["Benchmark avg VP", f2(gm["benchmark/fixed/avg_vp"])],
+      ["Benchmark avg rank", f2(gm["benchmark/fixed/avg_rank"])],
+      ["Benchmark completion", pct(gm["benchmark/fixed/completion_rate"])],
+      ["Benchmark skip reason", esc(benchmarkSkipReason)],
     ]);
 
     renderKV(document.getElementById("servers"), [

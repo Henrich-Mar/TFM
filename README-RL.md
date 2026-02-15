@@ -180,6 +180,32 @@ Or via API:
 curl -X POST http://localhost:5000/play/human-vs-best -H "Content-Type: application/json" -d "{\"human_name\":\"You\",\"bot_count\":3}"
 ```
 
+## Standalone Live Bot
+
+Attach the best saved checkpoint to an existing live player slot.
+
+Heroku example:
+
+```bash
+python rl-environment/standalone_bot.py --player-url "https://terraforming-mars.herokuapp.com/player?id=<PLAYER_ID>" --min-action-delay-ms 1000
+```
+
+Or pass base URL + player ID separately:
+
+```bash
+python rl-environment/standalone_bot.py --base-url "https://terraforming-mars.herokuapp.com" --player-id "<PLAYER_ID>" --min-action-delay-ms 1000
+```
+
+Notes:
+- `--min-action-delay-ms` is clamped to at least `1000` to avoid overloading live servers.
+- If `--checkpoint` is not provided, the script auto-loads the highest-fitness saved checkpoint from `rl-models`.
+
+Tkinter launcher (same options via GUI):
+
+```bash
+python rl-environment/standalone_bot_tk.py
+```
+
 Monitor:
 - `http://localhost:5000/dashboard`
 - `http://localhost:5000/stats`

@@ -1,0 +1,378 @@
+"""
+Run a single trained agent against an existing Terraforming Mars player slot.
+
+Examples:
+  python rl-environment/standalone_bot.py --player-url "https://terraforming-mars.herokuapp.com/player?id=<PLAYER_ID>"
+  python rl-environment/standalone_bot.py --base-url "https://terraforming-mars.herokuapp.com" --player-id "<PLAYER_ID>"
+"""
+import argparse
+import asyncio
+import glob
+import logging
+import os
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlsplit, urlunsplit
+
+import aiohttp
+
+from models.agent import RLAgent
+
+logger = logging.getLogger(__name__)
+
+
+def _default_models_root() -> str:
+    env_path = os.getenv("RL_MODELS_DIR")
+    if env_path:
+        return env_path
+    base_dir = os.path.abspath(os.path.dirname(__file__))
+    parent_dir = os.path.abspath(os.path.join(base_dir, ".."))
+    candidates = [
+        os.path.join(parent_dir, "rl-models"),
+        os.path.join(base_dir, "rl-models"),
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    if os.path.basename(base_dir).lower() == "rl-environment":
+        return os.path.join(parent_dir, "rl-models")
+    return candidates[0]
+
+
+def _fitness_from_name(path: str) -> float:
+    base = os.path.basename(path)
+    try:
+        return float(base.split("_fitness_")[-1].replace(".pth", ""))
+    except Exception:
+        return float("-inf")
+
+
+def _find_best_checkpoint(models_root: str) -> str:
+    pattern = os.path.join(models_root, "generation_*", "agent_*_fitness_*.pth")
+    matches = sorted(set(glob.glob(pattern)), key=_fitness_from_name, reverse=True)
+    if not matches:
+        raise FileNotFoundError(f"No checkpoints found under: {models_root}")
+    return matches[0]
+
+
+def _normalize_base_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("base URL is required")
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    parsed = urlsplit(raw)
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"Unsupported URL scheme: {scheme}")
+    netloc = parsed.netloc or parsed.path
+    if not netloc:
+        raise ValueError(f"Invalid URL: {value}")
+    return urlunsplit((scheme, netloc, "", "", "")).rstrip("/")
+
+
+def _extract_query_id(url: str) -> Optional[str]:
+    try:
+        parsed = urlsplit(str(url or "").strip())
+        query = parse_qs(parsed.query)
+    except Exception:
+        return None
+    values = query.get("id", [])
+    for value in values:
+        token = str(value or "").strip()
+        if token:
+            return token
+    return None
+
+
+def _parse_player_url(player_url: str) -> Tuple[str, str]:
+    raw = str(player_url or "").strip()
+    if not raw:
+        raise ValueError("player URL is empty")
+    parsed = urlsplit(raw)
+    if not parsed.scheme:
+        parsed = urlsplit(f"https://{raw}")
+    base_url = _normalize_base_url(urlunsplit((parsed.scheme, parsed.netloc, "", "", "")))
+    player_id = _extract_query_id(raw)
+    if not player_id:
+        raise ValueError("player URL must include query parameter id=<PLAYER_ID>")
+    return base_url, player_id
+
+
+class StandaloneGameClient:
+    def __init__(
+        self,
+        base_url: str,
+        player_id: str,
+        session: aiohttp.ClientSession,
+        game_id: Optional[str] = None,
+        min_action_interval_sec: float = 1.0,
+    ):
+        self.base_url = _normalize_base_url(base_url)
+        self._player_id = str(player_id)
+        self.session = session
+        self.game_id = str(game_id or "").strip()
+        self.cluster = None
+        self.player_ids: Dict[str, str] = {}
+        self._min_action_interval_sec = max(0.0, float(min_action_interval_sec))
+        self._next_allowed_action_monotonic = 0.0
+
+    def _resolve_public_base(self) -> str:
+        return self.base_url
+
+    def get_public_game_url(self) -> str:
+        if self.game_id:
+            return f"{self._resolve_public_base()}/game?id={self.game_id}"
+        return self._resolve_public_base()
+
+    def get_public_player_api_url(self, player_id: str) -> str:
+        return f"{self._resolve_public_base()}/api/player?id={player_id}"
+
+    def get_public_player_url(self, player_id: str) -> str:
+        return f"{self._resolve_public_base()}/player?id={player_id}"
+
+    def get_internal_player_api_url(self, player_id: str) -> str:
+        return self.get_public_player_api_url(player_id)
+
+    async def join_player(self, player_name: str) -> str:
+        if player_name:
+            self.player_ids[str(player_name)] = self._player_id
+        return self._player_id
+
+    async def get_player_state(self, player_id: str) -> Dict[str, Any]:
+        async with self.session.get(
+            f"{self.base_url}/api/player",
+            params={"id": player_id},
+        ) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Failed to get player state: HTTP {response.status}")
+            return await response.json()
+
+    async def _throttle_action_send(self):
+        if self._min_action_interval_sec <= 0.0:
+            return
+        now = asyncio.get_running_loop().time()
+        wait = float(self._next_allowed_action_monotonic) - float(now)
+        if wait > 0.0:
+            await asyncio.sleep(wait)
+            now = asyncio.get_running_loop().time()
+        self._next_allowed_action_monotonic = float(now) + float(self._min_action_interval_sec)
+
+    async def send_player_input(self, player_id: str, input_data: Dict[str, Any]) -> bool:
+        await self._throttle_action_send()
+        try:
+            async with self.session.post(
+                f"{self.base_url}/player/input",
+                params={"id": player_id},
+                json=input_data,
+                headers={"Content-Type": "application/json"},
+            ) as response:
+                if response.status == 200:
+                    return True
+                response_text = await response.text()
+                logger.warning(
+                    "Input rejected. status=%s player=%s response=%s",
+                    response.status,
+                    player_id,
+                    response_text[:500],
+                )
+                return False
+        except Exception as e:
+            logger.error("Failed to send input for player %s: %s", player_id, e)
+            return False
+
+    async def get_final_state(self) -> Dict[str, Any]:
+        if not self.game_id:
+            return {}
+        try:
+            async with self.session.get(
+                f"{self.base_url}/api/game",
+                params={"id": self.game_id},
+            ) as response:
+                if response.status != 200:
+                    logger.warning("Failed to fetch final game state: HTTP %s", response.status)
+                    return {}
+                return await response.json()
+        except Exception as e:
+            logger.warning("Failed to fetch final game state: %s", e)
+            return {}
+
+    async def cleanup(self):
+        return
+
+
+def _resolve_target(
+    player_url: str,
+    base_url: str,
+    player_id: str,
+) -> Tuple[str, str]:
+    parsed_base = ""
+    parsed_player_id = ""
+    if str(player_url or "").strip():
+        parsed_base, parsed_player_id = _parse_player_url(player_url)
+    final_base = str(base_url or "").strip() or parsed_base
+    final_player = str(player_id or "").strip() or parsed_player_id
+    if not final_base:
+        raise ValueError("Provide --player-url or --base-url")
+    if not final_player:
+        raise ValueError("Provide --player-url or --player-id")
+    return _normalize_base_url(final_base), final_player
+
+
+async def _run(args: argparse.Namespace):
+    checkpoint = str(args.checkpoint or "").strip() or _find_best_checkpoint(args.models)
+    if not os.path.isfile(checkpoint):
+        raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint}")
+
+    base_url, player_id = _resolve_target(
+        player_url=args.player_url,
+        base_url=args.base_url,
+        player_id=args.player_id,
+    )
+    game_id = str(args.game_id or "").strip()
+    if not game_id and str(args.game_url or "").strip():
+        game_id = str(_extract_query_id(args.game_url) or "").strip()
+
+    min_action_delay_ms = max(1000, int(args.min_action_delay_ms))
+    min_action_interval_sec = float(min_action_delay_ms) / 1000.0
+    poll_interval_sec = max(0.1, float(args.poll_interval_ms) / 1000.0)
+
+    print(f"Using checkpoint: {checkpoint}")
+    print(f"Target base URL: {base_url}")
+    print(f"Target player ID: {player_id}")
+    if game_id:
+        print(f"Target game ID: {game_id}")
+    print(f"Minimum action interval: {min_action_delay_ms} ms")
+    print(f"Poll interval: {int(poll_interval_sec * 1000)} ms")
+
+    timeout = aiohttp.ClientTimeout(total=max(5.0, float(args.request_timeout_sec)))
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        game = StandaloneGameClient(
+            base_url=base_url,
+            player_id=player_id,
+            session=session,
+            game_id=game_id,
+            min_action_interval_sec=min_action_interval_sec,
+        )
+
+        agent = RLAgent()
+        agent.load_model(checkpoint)
+        agent.train_from_self_play = False
+        agent.post_move_sleep_sec = max(float(agent.post_move_sleep_sec), min_action_interval_sec)
+        agent.failure_pause_sec = max(float(agent.failure_pause_sec), min_action_interval_sec)
+        agent.poll_interval_sec = max(float(agent.poll_interval_sec), poll_interval_sec)
+
+        initial_state = await game.get_player_state(player_id)
+        resolved_player_name = str(
+            args.player_name
+            or ((initial_state.get("thisPlayer", {}) or {}).get("name"))
+            or f"RemoteBot_{agent.id[:8]}"
+        )
+        game.player_ids[resolved_player_name] = player_id
+
+        print(f"Resolved player name: {resolved_player_name}")
+        print(f"Player URL: {game.get_public_player_url(player_id)}")
+        if game_id:
+            print(f"Game URL: {game.get_public_game_url()}")
+        print("Bot attached. Keep this process running until the game finishes.")
+
+        await agent.play_game(game, resolved_player_name)
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Attach the best trained agent checkpoint to an existing TM player URL."
+    )
+    parser.add_argument(
+        "--player-url",
+        type=str,
+        default="",
+        help="Full player URL, e.g. https://terraforming-mars.herokuapp.com/player?id=<PLAYER_ID>",
+    )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default="",
+        help="Base server URL, e.g. https://terraforming-mars.herokuapp.com",
+    )
+    parser.add_argument(
+        "--player-id",
+        type=str,
+        default="",
+        help="Player ID token from the player URL",
+    )
+    parser.add_argument(
+        "--game-id",
+        type=str,
+        default="",
+        help="Optional game ID for final standings lookup",
+    )
+    parser.add_argument(
+        "--game-url",
+        type=str,
+        default="",
+        help="Optional game URL (used only to extract game ID)",
+    )
+    parser.add_argument(
+        "--player-name",
+        type=str,
+        default="",
+        help="Optional player name override. Default: fetched from /api/player",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="",
+        help="Explicit checkpoint path (.pth). If omitted, best checkpoint is auto-selected.",
+    )
+    parser.add_argument(
+        "--models",
+        type=str,
+        default=_default_models_root(),
+        help="Models root used when --checkpoint is not provided.",
+    )
+    parser.add_argument(
+        "--min-action-delay-ms",
+        type=int,
+        default=1000,
+        help="Minimum delay between action submissions. Values below 1000 are clamped to 1000.",
+    )
+    parser.add_argument(
+        "--poll-interval-ms",
+        type=int,
+        default=1000,
+        help="Polling interval for /api/player state checks.",
+    )
+    parser.add_argument(
+        "--request-timeout-sec",
+        type=float,
+        default=60.0,
+        help="HTTP timeout per request.",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        help="Python logging level (DEBUG, INFO, WARNING, ERROR).",
+    )
+    return parser
+
+
+def main():
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
+    level_name = str(args.log_level or "INFO").strip().upper()
+    log_level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+    )
+
+    try:
+        asyncio.run(_run(args))
+    except KeyboardInterrupt:
+        print("Stopped by user.")
+
+
+if __name__ == "__main__":
+    main()

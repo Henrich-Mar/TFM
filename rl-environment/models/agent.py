@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, asdict
 from collections import deque
 
-from game_interface import GameInstance
+from game_interface import GameInstance, ServerTransportError
 from .state_encoder import StateEncoder
 from .action_decoder import ActionDecoder
 from scoring import calculate_terminal_reward, calculate_step_reward
@@ -406,7 +406,9 @@ class RLAgent:
         for _ in range(attempts):
             try:
                 player_state = await game_instance.get_player_state(player_id)
-            except Exception:
+            except Exception as e:
+                if isinstance(e, ServerTransportError):
+                    raise
                 await self._sleep_if_needed(self.poll_interval_sec)
                 continue
 
@@ -633,6 +635,8 @@ class RLAgent:
             return
 
         except Exception as e:
+            if isinstance(e, ServerTransportError):
+                raise
             logger.error(f"Error making move for agent {self.id[:8]}: {e}", exc_info=True)
 
     def _filter_pass_actions(self, available_actions: List[int], player_state: Dict[str, Any]) -> List[int]:

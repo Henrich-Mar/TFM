@@ -14,6 +14,10 @@ from urllib.parse import quote_plus, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
+class ServerTransportError(RuntimeError):
+    """Raised when transport-level communication with a TM server fails."""
+
+
 @dataclass
 class GameServer:
     host: str
@@ -37,6 +41,44 @@ class GameInstance:
         self.player_ids: Dict[str, str] = {}  # player_name -> player_id
         self.base_url = f"http://{server.host}:{server.port}"
         self.spectator_id: Optional[str] = None
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        """Return an open HTTP session, recreating cluster session if needed."""
+        if self.cluster is not None and hasattr(self.cluster, "ensure_session"):
+            self.session = self.cluster.ensure_session(timeout_total=60.0)
+        if self.session is None or self.session.closed:
+            raise ServerTransportError("HTTP session is closed")
+        return self.session
+
+    @staticmethod
+    def _is_transport_error(exc: Exception) -> bool:
+        if isinstance(exc, ServerTransportError):
+            return True
+        if isinstance(
+            exc,
+            (
+                aiohttp.ClientConnectionError,
+                aiohttp.ServerDisconnectedError,
+                aiohttp.ClientOSError,
+                aiohttp.ClientPayloadError,
+                asyncio.TimeoutError,
+                ConnectionResetError,
+                BrokenPipeError,
+            ),
+        ):
+            return True
+        message = str(exc or "").lower()
+        return "session is closed" in message
+
+    def _raise_transport_error(self, operation: str, exc: Exception):
+        if self.cluster is not None and hasattr(self.cluster, "record_runtime_server_failure"):
+            try:
+                self.cluster.record_runtime_server_failure(self.server, exc)
+            except Exception:
+                pass
+        raise ServerTransportError(
+            f"{operation} failed on {self.server.host}:{self.server.port}: {exc}"
+        ) from exc
 
     def _resolve_public_base(self) -> str:
         """Resolve external URL for this game server."""
@@ -100,7 +142,8 @@ class GameInstance:
         
         # Get game state to find player ID
         try:
-            async with self.session.get(f"{self.base_url}/api/game", 
+            session = self._get_session()
+            async with session.get(f"{self.base_url}/api/game", 
                                       params={'id': self.game_id}) as response:
                 if response.status == 200:
                     game_data = await response.json()
@@ -117,26 +160,35 @@ class GameInstance:
                     raise ValueError(f"Failed to get game state: {response.status}")
                     
         except Exception as e:
+            if self._is_transport_error(e):
+                self._raise_transport_error("join player", e)
             logger.error(f"Failed to join player {player_name}: {e}")
             raise
     
     async def get_player_state(self, player_id: str) -> Dict[str, Any]:
         """Get current state for a specific player"""
         try:
-            async with self.session.get(f"{self.base_url}/api/player", 
+            session = self._get_session()
+            async with session.get(f"{self.base_url}/api/player", 
                                       params={'id': player_id}) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
-                    raise ValueError(f"Failed to get player state: {response.status}")
+                    error = ValueError(f"Failed to get player state: {response.status}")
+                    if int(response.status) >= 500:
+                        self._raise_transport_error("get player state", error)
+                    raise error
         except Exception as e:
+            if self._is_transport_error(e):
+                self._raise_transport_error("get player state", e)
             logger.error(f"Failed to get player state for {player_id}: {e!r}")
             raise
     
     async def send_player_input(self, player_id: str, input_data: Dict[str, Any]) -> bool:
         """Send player input to the game"""
         try:
-            async with self.session.post(f"{self.base_url}/player/input",
+            session = self._get_session()
+            async with session.post(f"{self.base_url}/player/input",
                                        params={'id': player_id},
                                        json=input_data,
                                        headers={'Content-Type': 'application/json'}) as response:
@@ -161,6 +213,11 @@ class GameInstance:
                         self.get_public_player_api_url(player_id),
                         self.get_internal_player_api_url(player_id),
                     )
+                    if int(response.status) >= 500:
+                        self._raise_transport_error(
+                            "send player input",
+                            RuntimeError(f"Server returned {response.status}"),
+                        )
                     try:
                         if self.cluster is not None and hasattr(self.cluster, "record_input_reject"):
                             self.cluster.record_input_reject(response_text)
@@ -168,19 +225,27 @@ class GameInstance:
                         pass
                     return False
         except Exception as e:
+            if self._is_transport_error(e):
+                self._raise_transport_error("send player input", e)
             logger.error(f"Failed to send input for player {player_id}: {e!r}")
             return False
     
     async def get_final_state(self) -> Dict[str, Any]:
         """Get final game state after completion"""
         try:
-            async with self.session.get(f"{self.base_url}/api/game", 
+            session = self._get_session()
+            async with session.get(f"{self.base_url}/api/game", 
                                       params={'id': self.game_id}) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
-                    raise ValueError(f"Failed to get final state: {response.status}")
+                    error = ValueError(f"Failed to get final state: {response.status}")
+                    if int(response.status) >= 500:
+                        self._raise_transport_error("get final state", error)
+                    raise error
         except Exception as e:
+            if self._is_transport_error(e):
+                self._raise_transport_error("get final state", e)
             logger.error(f"Failed to get final state: {e!r}")
             raise
     
@@ -222,6 +287,34 @@ class GameServerCluster:
             0.05,
             min_value=0.01,
         )
+        self.create_game_retry_attempts = self._parse_int_env(
+            "TM_CREATE_GAME_RETRY_ATTEMPTS",
+            3,
+            min_value=1,
+        )
+        self.create_game_retry_backoff_sec = self._parse_float_env(
+            "TM_CREATE_GAME_RETRY_BACKOFF_SEC",
+            0.20,
+            min_value=0.0,
+        )
+        self.server_failure_cooldown_sec = self._parse_float_env(
+            "TM_SERVER_FAILURE_COOLDOWN_SEC",
+            10.0,
+            min_value=0.0,
+        )
+        self.health_check_interval_sec = self._parse_float_env(
+            "TM_HEALTH_CHECK_INTERVAL_SEC",
+            15.0,
+            min_value=0.0,
+        )
+        self.server_health_timeout_sec = self._parse_float_env(
+            "TM_SERVER_HEALTH_TIMEOUT_SEC",
+            5.0,
+            min_value=0.5,
+        )
+        self._server_backoff_until: Dict[str, float] = {}
+        self._last_health_check_monotonic: float = 0.0
+        self._health_check_lock = asyncio.Lock()
         # Optional cross-component scratchpad for latest game URLs
         self.recent_games: List[Dict[str, str]] = []
         self.base_game_options = self._load_game_options()
@@ -262,6 +355,50 @@ class GameServerCluster:
             mapping[key] = value
         return mapping
 
+    @staticmethod
+    def _server_key(server: GameServer) -> str:
+        return f"{server.host}:{server.port}"
+
+    def _mark_server_failure(self, server: GameServer, reason: Any):
+        """Temporarily back off a server after transient transport failures."""
+        cooldown = max(0.0, float(self.server_failure_cooldown_sec))
+        key = self._server_key(server)
+        existing_backoff = float(self._server_backoff_until.get(key, 0.0))
+        try:
+            now = asyncio.get_running_loop().time()
+        except RuntimeError:
+            now = 0.0
+        # Avoid log spam when many in-flight games hit the same broken server.
+        if existing_backoff > now:
+            return
+        server.healthy = False
+        server.last_health_check = datetime.now()
+        if cooldown > 0.0:
+            self._server_backoff_until[key] = now + cooldown
+        logger.warning(
+            "Temporarily backing off server %s for %.1fs after failure: %s",
+            key,
+            cooldown,
+            reason,
+        )
+
+    def record_runtime_server_failure(self, server: GameServer, reason: Any):
+        """Called by GameInstance when in-game transport failures occur."""
+        self._mark_server_failure(server, reason)
+
+    async def _maybe_refresh_health_check(self, force: bool = False):
+        """Run health checks on an interval so servers can recover automatically."""
+        async with self._health_check_lock:
+            interval = max(0.0, float(self.health_check_interval_sec))
+            now = asyncio.get_running_loop().time()
+            if not force and interval > 0.0 and (now - float(self._last_health_check_monotonic)) < interval:
+                return
+            self._last_health_check_monotonic = now
+            try:
+                await self.health_check()
+            except Exception as e:
+                logger.warning("Periodic health check failed: %s", e)
+
     def _build_session(self, timeout_total: float = 60.0) -> aiohttp.ClientSession:
         timeout_value = max(1.0, float(timeout_total))
         connector_limit = self._parse_int_env("TM_HTTP_CONNECTOR_LIMIT", 256, min_value=0)
@@ -274,9 +411,14 @@ class GameServerCluster:
             timeout=aiohttp.ClientTimeout(total=timeout_value),
             connector=connector,
         )
+
+    def ensure_session(self, timeout_total: float = 60.0) -> aiohttp.ClientSession:
+        if self.session is None or self.session.closed:
+            self.session = self._build_session(timeout_total=timeout_total)
+        return self.session
         
     async def __aenter__(self):
-        self.session = self._build_session(timeout_total=60.0)
+        self.session = self.ensure_session(timeout_total=60.0)
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -284,7 +426,7 @@ class GameServerCluster:
 
     async def close(self):
         """Close shared HTTP session used for game/server API calls."""
-        if self.session:
+        if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
 
@@ -375,23 +517,30 @@ class GameServerCluster:
     
     async def health_check(self) -> Dict[str, bool]:
         """Check health of all game servers"""
-        if not self.session:
-            self.session = self._build_session(timeout_total=60.0)
+        self.ensure_session(timeout_total=60.0)
         
         results = {}
-        health_timeout = aiohttp.ClientTimeout(total=10.0)
-        
-        for server in self.servers:
+        health_timeout = aiohttp.ClientTimeout(total=max(0.5, float(self.server_health_timeout_sec)))
+
+        async def _check_server(server: GameServer):
+            key = self._server_key(server)
+            healthy = False
+            failure = None
             try:
                 async with self.session.get(f"http://{server.host}:{server.port}/", timeout=health_timeout) as response:
-                    server.healthy = response.status == 200
-                    server.last_health_check = datetime.now()
-                    results[f"{server.host}:{server.port}"] = server.healthy
+                    healthy = response.status == 200
             except Exception as e:
-                server.healthy = False
-                server.last_health_check = datetime.now()
-                results[f"{server.host}:{server.port}"] = False
-                logger.warning(f"Health check failed for {server.host}:{server.port}: {e}")
+                failure = e
+                healthy = False
+            server.healthy = bool(healthy)
+            server.last_health_check = datetime.now()
+            results[key] = bool(healthy)
+            if healthy:
+                self._server_backoff_until.pop(key, None)
+            elif failure is not None:
+                logger.warning(f"Health check failed for {key}: {failure}")
+
+        await asyncio.gather(*[asyncio.create_task(_check_server(server)) for server in self.servers])
         
         healthy_count = sum(results.values())
         logger.info(f"Health check complete: {healthy_count}/{len(self.servers)} servers healthy")
@@ -409,7 +558,20 @@ class GameServerCluster:
         return min(healthy_servers, key=lambda s: s.active_games)
 
     def _pick_best_server_with_capacity(self) -> Optional[GameServer]:
+        now = asyncio.get_running_loop().time()
+        # Drop expired backoff entries.
+        for key, backoff_until in list(self._server_backoff_until.items()):
+            if float(backoff_until) <= now:
+                self._server_backoff_until.pop(key, None)
+
         healthy_servers = [s for s in self.servers if s.healthy]
+        if not healthy_servers:
+            return None
+
+        healthy_servers = [
+            s for s in healthy_servers
+            if float(self._server_backoff_until.get(self._server_key(s), 0.0)) <= now
+        ]
         if not healthy_servers:
             return None
 
@@ -431,6 +593,8 @@ class GameServerCluster:
                     selected.active_games += 1
                     return selected
 
+            await self._maybe_refresh_health_check()
+
             if asyncio.get_running_loop().time() >= deadline:
                 cap = int(self.max_active_games_per_server)
                 if cap > 0:
@@ -450,11 +614,7 @@ class GameServerCluster:
                          player_names: List[str],
                          game_options: Dict[str, Any]) -> GameInstance:
         """Create a new game on the best available server"""
-        if not self.session:
-            self.session = self._build_session(timeout_total=60.0)
-
-        server = await self._reserve_server_slot()
-        slot_reserved = True
+        self.ensure_session(timeout_total=60.0)
         
         # Prepare game creation request with a preset + runtime overrides.
         base_options = self.base_game_options or self._default_game_options()
@@ -469,45 +629,83 @@ class GameServerCluster:
             }
             for i, name in enumerate(player_names)
         ]
-        
-        try:
-            base_url = f"http://{server.host}:{server.port}"
-            
-            # Create the game
-            async with self.session.post(f"{base_url}/api/creategame", 
-                                       json=create_request,
-                                       headers={'Content-Type': 'application/json'}) as response:
-                if response.status != 200:
-                    response_text = await response.text()
-                    raise RuntimeError(f"Failed to create game: {response.status} - {response_text}")
-                
-                # Get the created game data
-                game_data = await response.json()
-                
-                # Extract game ID from response (authoritative)
-                actual_game_id = game_data.get('id')
-                if not actual_game_id:
-                    raise RuntimeError("Game ID not found in response")
 
-            # Create game instance
-            game_instance = GameInstance(actual_game_id, server, self.session, cluster=self)
-            slot_reserved = False
-            
-            # Initialize player IDs
-            for i, player_name in enumerate(player_names):
-                try:
-                    await game_instance.join_player(player_name)
-                except Exception as e:
-                    logger.warning(f"Failed to join player {player_name}: {e}")
-            
-            logger.info(f"Created game {actual_game_id} on {server.host}:{server.port}")
-            return game_instance
-            
-        except Exception as e:
-            if slot_reserved:
-                await self.release_server_slot(server)
-            logger.error(f"Failed to create game on {server.host}:{server.port}: {e}")
-            raise
+        attempts = max(1, int(self.create_game_retry_attempts))
+        last_error: Optional[Exception] = None
+
+        for attempt_idx in range(attempts):
+            await self._maybe_refresh_health_check()
+            server = await self._reserve_server_slot()
+            slot_reserved = True
+            server_key = self._server_key(server)
+
+            try:
+                base_url = f"http://{server.host}:{server.port}"
+
+                # Create the game
+                async with self.session.post(
+                    f"{base_url}/api/creategame",
+                    json=create_request,
+                    headers={'Content-Type': 'application/json'},
+                ) as response:
+                    if response.status != 200:
+                        response_text = await response.text()
+                        error = RuntimeError(f"Failed to create game: {response.status} - {response_text}")
+                        # Do not retry likely caller/config errors.
+                        setattr(error, "_retryable", bool(response.status >= 500 or response.status in (408, 429)))
+                        raise error
+
+                    # Get the created game data
+                    game_data = await response.json()
+
+                    # Extract game ID from response (authoritative)
+                    actual_game_id = game_data.get('id')
+                    if not actual_game_id:
+                        raise RuntimeError("Game ID not found in response")
+
+                # Create game instance
+                game_instance = GameInstance(actual_game_id, server, self.session, cluster=self)
+                slot_reserved = False
+
+                # Initialize player IDs
+                for player_name in player_names:
+                    try:
+                        await game_instance.join_player(player_name)
+                    except Exception as e:
+                        logger.warning(f"Failed to join player {player_name}: {e}")
+
+                logger.info(f"Created game {actual_game_id} on {server.host}:{server.port}")
+                return game_instance
+
+            except Exception as e:
+                last_error = e
+                retryable = bool(getattr(e, "_retryable", True))
+                if slot_reserved:
+                    await self.release_server_slot(server)
+                if retryable:
+                    self._mark_server_failure(server, e)
+
+                has_next_attempt = (attempt_idx + 1) < attempts
+                if retryable and has_next_attempt:
+                    backoff_sec = float(self.create_game_retry_backoff_sec) * float(attempt_idx + 1)
+                    logger.warning(
+                        "Create game attempt %d/%d failed on %s: %s. Retrying after %.2fs",
+                        attempt_idx + 1,
+                        attempts,
+                        server_key,
+                        e,
+                        backoff_sec,
+                    )
+                    if backoff_sec > 0.0:
+                        await asyncio.sleep(backoff_sec)
+                    continue
+
+                logger.error(f"Failed to create game on {server.host}:{server.port}: {e}")
+                raise
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Failed to create game for unknown reason")
     
     async def get_server_stats(self) -> Dict[str, Any]:
         """Get statistics for all servers"""

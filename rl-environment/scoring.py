@@ -5,6 +5,24 @@ from typing import Any, Dict, List, Optional
 import os
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return float(default)
+
+
+SELECTION_RANK_POINTS = {
+    1: _env_float("SELECTION_RANK_1_POINTS", 150.0),
+    2: _env_float("SELECTION_RANK_2_POINTS", 50.0),
+    3: _env_float("SELECTION_RANK_3_POINTS", 25.0),
+    4: _env_float("SELECTION_RANK_4_POINTS", 5.0),
+}
+SELECTION_VP_WEIGHT = _env_float("SELECTION_VP_WEIGHT", 0.5)
+SELECTION_COMPLETION_BONUS = _env_float("SELECTION_COMPLETION_BONUS", 10.0)
+SELECTION_INCOMPLETE_PENALTY = _env_float("SELECTION_INCOMPLETE_PENALTY", -50.0)
+
+
 def calculate_selection_score(rank: Any, victory_points: Any, completed: Any) -> float:
     """Raw game score used for evolutionary selection."""
     try:
@@ -17,15 +35,10 @@ def calculate_selection_score(rank: Any, victory_points: Any, completed: Any) ->
     except Exception:
         vp = 0.0
 
-    ranking_points = {
-        1: 100.0,
-        2: 75.0,
-        3: 50.0,
-        4: 25.0,
-    }.get(rank_int, 0.0)
+    ranking_points = SELECTION_RANK_POINTS.get(rank_int, 0.0)
 
-    vp_bonus = vp * 0.5
-    completion_bonus = 10.0 if bool(completed) else -50.0
+    vp_bonus = vp * SELECTION_VP_WEIGHT
+    completion_bonus = SELECTION_COMPLETION_BONUS if bool(completed) else SELECTION_INCOMPLETE_PENALTY
     return ranking_points + vp_bonus + completion_bonus
 
 

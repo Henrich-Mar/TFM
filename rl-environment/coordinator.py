@@ -63,7 +63,7 @@ class CoordinatorConfig:
     game_servers: List[str]
     population_size: int = 16
     tournament_size: int = 16
-    generations: int = 50
+    generations: int = 1000
     games_per_evaluation: int = 1
     mutation_rate: float = 0.1
     elite_percentage: float = 0.2

@@ -180,8 +180,8 @@ services:
       - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080,http://tfm-server-7:8080,http://tfm-server-8:8080,http://tfm-server-9:8080,http://tfm-server-10:8080
       - POPULATION_SIZE=30
       - GENERATIONS=5000
-      - GAMES_PER_EVAL=10
-      - TOURNAMENT_CONCURRENCY=6
+      - GAMES_PER_EVAL=6
+      - TOURNAMENT_CONCURRENCY=8
       - GLOBAL_GAME_CONCURRENCY=50
       - MAX_ACTIVE_GAMES_PER_SERVER=5
       - TM_GAME_TIMEOUT_SEC=300
@@ -203,6 +203,10 @@ services:
       
       # Scoring Mode
       - SCORING_MODE=HARD
+      - SELECTION_RANK_1_POINTS=150
+      - SELECTION_RANK_2_POINTS=50
+      - SELECTION_RANK_3_POINTS=25
+      - SELECTION_RANK_4_POINTS=5
       
       # PPO Configuration (Aggressive)
       - PPO_ENABLE=true

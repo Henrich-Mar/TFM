@@ -11,6 +11,7 @@ services:
       - "8081:8080"
     environment:
       - NODE_ENV=production
+      - SERVER_ID=tm-server-1
     volumes:
       - tm-db-1:/usr/src/app/db
     networks:
@@ -26,6 +27,8 @@ services:
       - "6006:6006"  # TensorBoard
     environment:
       - GAME_SERVERS=tm-server-1:8080
+      - PUBLIC_TM_MAP=tm-server-1:8080=http://localhost:8081
+      - PUBLIC_TM_SERVER_ID_MAP=tm-server-1:8080=tm-server-1
       - PUBLIC_TM_URL=http://localhost:8081
       - INTERNAL_TM_URL=http://tm-server-1:8080
       - REDIS_URL=redis://redis:6379

@@ -12,6 +12,7 @@ services:
     environment:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tm-server-1
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     networks:
@@ -28,6 +29,7 @@ services:
     environment: 
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tm-server-2
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     networks: 
@@ -44,6 +46,7 @@ services:
     environment: 
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tm-server-3
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     networks: 
@@ -63,6 +66,7 @@ services:
     environment:
         - GAME_SERVERS=tm-server-1:8080,tm-server-2:8080,tm-server-3:8080
         - PUBLIC_TM_MAP=tm-server-1:8080=http://localhost:8081,tm-server-2:8080=http://localhost:8082,tm-server-3:8080=http://localhost:8083
+        - PUBLIC_TM_SERVER_ID_MAP=tm-server-1:8080=tm-server-1,tm-server-2:8080=tm-server-2,tm-server-3:8080=tm-server-3
         - GENERATIONS=1000
         - POPULATION_SIZE=16
         - TOURNAMENT_SIZE=4

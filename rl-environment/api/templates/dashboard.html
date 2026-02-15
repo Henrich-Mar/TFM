@@ -181,6 +181,12 @@
       font-size: .84rem
     }
 
+    .subpanel {
+      margin-top: 10px;
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+    }
+
     table {
       width: 100%;
       border-collapse: collapse;
@@ -257,6 +263,7 @@
       <div class="card">
         <h3>Server Health</h3>
         <div id="servers"></div>
+        <div id="serverDetails" class="subpanel"></div>
       </div>
     </div>
 
@@ -409,6 +416,46 @@
       target.innerHTML = rows;
     }
 
+    function renderServerDetails(serverStats) {
+      const target = document.getElementById("serverDetails");
+      const servers = Array.isArray(serverStats?.servers) ? serverStats.servers : [];
+      if (servers.length === 0) {
+        target.innerHTML = `<div class="muted">No per-server details yet.</div>`;
+        return;
+      }
+
+      const rows = servers.map((s) => {
+        const key = String(s?.key || `${s?.host || "?"}:${s?.port || "?"}`);
+        const health = s?.healthy ? `<span class="good">healthy</span>` : `<span class="bad">down</span>`;
+        const active = fmt(s?.active_games);
+        const serverId = s?.server_id ? `<span class="badge mono">${esc(String(s.server_id))}</span>` : `<span class="muted">n/a</span>`;
+        const links = s?.links || {};
+        const adminLink = links.admin ? linkHtml(links.admin, "Admin") : `<span class="muted">Admin</span>`;
+        const gamesLink = links.games_overview ? linkHtml(links.games_overview, "Games") : `<span class="muted">Games</span>`;
+        const metricsLink = links.metrics ? linkHtml(links.metrics, "Metrics") : `<span class="muted">Metrics</span>`;
+        return `<tr>
+          <td class="mono">${esc(key)}</td>
+          <td>${health}</td>
+          <td>${active}</td>
+          <td>${serverId}</td>
+          <td>${adminLink} | ${gamesLink} | ${metricsLink}</td>
+        </tr>`;
+      }).join("");
+
+      target.innerHTML = `<table>
+        <thead>
+          <tr>
+            <th>Server</th>
+            <th>Health</th>
+            <th>Active</th>
+            <th>serverId</th>
+            <th>Links</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
     async function startHumanVsBest() {
       const button = document.getElementById("btnPlayBest");
       const status = document.getElementById("playBestStatus");
@@ -538,11 +585,12 @@
         renderKV(document.getElementById("servers"), [
           ["Healthy servers", fmt(stats.servers?.healthy_servers)],
           ["Total servers", fmt(stats.servers?.total_servers)],
-          ["Active games", fmt(stats.servers?.active_games)],
-          ["Queue depth", fmt(stats.servers?.queue_depth)],
+          ["Active games", fmt(stats.servers?.total_active_games ?? stats.servers?.active_games)],
+          ["Queue depth", fmt(stats.servers?.queue_depth ?? 0)],
           ["Payment rejects", fmt(gm["payment_reject_count"])],
           ["Input rejects total", fmt(gm["input_reject_count_total"])],
         ]);
+        renderServerDetails(stats.servers || {});
 
         renderKV(document.getElementById("behavior"), [
           ["Policy success rate", pct(stats.behavior?.policy_success_rate)],

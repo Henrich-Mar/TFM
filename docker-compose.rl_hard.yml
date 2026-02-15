@@ -9,6 +9,7 @@ services:
     environment:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tfm-server-1
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
@@ -22,6 +23,7 @@ services:
     environment:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tfm-server-2
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
@@ -35,6 +37,7 @@ services:
     environment:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tfm-server-3
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
@@ -48,6 +51,7 @@ services:
     environment:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tfm-server-4
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
@@ -61,6 +65,7 @@ services:
     environment:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tfm-server-5
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
@@ -74,6 +79,7 @@ services:
     environment:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tfm-server-6
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
@@ -113,6 +119,7 @@ services:
       - POSTGRES_URL=postgresql://tfm:tfm_password@postgres:5432/tfm_rl
       - GAME_SERVERS=tfm-server-1:8080,tfm-server-2:8080,tfm-server-3:8080,tfm-server-4:8080,tfm-server-5:8080,tfm-server-6:8080
       - PUBLIC_TM_MAP=tfm-server-1:8080=http://localhost:8081,tfm-server-2:8080=http://localhost:8082,tfm-server-3:8080=http://localhost:8083,tfm-server-4:8080=http://localhost:8084,tfm-server-5:8080=http://localhost:8085,tfm-server-6:8080=http://localhost:8086
+      - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4,tfm-server-5:8080=tfm-server-5,tfm-server-6:8080=tfm-server-6
       - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084,http://localhost:8085,http://localhost:8086
       - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080
       - POPULATION_SIZE=50

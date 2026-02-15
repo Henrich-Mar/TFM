@@ -10,7 +10,7 @@ import json
 import os
 from datetime import datetime
 from copy import deepcopy
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote_plus, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +243,24 @@ class GameServerCluster:
         except Exception:
             value = float(default)
         return max(float(min_value), value)
+
+    @staticmethod
+    def _parse_mapping_env(raw_value: Any) -> Dict[str, str]:
+        mapping: Dict[str, str] = {}
+        raw = str(raw_value or "").strip()
+        if not raw:
+            return mapping
+        for pair in raw.split(","):
+            piece = pair.strip()
+            if not piece or "=" not in piece:
+                continue
+            key, value = piece.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key or not value:
+                continue
+            mapping[key] = value
+        return mapping
 
     def _build_session(self, timeout_total: float = 60.0) -> aiohttp.ClientSession:
         timeout_value = max(1.0, float(timeout_total))
@@ -493,6 +511,14 @@ class GameServerCluster:
     
     async def get_server_stats(self) -> Dict[str, Any]:
         """Get statistics for all servers"""
+        public_map = self._parse_mapping_env(os.getenv("PUBLIC_TM_MAP", ""))
+        server_id_map = self._parse_mapping_env(os.getenv("PUBLIC_TM_SERVER_ID_MAP", ""))
+        default_public_raw = str(os.getenv("PUBLIC_TM_URL", "http://localhost:8081"))
+        default_public_base = (
+            default_public_raw.split(",", 1)[0].strip()
+            if "," in default_public_raw
+            else default_public_raw.strip()
+        )
         stats = {
             'total_servers': len(self.servers),
             'healthy_servers': sum(1 for s in self.servers if s.healthy),
@@ -503,12 +529,27 @@ class GameServerCluster:
         }
         
         for server in self.servers:
+            server_key = f"{server.host}:{server.port}"
+            public_base = GameInstance._normalize_public_base(public_map.get(server_key, default_public_base))
+            server_id = str(server_id_map.get(server_key, "")).strip()
+            links: Dict[str, str] = {}
+            if server_id:
+                encoded_server_id = quote_plus(server_id)
+                links = {
+                    "admin": f"{public_base}/admin?serverId={encoded_server_id}",
+                    "games_overview": f"{public_base}/games-overview?serverId={encoded_server_id}",
+                    "metrics": f"{public_base}/api/metrics?serverId={encoded_server_id}",
+                }
             server_info = {
+                'key': server_key,
                 'host': server.host,
                 'port': server.port,
                 'healthy': server.healthy,
                 'active_games': server.active_games,
-                'last_health_check': server.last_health_check.isoformat() if server.last_health_check else None
+                'last_health_check': server.last_health_check.isoformat() if server.last_health_check else None,
+                'public_base': public_base,
+                'server_id': server_id if server_id else None,
+                'links': links,
             }
             stats['servers'].append(server_info)
         

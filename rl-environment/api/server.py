@@ -347,6 +347,7 @@ async def get_population():
         raw_eval = coordinator.last_raw_eval_fitness.get(agent.id) if hasattr(coordinator, 'last_raw_eval_fitness') else None
         gate_per_agent = dict((getattr(coordinator, "last_generation_gate", {}) or {}).get("per_agent", {}) or {})
         gate_info = gate_per_agent.get(agent.id, {})
+        gateBehavior = gate_info.get("behavior_metrics", {})
         agent_data.update({
             "fitness_score": agent.get_fitness_score(),
             "last_eval_fitness": last_eval if last_eval is not None else agent.get_fitness_score(),

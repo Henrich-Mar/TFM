@@ -915,6 +915,15 @@ class RLCoordinator:
             cfg['generation_gate_summary'] = gate_summary
             cfg['promotion_gate'] = gate_per_agent.get(agent.id, {})
             gate_behavior = dict((gate_per_agent.get(agent.id, {}) or {}).get("behavior", {}) or {})
+            agent_elo = float(self.metrics_tracker.get_elo(agent.id))
+            efficiency_ratio = float(gate_behavior.get("efficiency_ratio", 0.0))
+            synergy_score = float(gate_behavior.get("synergy_score", 0.0))
+            cfg['elo'] = agent_elo
+            cfg['advanced_metrics'] = {
+                "elo": agent_elo,
+                "efficiency_ratio": efficiency_ratio,
+                "synergy_score": synergy_score,
+            }
             cfg['end_screen_tracking'] = {
                 "vp_terraforming_per_game": float(gate_behavior.get("vp_terraforming_per_game", 0.0)),
                 "vp_milestones_per_game": float(gate_behavior.get("vp_milestones_per_game", 0.0)),
@@ -925,6 +934,9 @@ class RLCoordinator:
                 "vp_total_per_game": float(gate_behavior.get("vp_total_per_game", 0.0)),
                 "town_placements_per_game": float(gate_behavior.get("town_placements_per_game", 0.0)),
                 "greenery_placements_per_game": float(gate_behavior.get("greenery_placements_per_game", 0.0)),
+                "efficiency_ratio": efficiency_ratio,
+                "synergy_score": synergy_score,
+                "elo": agent_elo,
             }
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, indent=2)
@@ -1165,14 +1177,19 @@ class RLCoordinator:
         env_path = os.getenv("RL_MODELS_DIR")
         if env_path:
             return env_path
+        base_dir = os.path.abspath(os.path.dirname(__file__))
+        parent_dir = os.path.abspath(os.path.join(base_dir, ".."))
         candidates = [
             "/app/rl-models",
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "rl-models")),
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rl-models")),
+            os.path.join(parent_dir, "rl-models"),
+            os.path.join(base_dir, "rl-models"),
         ]
         for candidate in candidates:
             if os.path.isdir(candidate):
                 return candidate
+        # In a local source checkout, prefer sibling "<repo>/rl-models".
+        if os.path.basename(base_dir).lower() == "rl-environment":
+            return os.path.join(parent_dir, "rl-models")
         return candidates[0]
 
     @staticmethod

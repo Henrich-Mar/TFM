@@ -1,51 +1,81 @@
 services:
   # Game Server Cluster (Multiple instances for parallel training)
   tfm-server-1:
-    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
     ports:
       - "8081:8080"
     environment:
-      - PORT=8080
+      - NODE_ENV=production
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
 
   tfm-server-2:
-    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
     ports:
       - "8082:8080"
     environment:
-      - PORT=8080
+      - NODE_ENV=production
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
 
   tfm-server-3:
-    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
     ports:
       - "8083:8080"
     environment:
-      - PORT=8080
+      - NODE_ENV=production
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
     
   tfm-server-4:
-    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
     ports:
       - "8084:8080"
     environment:
-      - PORT=8080
+      - NODE_ENV=production
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
     
   tfm-server-5:
-    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
     ports:
       - "8085:8080"
     environment:
-      - PORT=8080
+      - NODE_ENV=production
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
     
   tfm-server-6:
-    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
     ports:
       - "8086:8080"
     environment:
-      - PORT=8080
+      - NODE_ENV=production
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
     restart: unless-stopped
 
   # Redis for job queue and caching
@@ -70,17 +100,34 @@ services:
 
   # RL Coordinator - Manages training loop
   rl-coordinator:
-    build: .
+    build:
+      context: ./rl-environment
+      dockerfile: Dockerfile.training
     volumes:
       - ./rl-environment:/app
-      - ./checkpoints/hard:/app/checkpoints
-      - ./logs/hard:/app/logs
+      - ./rl-models:/app/rl-models
+      - ./rl-logs:/app/logs
+      - ./card_metadata.json:/app/card_metadata.json:ro
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - GAME_SERVERS=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080
+      - POSTGRES_URL=postgresql://tfm:tfm_password@postgres:5432/tfm_rl
+      - GAME_SERVERS=tfm-server-1:8080,tfm-server-2:8080,tfm-server-3:8080,tfm-server-4:8080,tfm-server-5:8080,tfm-server-6:8080
+      - PUBLIC_TM_MAP=tfm-server-1:8080=http://localhost:8081,tfm-server-2:8080=http://localhost:8082,tfm-server-3:8080=http://localhost:8083,tfm-server-4:8080=http://localhost:8084,tfm-server-5:8080=http://localhost:8085,tfm-server-6:8080=http://localhost:8086
+      - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084,http://localhost:8085,http://localhost:8086
+      - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080
       - POPULATION_SIZE=50
       - GENERATIONS=5000
-      - GAMES_PER_GENERATION=150
+      - GAMES_PER_EVAL=30
+      - TOURNAMENT_CONCURRENCY=8
+      - GLOBAL_GAME_CONCURRENCY=48
+      - MAX_ACTIVE_GAMES_PER_SERVER=8
+      - TM_GAME_TIMEOUT_SEC=240
+      - TM_HTTP_CONNECTOR_LIMIT=2000
+      - TM_HTTP_CONNECTOR_LIMIT_PER_HOST=300
+      - TM_FAST_MODE_OPTION=1
+      - RL_MODELS_DIR=/app/rl-models
+      - RL_CHECKPOINT_DIR=/app/rl-models/checkpoints
+      - TM_CARD_METADATA_PATH=/app/card_metadata.json
       
       # Agent Architecture (Hard Mode)
       - AGENT_HIDDEN_SIZE=512
@@ -110,12 +157,16 @@ services:
       
       # System
       - AGENT_POLL_INTERVAL_SEC=0.05
+      - AGENT_POST_MOVE_SLEEP_SEC=0.0
       - AGENT_FAILURE_PAUSE_SEC=0.1
-      
-      # Database
-      - DATABASE_URL=postgresql+asyncpg://tfm:tfm_password@postgres:5432/tfm_rl
-      
+
     depends_on:
+      - tfm-server-1
+      - tfm-server-2
+      - tfm-server-3
+      - tfm-server-4
+      - tfm-server-5
+      - tfm-server-6
       - redis
       - postgres
       

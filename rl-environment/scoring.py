@@ -2,6 +2,7 @@
 Shared scoring utilities used by both tournament fitness and policy training.
 """
 from typing import Any, Dict, List, Optional
+import os
 
 
 def calculate_selection_score(rank: Any, victory_points: Any, completed: Any) -> float:

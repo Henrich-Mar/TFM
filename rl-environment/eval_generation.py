@@ -24,13 +24,16 @@ def default_models_root() -> str:
     if env_path:
         return env_path
     base_dir = os.path.abspath(os.path.dirname(__file__))
+    parent_dir = os.path.abspath(os.path.join(base_dir, ".."))
     candidates = [
+        os.path.join(parent_dir, "rl-models"),
         os.path.join(base_dir, "rl-models"),
-        os.path.abspath(os.path.join(base_dir, "..", "rl-models")),
     ]
     for candidate in candidates:
         if os.path.isdir(candidate):
             return candidate
+    if os.path.basename(base_dir).lower() == "rl-environment":
+        return os.path.join(parent_dir, "rl-models")
     return candidates[0]
 
 

@@ -1,0 +1,126 @@
+services:
+  # Game Server Cluster (Multiple instances for parallel training)
+  tfm-server-1:
+    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    ports:
+      - "8081:8080"
+    environment:
+      - PORT=8080
+    restart: unless-stopped
+
+  tfm-server-2:
+    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    ports:
+      - "8082:8080"
+    environment:
+      - PORT=8080
+    restart: unless-stopped
+
+  tfm-server-3:
+    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    ports:
+      - "8083:8080"
+    environment:
+      - PORT=8080
+    restart: unless-stopped
+    
+  tfm-server-4:
+    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    ports:
+      - "8084:8080"
+    environment:
+      - PORT=8080
+    restart: unless-stopped
+    
+  tfm-server-5:
+    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    ports:
+      - "8085:8080"
+    environment:
+      - PORT=8080
+    restart: unless-stopped
+    
+  tfm-server-6:
+    image: ghcr.io/nbkelly/terraforming-mars-server:latest
+    ports:
+      - "8086:8080"
+    environment:
+      - PORT=8080
+    restart: unless-stopped
+
+  # Redis for job queue and caching
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # Database for metrics
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=tfm
+      - POSTGRES_PASSWORD=tfm_password
+      - POSTGRES_DB=tfm_rl
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    volumes:
+      - postgres_data_hard:/var/lib/postgresql/data
+
+  # RL Coordinator - Manages training loop
+  rl-coordinator:
+    build: .
+    volumes:
+      - ./rl-environment:/app
+      - ./checkpoints/hard:/app/checkpoints
+      - ./logs/hard:/app/logs
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - GAME_SERVERS=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080
+      - POPULATION_SIZE=50
+      - GENERATIONS=5000
+      - GAMES_PER_GENERATION=150
+      
+      # Agent Architecture (Hard Mode)
+      - AGENT_HIDDEN_SIZE=512
+      - AGENT_NUM_LAYERS=5
+      
+      # Scoring Mode
+      - SCORING_MODE=HARD
+      
+      # PPO Configuration (Aggressive)
+      - PPO_ENABLE=true
+      - PPO_ROLLOUT_STEPS=16384  # Longer horizon
+      - PPO_EPOCHS=8             # More updates per batch
+      - PPO_MINIBATCH_SIZE=2048
+      - PPO_ENTROPY_COEF=0.02    # Higher initial exploration
+      - PPO_LEARNING_RATE=0.0003
+      - PPO_CLIP_EPS=0.2
+      - PPO_BUFFER_MAX_STEPS=200000
+      
+      # Evolution
+      - EVOLUTION_ELITE_PERCENTAGE=0.1
+      - EVOLUTION_MUTATION_RATE=0.1
+      - EVOLUTION_IMMIGRANT_RATIO=0.1
+      
+      # League
+      - LEAGUE_ENABLE=true
+      - TRAINING_POOL_GENERATION_WINDOW=20 # Harder: Must beat older versions too
+      
+      # System
+      - AGENT_POLL_INTERVAL_SEC=0.05
+      - AGENT_FAILURE_PAUSE_SEC=0.1
+      
+      # Database
+      - DATABASE_URL=postgresql+asyncpg://tfm:tfm_password@postgres:5432/tfm_rl
+      
+    depends_on:
+      - redis
+      - postgres
+      
+    ports:
+      - "5000:5000"  # Dashboard port
+
+volumes:
+  postgres_data_hard:

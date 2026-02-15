@@ -38,6 +38,10 @@ class EvolutionManager:
         self.immigrant_ratio = self._safe_env_float("EVOLUTION_IMMIGRANT_RATIO", 0.10)
         self.immigrant_interval = self._safe_env_int("EVOLUTION_IMMIGRANT_INTERVAL", 3)
         self.immigrant_mutation_rate = self._safe_env_float("EVOLUTION_IMMIGRANT_MUTATION_RATE", 0.30)
+        self.epsilon_init_min = self._safe_env_float("EVOLUTION_INIT_EPSILON_MIN", 0.01)
+        self.epsilon_init_max = self._safe_env_float("EVOLUTION_INIT_EPSILON_MAX", 0.12)
+        self.temperature_init_min = self._safe_env_float("EVOLUTION_INIT_TEMPERATURE_MIN", 0.7)
+        self.temperature_init_max = self._safe_env_float("EVOLUTION_INIT_TEMPERATURE_MAX", 1.2)
 
     @staticmethod
     def _safe_env_float(name: str, default: float) -> float:
@@ -53,6 +57,7 @@ class EvolutionManager:
         except Exception:
             return int(default)
         
+        
     async def create_initial_population(self, population_size: int) -> List[RLAgent]:
         """Create initial diverse population of agents"""
         population = []
@@ -61,11 +66,17 @@ class EvolutionManager:
             # Create diverse initial configurations
             config = AgentConfig(
                 state_size=512,
-                hidden_size=256, # Fixed hidden size
-                num_layers=3,      # Fixed number of layers
+                hidden_size=self._safe_env_int("AGENT_HIDDEN_SIZE", 256),
+                num_layers=self._safe_env_int("AGENT_NUM_LAYERS", 3),
                 learning_rate=random.uniform(1e-5, 1e-3),
-                epsilon=random.uniform(0.05, 0.3),
-                temperature=random.uniform(0.5, 2.0),
+                epsilon=random.uniform(
+                    min(self.epsilon_init_min, self.epsilon_init_max),
+                    max(self.epsilon_init_min, self.epsilon_init_max),
+                ),
+                temperature=random.uniform(
+                    min(self.temperature_init_min, self.temperature_init_max),
+                    max(self.temperature_init_min, self.temperature_init_max),
+                ),
                 max_thinking_time=random.uniform(1.0, 10.0)
             )
             
@@ -355,11 +366,17 @@ class EvolutionManager:
                 # Create new random agent
                 config = AgentConfig(
                     state_size=512,
-                    hidden_size=256, # Fixed hidden size
-                    num_layers=3,      # Fixed number of layers
+                    hidden_size=self._safe_env_int("AGENT_HIDDEN_SIZE", 256),
+                    num_layers=self._safe_env_int("AGENT_NUM_LAYERS", 3),
                     learning_rate=random.uniform(1e-5, 1e-3),
-                    epsilon=random.uniform(0.05, 0.3),
-                    temperature=random.uniform(0.5, 2.0)
+                    epsilon=random.uniform(
+                        min(self.epsilon_init_min, self.epsilon_init_max),
+                        max(self.epsilon_init_min, self.epsilon_init_max),
+                    ),
+                    temperature=random.uniform(
+                        min(self.temperature_init_min, self.temperature_init_max),
+                        max(self.temperature_init_min, self.temperature_init_max),
+                    )
                 )
                 
                 new_agent = RLAgent(config)

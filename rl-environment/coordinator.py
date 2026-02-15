@@ -328,6 +328,9 @@ class RLCoordinator:
         if training_pool_results:
             all_results.extend(training_pool_results)
         
+        # Update Elo ratings based on all played games
+        self._update_elo_ratings(all_results)
+        
         # Evaluate selection fitness from tournament outcomes.
         raw_fitness_scores = self._calculate_fitness_scores(all_results)
 
@@ -448,6 +451,41 @@ class RLCoordinator:
             ),
         )
     
+    def _update_elo_ratings(self, tournament_results: List[Dict[str, Any]]):
+        """Update Elo ratings based on tournament games."""
+        for result in tournament_results:
+            for game in result.get("games", []) or []:
+                if not game.get("completed"):
+                    continue
+                players = game.get("players", []) or []
+                if len(players) < 2:
+                    continue
+                
+                # Pairwise updates for all players in the game
+                for i in range(len(players)):
+                    p1 = players[i]
+                    id1 = p1.get("agent_id")
+                    if not id1: continue
+                    
+                    for j in range(i + 1, len(players)):
+                        p2 = players[j]
+                        id2 = p2.get("agent_id")
+                        if not id2: continue
+                        
+                        rank1 = int(p1.get("rank", 4) or 4)
+                        rank2 = int(p2.get("rank", 4) or 4)
+                        
+                        # Lower rank is better (1st place < 2nd place)
+                        if rank1 < rank2:
+                            score1 = 1.0
+                        elif rank1 > rank2:
+                            score1 = 0.0
+                        else:
+                            score1 = 0.5
+                        score2 = 1.0 - score1
+                        
+                        self.metrics_tracker.update_elo(id1, id2, score1, score2)
+
     def _calculate_fitness_scores(self, tournament_results: List[Dict]) -> List[float]:
         """Calculate fitness scores based on tournament performance"""
         return calculate_selection_fitness(self.population, tournament_results)
@@ -556,10 +594,20 @@ class RLCoordinator:
         opponent_checkpoints: List[str],
         label: str,
         global_game_semaphore: Optional[asyncio.Semaphore],
+        frozen_cache: Optional[Dict[str, RLAgent]] = None,
     ) -> Optional[Any]:
         opponents: List[RLAgent] = []
         for checkpoint_path in opponent_checkpoints:
-            frozen_agent = self._load_frozen_agent_from_checkpoint(checkpoint_path, label=label)
+            template_agent: Optional[RLAgent] = None
+            if frozen_cache is not None:
+                template_agent = frozen_cache.get(checkpoint_path)
+            if template_agent is None:
+                template_agent = self._load_frozen_agent_from_checkpoint(checkpoint_path, label=label)
+                if template_agent is not None and frozen_cache is not None:
+                    frozen_cache[checkpoint_path] = template_agent
+            if template_agent is None:
+                return None
+            frozen_agent = self._clone_agent_for_evaluation(template_agent)
             if frozen_agent is None:
                 return None
             opponents.append(frozen_agent)
@@ -589,6 +637,9 @@ class RLCoordinator:
         failed_games = 0
         games: List[Dict[str, Any]] = []
         rng = random.Random(f"{label}:{int(self.current_generation)}")
+        # Cache frozen checkpoint loads during this matchup batch to avoid repeated
+        # synchronous disk deserialization for every game.
+        frozen_cache: Dict[str, RLAgent] = {}
 
         for _round_idx in range(rounds):
             round_tasks = [
@@ -598,6 +649,7 @@ class RLCoordinator:
                         opponent_checkpoints=self._sample_checkpoint_pool(checkpoint_pool, 3, rng),
                         label=label,
                         global_game_semaphore=global_game_semaphore,
+                        frozen_cache=frozen_cache,
                     )
                 )
                 for anchor_agent in anchor_agents

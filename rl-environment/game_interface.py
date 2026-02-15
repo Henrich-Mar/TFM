@@ -523,6 +523,11 @@ class GameServerCluster:
             'cannot pay',
             'invalid payment',
             'payment',
+            'resources to spend',
+            'does not have',
+            'cannot afford',
+            'm€',
+            'megacredit',
         ]
         if any(marker in response_l for marker in payment_error_markers):
             self.payment_reject_count = int(self.payment_reject_count) + 1

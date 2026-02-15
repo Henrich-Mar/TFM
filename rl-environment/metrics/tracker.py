@@ -102,7 +102,8 @@ class MetricsTracker:
                         'epsilon': agent.config.epsilon,
                         'temperature': agent.config.temperature,
                         'hidden_size': agent.config.hidden_size
-                    }
+                    },
+                    'elo': self.get_elo(agent.id)
                 }
                 for i, agent in enumerate(population)
             ]
@@ -127,12 +128,41 @@ class MetricsTracker:
             'duration_seconds': tournament_data['duration_seconds'],
             'completed_games': tournament_data['completed_games']
         }
-        
         if HAS_DB_LIBS and self.session_factory:
             await self._store_tournament_in_database(tournament_record)
         else:
             self._store_in_memory(tournament_record)
-    
+
+    def update_elo(self, agent_id_1: str, agent_id_2: str, score_1: float, score_2: float, k_factor: int = 32):
+        """Update Elo ratings for two agents based on a match result."""
+        if not hasattr(self, 'elo_ratings'):
+            self.elo_ratings: Dict[str, float] = {}
+
+        rating_1 = self.elo_ratings.get(agent_id_1, 1000.0)
+        rating_2 = self.elo_ratings.get(agent_id_2, 1000.0)
+
+        expected_1 = 1 / (1 + 10 ** ((rating_2 - rating_1) / 400))
+        expected_2 = 1 / (1 + 10 ** ((rating_1 - rating_2) / 400))
+
+        # Handle draws or relative wins based on score
+        if score_1 > score_2:
+            s_1, s_2 = 1.0, 0.0
+        elif score_2 > score_1:
+            s_1, s_2 = 0.0, 1.0
+        else:
+            s_1, s_2 = 0.5, 0.5
+
+        new_rating_1 = rating_1 + k_factor * (s_1 - expected_1)
+        new_rating_2 = rating_2 + k_factor * (s_2 - expected_2)
+
+        self.elo_ratings[agent_id_1] = new_rating_1
+        self.elo_ratings[agent_id_2] = new_rating_2
+        
+    def get_elo(self, agent_id: str) -> float:
+        if not hasattr(self, 'elo_ratings'):
+            return 1000.0
+        return self.elo_ratings.get(agent_id, 1000.0)
+
     async def get_generation_history(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get historical generation data"""
         if HAS_DB_LIBS and self.session_factory:

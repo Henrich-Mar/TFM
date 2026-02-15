@@ -10,6 +10,7 @@ import logging
 import json
 import os
 import time
+import hashlib
 from typing import Dict, Any, List, Optional, Tuple
 import uuid
 from dataclasses import dataclass, asdict
@@ -45,19 +46,25 @@ class AgentConfig:
 class TerraformingMarsNetwork(nn.Module):
     def __init__(self, config: AgentConfig):
         super().__init__()
-        self.config = config
         
         # State encoder - processes game state
-        self.state_encoder = nn.Sequential(
-            nn.Linear(config.state_size, config.hidden_size),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(config.hidden_size, config.hidden_size),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(config.hidden_size, config.hidden_size),
-            nn.ReLU()
-        )
+        layers = []
+        # Input layer
+        layers.append(nn.Linear(config.state_size, config.hidden_size))
+        layers.append(nn.ReLU())
+        layers.append(nn.Dropout(0.1))
+        
+        # Hidden layers
+        for _ in range(max(1, config.num_layers - 2)):
+            layers.append(nn.Linear(config.hidden_size, config.hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(0.1))
+            
+        # Final shared layer before heads
+        layers.append(nn.Linear(config.hidden_size, config.hidden_size))
+        layers.append(nn.ReLU())
+        
+        self.state_encoder = nn.Sequential(*layers)
         
         # Value head - estimates position value
         self.value_head = nn.Sequential(
@@ -121,6 +128,15 @@ class RLAgent:
         self.ppo_rollout_steps = self._safe_env_int("PPO_ROLLOUT_STEPS", 8192)
         self.ppo_buffer_max_steps = self._safe_env_int("PPO_BUFFER_MAX_STEPS", 65536)
         self.state_schema_version = str(os.getenv("STATE_SCHEMA_VERSION", "v1")).strip() or "v1"
+        self.strict_on_policy_sampling = str(os.getenv("PPO_STRICT_ON_POLICY", "1")).strip().lower() not in ("0", "false", "no", "off")
+        self.exploration_decay_games = max(1, self._safe_env_int("EXPLORATION_DECAY_GAMES", 200))
+        self.policy_epsilon_cap = max(0.0, self._safe_env_float("POLICY_EPSILON_CAP", 0.02))
+        self.policy_epsilon_floor = max(0.0, self._safe_env_float("POLICY_EPSILON_FLOOR", 0.001))
+        self.policy_temperature_cap = max(1e-3, self._safe_env_float("POLICY_TEMPERATURE_CAP", 1.0))
+        self.policy_temperature_floor = max(1e-3, self._safe_env_float("POLICY_TEMPERATURE_FLOOR", 0.75))
+        self.project_card_priority_weight = max(0.1, self._safe_env_float("PLAY_CARD_PRIORITY_WEIGHT", 1.2))
+        self.max_fallback_attempts = max(1, self._safe_env_int("MAX_FALLBACK_ACTION_ATTEMPTS", 6))
+        self.rejected_action_memory_size = max(64, self._safe_env_int("REJECTED_ACTION_MEMORY_SIZE", 2048))
         self.ppo_hparams = PPOHyperParameters(
             clip_eps=self._safe_env_float("PPO_CLIP_EPS", 0.2),
             value_clip_eps=self._safe_env_float("PPO_VALUE_CLIP_EPS", 0.2),
@@ -139,6 +155,8 @@ class RLAgent:
         self.failure_pause_sec = float(os.getenv("AGENT_FAILURE_PAUSE_SEC", "0.0"))
         self.stuck_log_cooldown_sec = float(os.getenv("AGENT_STUCK_LOG_COOLDOWN_SEC", "5.0"))
         self._last_stuck_log_by_player: Dict[str, float] = {}
+        self._rejected_actions_by_prompt: Dict[str, set[int]] = {}
+        self._rejected_action_prompt_order: deque[str] = deque()
         
         # Performance tracking
         self.games_played = 0
@@ -166,6 +184,7 @@ class RLAgent:
             'action_mask_observations': 0,
             'action_legal_count_total': 0,
             'action_rejected_by_server': 0,
+            'policy_actions_blocked_by_reject_cache': 0,
         }
 
     @staticmethod
@@ -181,6 +200,140 @@ class RLAgent:
             return int(os.getenv(name, str(default)))
         except Exception:
             return int(default)
+
+    def _exploration_progress(self) -> float:
+        games = max(0, int(self.games_played))
+        decay_games = max(1, int(self.exploration_decay_games))
+        return max(0.0, min(1.0, float(games) / float(decay_games)))
+
+    def _effective_policy_epsilon(self, force_random: bool = False) -> float:
+        if force_random:
+            return 1.0
+        raw = max(0.0, float(self.config.epsilon))
+        capped = min(raw, float(self.policy_epsilon_cap))
+        floor = min(capped, max(0.0, float(self.policy_epsilon_floor)))
+        progress = self._exploration_progress()
+        decayed = floor + ((capped - floor) * (1.0 - progress))
+        if self.strict_on_policy_sampling and self.ppo_enable:
+            return 0.0
+        return max(0.0, float(decayed))
+
+    def _effective_policy_temperature(self) -> float:
+        raw = max(1e-3, float(self.config.temperature))
+        capped = min(raw, max(1e-3, float(self.policy_temperature_cap)))
+        floor = min(capped, max(1e-3, float(self.policy_temperature_floor)))
+        progress = self._exploration_progress()
+        decayed = floor + ((capped - floor) * (1.0 - progress))
+        return max(1e-3, float(decayed))
+
+    def _build_prompt_signature(self, player_state: Dict[str, Any]) -> str:
+        waiting_for = player_state.get('waitingFor', {}) if isinstance(player_state, dict) else {}
+        if not isinstance(waiting_for, dict):
+            return ''
+
+        cards = waiting_for.get('cards', []) or []
+        card_signature = []
+        for card in cards[:16]:
+            if not isinstance(card, dict):
+                continue
+            card_signature.append(
+                {
+                    "name": str(card.get("name", "") or ""),
+                    "cost": int(card.get("calculatedCost", card.get("cost", 0)) or 0),
+                    "reserveUnits": card.get("reserveUnits", {}) if isinstance(card.get("reserveUnits", {}), dict) else {},
+                }
+            )
+
+        options = waiting_for.get('options', []) or []
+        option_signature = []
+        for option in options[:16]:
+            if not isinstance(option, dict):
+                continue
+            title = option.get("title", "")
+            if isinstance(title, dict):
+                title = title.get("message", "")
+            option_signature.append(
+                {
+                    "type": str(option.get("type", "") or ""),
+                    "title": str(title or ""),
+                    "buttonLabel": str(option.get("buttonLabel", "") or ""),
+                }
+            )
+
+        player = player_state.get('thisPlayer', {}) if isinstance(player_state, dict) else {}
+        player_budget = {}
+        if isinstance(player, dict):
+            for key in ("megaCredits", "steel", "titanium", "heat", "plants"):
+                player_budget[key] = int(player.get(key, 0) or 0)
+
+        title = waiting_for.get("title", "")
+        if isinstance(title, dict):
+            title = title.get("message", "")
+
+        signature_payload = {
+            "type": str(waiting_for.get("type", "") or ""),
+            "title": str(title or ""),
+            "buttonLabel": str(waiting_for.get("buttonLabel", "") or ""),
+            "amount": int(waiting_for.get("amount", 0) or 0),
+            "min": int(waiting_for.get("min", 0) or 0),
+            "max": int(waiting_for.get("max", 0) or 0),
+            "canPass": bool(waiting_for.get("canPass", False)),
+            "paymentOptions": waiting_for.get("paymentOptions", {}) if isinstance(waiting_for.get("paymentOptions", {}), dict) else {},
+            "reserveUnits": waiting_for.get("reserveUnits", {}) if isinstance(waiting_for.get("reserveUnits", {}), dict) else {},
+            "cards": card_signature,
+            "options": option_signature,
+            "playerBudget": player_budget,
+        }
+        try:
+            serialized = json.dumps(signature_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        except Exception:
+            serialized = str(signature_payload)
+        digest = hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+        return str(digest)
+
+    def _prompt_cache_key(self, player_id: str, player_state: Dict[str, Any]) -> str:
+        signature = self._build_prompt_signature(player_state)
+        if not signature:
+            return ''
+        return f"{str(player_id)}:{signature}"
+
+    def _get_rejected_actions_for_prompt(self, player_id: str, player_state: Dict[str, Any]) -> set[int]:
+        cache_key = self._prompt_cache_key(player_id, player_state)
+        if not cache_key:
+            return set()
+        return set(int(a) for a in self._rejected_actions_by_prompt.get(cache_key, set()))
+
+    def _remember_rejected_action(self, player_id: str, player_state: Dict[str, Any], action_index: int) -> None:
+        cache_key = self._prompt_cache_key(player_id, player_state)
+        if not cache_key:
+            return
+        if cache_key not in self._rejected_actions_by_prompt:
+            self._rejected_actions_by_prompt[cache_key] = set()
+            self._rejected_action_prompt_order.append(cache_key)
+        self._rejected_actions_by_prompt[cache_key].add(int(action_index))
+        self._prune_rejected_action_cache()
+
+    def _clear_rejected_action(self, player_id: str, player_state: Dict[str, Any], action_index: int) -> None:
+        cache_key = self._prompt_cache_key(player_id, player_state)
+        if not cache_key:
+            return
+        blocked = self._rejected_actions_by_prompt.get(cache_key)
+        if not blocked:
+            return
+        blocked.discard(int(action_index))
+        if not blocked:
+            self._rejected_actions_by_prompt.pop(cache_key, None)
+
+    def _prune_rejected_action_cache(self) -> None:
+        max_entries = max(64, int(self.rejected_action_memory_size))
+        while len(self._rejected_actions_by_prompt) > max_entries:
+            if not self._rejected_action_prompt_order:
+                self._rejected_actions_by_prompt.clear()
+                return
+            oldest_key = self._rejected_action_prompt_order.popleft()
+            self._rejected_actions_by_prompt.pop(oldest_key, None)
+        while len(self._rejected_action_prompt_order) > (max_entries * 2):
+            self._rejected_action_prompt_order.popleft()
         
     async def play_game(self, game_instance: GameInstance, player_name: str):
         """Play a complete game"""
@@ -341,7 +494,10 @@ class RLAgent:
 
             # 1. Try a policy-driven action
             policy_action, policy_action_idx, sampled_from_policy, action_meta = await self._get_action_from_network(
-                state_vector, player_state, force_random=False
+                state_vector,
+                player_state,
+                player_id=player_id,
+                force_random=False,
             )
             tried_action_indices = set()
             if policy_action:
@@ -355,6 +511,7 @@ class RLAgent:
                     self._bump_decision_stat('policy_successes')
                     if policy_action_idx is not None:
                         self._record_action_choice(int(policy_action_idx), policy_action, player_state)
+                        self._clear_rejected_action(player_id, player_state, int(policy_action_idx))
                     logger.info(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
                     if sampled_from_policy and policy_action_idx is not None:
                         if len(episode_steps) < self.config.max_episode_steps:
@@ -386,7 +543,9 @@ class RLAgent:
                     self._bump_decision_stat('policy_rejections')
                     self._bump_decision_stat('action_rejected_by_server')
                     if policy_action_idx is not None:
-                        tried_action_indices.add(int(policy_action_idx))
+                        action_idx = int(policy_action_idx)
+                        tried_action_indices.add(action_idx)
+                        self._remember_rejected_action(player_id, player_state, action_idx)
                     logger.warning(f"Agent {self.id[:8]} policy action was rejected by game")
                     self._log_stuck_context(game_instance, player_id, player_state, "policy_action_rejected")
                     await self._sleep_if_needed(self.failure_pause_sec)
@@ -401,6 +560,14 @@ class RLAgent:
 
             available_actions = self._filter_pass_actions(raw_available_actions, player_state)
             available_actions = [a for a in available_actions if int(a) not in tried_action_indices]
+            prompt_rejected_actions = self._get_rejected_actions_for_prompt(player_id, player_state)
+            if prompt_rejected_actions:
+                candidate_actions = [a for a in available_actions if int(a) not in prompt_rejected_actions]
+                if candidate_actions:
+                    blocked_count = max(0, int(len(available_actions) - len(candidate_actions)))
+                    if blocked_count > 0:
+                        self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
+                    available_actions = candidate_actions
             if not available_actions and not can_legally_pass:
                 # In mandatory selection flows we cannot pass; retry non-pass actions even if tried.
                 available_actions = [a for a in self._filter_pass_actions(raw_available_actions, player_state) if int(a) < pass_base]
@@ -420,7 +587,7 @@ class RLAgent:
                 return
                  
             random.shuffle(available_actions)
-            max_attempts = min(len(available_actions), 12)
+            max_attempts = min(len(available_actions), int(self.max_fallback_attempts))
              
             for i in range(max_attempts):
                 random_action_idx = available_actions[i]
@@ -431,9 +598,11 @@ class RLAgent:
                     if await game_instance.send_player_input(player_id, random_action):
                         self._bump_decision_stat('fallback_random_successes')
                         self._record_action_choice(int(random_action_idx), random_action, player_state)
+                        self._clear_rejected_action(player_id, player_state, int(random_action_idx))
                         logger.info(f"Random action succeeded for agent {self.id[:8]}.")
                         await self._sleep_if_needed(self.post_move_sleep_sec)
                         return  # Success
+                    self._remember_rejected_action(player_id, player_state, int(random_action_idx))
 
             if can_legally_pass:
                 logger.warning(f"All random actions failed for agent {self.id[:8]}. Passing.")
@@ -452,9 +621,12 @@ class RLAgent:
                 if fallback_action and await game_instance.send_player_input(player_id, fallback_action):
                     self._bump_decision_stat('fallback_random_successes')
                     self._record_action_choice(fallback_action_idx, fallback_action, player_state)
+                    self._clear_rejected_action(player_id, player_state, fallback_action_idx)
                     logger.info(f"Mandatory fallback action succeeded for agent {self.id[:8]}.")
                     await self._sleep_if_needed(self.post_move_sleep_sec)
                     return
+                if fallback_action:
+                    self._remember_rejected_action(player_id, player_state, fallback_action_idx)
 
             self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_no_pass")
             await self._sleep_if_needed(self.failure_pause_sec or self.poll_interval_sec)
@@ -687,8 +859,13 @@ class RLAgent:
                     if isinstance(item, dict):
                         stack.append(item)
     
-    async def _get_action_from_network(self, state_vector: np.ndarray, 
-                                    player_state: Dict[str, Any], force_random: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool, Optional[Dict[str, Any]]]:
+    async def _get_action_from_network(
+        self,
+        state_vector: np.ndarray,
+        player_state: Dict[str, Any],
+        player_id: Optional[str] = None,
+        force_random: bool = False,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool, Optional[Dict[str, Any]]]:
         """Get action from neural network"""
         try:
             # Convert to tensor
@@ -696,14 +873,24 @@ class RLAgent:
              
             with torch.no_grad():
                 policy_logits, value = self.network(state_tensor)
-                
-                # Apply temperature for exploration
-                policy_logits = policy_logits / self.config.temperature
+
+                # Use decayed/capped exploration temperature for action selection.
+                policy_temperature = self._effective_policy_temperature()
+                policy_logits = policy_logits / max(policy_temperature, 1e-3)
                 policy_probs = F.softmax(policy_logits, dim=-1)
             
             # Get available actions
             available_actions = self.action_decoder.get_available_actions(player_state)
             available_actions = self._filter_pass_actions(available_actions, player_state)
+            if player_id:
+                rejected_actions = self._get_rejected_actions_for_prompt(player_id, player_state)
+                if rejected_actions:
+                    filtered_actions = [a for a in available_actions if int(a) not in rejected_actions]
+                    if filtered_actions:
+                        blocked_count = max(0, int(len(available_actions) - len(filtered_actions)))
+                        if blocked_count > 0:
+                            self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
+                        available_actions = filtered_actions
             waiting_for = player_state.get('waitingFor', {})
             self._bump_decision_stat('available_action_observations')
             self._bump_decision_stat('sum_available_actions', len(available_actions))
@@ -823,6 +1010,7 @@ class RLAgent:
                     "logp_old": float(np.log(max(1e-8, action_prob))),
                     "value_old": float(value.squeeze().item()),
                     "legal_actions": [int(a) for a in available_actions],
+                    "policy_temperature": float(policy_temperature),
                 }
 
             return action_input, action_index, sampled_from_policy, action_meta
@@ -840,8 +1028,8 @@ class RLAgent:
         prefer_project_cards: bool = False,
     ) -> Tuple[int, bool, Optional[torch.Tensor]]:
         """Sample action from policy, restricted to available actions"""
-        # Reduce epsilon-greedy for more policy-driven behavior
-        if force_random or np.random.random() < max(0.05, self.config.epsilon * 0.5):
+        effective_epsilon = self._effective_policy_epsilon(force_random=force_random)
+        if np.random.random() < float(effective_epsilon):
             return np.random.choice(available_actions), False, None
 
         # Mask unavailable actions (strict mask; never sample hidden actions).
@@ -875,17 +1063,6 @@ class RLAgent:
         play_card_actions = [int(a) for a in valid_actions if 0 <= int(a) < 100]
         standard_project_actions = [int(a) for a in valid_actions if 100 <= int(a) < 200]
 
-        # Aggressive bias: when both branches are legal in the action phase,
-        # force a project-card attempt with configurable probability.
-        if prefer_project_cards and play_card_actions and standard_project_actions:
-            try:
-                priority_prob = float(os.getenv("PLAY_CARD_PRIORITY_PROB", "0.90"))
-            except Exception:
-                priority_prob = 0.90
-            priority_prob = max(0.0, min(1.0, priority_prob))
-            if np.random.random() < priority_prob:
-                return int(np.random.choice(play_card_actions)), False, None
-        
         for i, action_idx in enumerate(valid_actions):
             if action_idx >= pass_action_base:
                 masked_probs[action_idx] *= 0.3  # Reduce pass action probability
@@ -910,6 +1087,10 @@ class RLAgent:
                     masked_probs[action_idx] *= 1.35
                 elif 100 <= action_idx < 200:
                     masked_probs[action_idx] *= 0.45
+        if prefer_project_cards and play_card_actions and standard_project_actions:
+            for action_idx in valid_actions:
+                if action_idx < 100:
+                    masked_probs[action_idx] *= float(self.project_card_priority_weight)
         
         # Apply contextual adjustments (e.g., OR menu titles)
         if action_weight_adjustments:
@@ -1075,7 +1256,7 @@ class RLAgent:
                 optimizer=self.optimizer,
                 steps=steps,
                 ppo=self.ppo_hparams,
-                policy_temperature=max(float(self.config.temperature), 1e-3),
+                policy_temperature=max(float(self._effective_policy_temperature()), 1e-3),
             )
             if metrics:
                 metrics.update(self._adapt_ppo_learning_rate(float(metrics.get("ppo/approx_kl", 0.0))))
@@ -1219,6 +1400,7 @@ class RLAgent:
         action_mask_observations = int(self.decision_stats.get('action_mask_observations', 0))
         action_legal_count_total = int(self.decision_stats.get('action_legal_count_total', 0))
         action_rejected_by_server = int(self.decision_stats.get('action_rejected_by_server', 0))
+        policy_actions_blocked_by_reject_cache = int(self.decision_stats.get('policy_actions_blocked_by_reject_cache', 0))
 
         def _ratio(numerator: int, denominator: int) -> float:
             return float(numerator) / float(denominator) if denominator > 0 else 0.0
@@ -1264,6 +1446,8 @@ class RLAgent:
             'action_legal_count_mean': _ratio(action_legal_count_total, action_mask_observations),
             'action_mask_coverage_rate': _ratio(action_mask_observations, total_decisions),
             'action_rejected_by_server': action_rejected_by_server,
+            'policy_actions_blocked_by_reject_cache': policy_actions_blocked_by_reject_cache,
+            'reject_cache_entries': int(len(self._rejected_actions_by_prompt)),
             'rollout_buffer_size': int(len(self.rollout_buffer)),
             'action_counts': action_counts,
             'action_mix': action_mix,
@@ -1282,20 +1466,29 @@ class RLAgent:
     
     def crossover(self, other_agent: 'RLAgent') -> 'RLAgent':
         """Create offspring by crossing over with another agent"""
+        max_epsilon = max(0.0, self._safe_env_float("EVOLUTION_MAX_EPSILON", 0.12))
+        min_epsilon = max(0.0, self._safe_env_float("EVOLUTION_MIN_EPSILON", 0.001))
+        max_temperature = max(1e-3, self._safe_env_float("EVOLUTION_MAX_TEMPERATURE", 1.2))
+        min_temperature = max(1e-3, self._safe_env_float("EVOLUTION_MIN_TEMPERATURE", 0.6))
+        sampled_epsilon = np.random.uniform(
+            min(self.config.epsilon, other_agent.config.epsilon),
+            max(self.config.epsilon, other_agent.config.epsilon),
+        )
+        sampled_temperature = np.random.uniform(
+            min(self.config.temperature, other_agent.config.temperature),
+            max(self.config.temperature, other_agent.config.temperature),
+        )
+        clamped_epsilon = float(max(min_epsilon, min(max_epsilon, sampled_epsilon)))
+        clamped_temperature = float(max(min_temperature, min(max_temperature, sampled_temperature)))
+
         # Create new agent
         child_config = AgentConfig(
             state_size=self.config.state_size,
             hidden_size=self.config.hidden_size,
             num_layers=self.config.num_layers,
             learning_rate=np.random.choice([self.config.learning_rate, other_agent.config.learning_rate]),
-            epsilon=np.random.uniform(
-                min(self.config.epsilon, other_agent.config.epsilon),
-                max(self.config.epsilon, other_agent.config.epsilon)
-            ),
-            temperature=np.random.uniform(
-                min(self.config.temperature, other_agent.config.temperature),
-                max(self.config.temperature, other_agent.config.temperature)
-            )
+            epsilon=clamped_epsilon,
+            temperature=clamped_temperature,
         )
         
         child = RLAgent(child_config)

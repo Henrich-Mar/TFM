@@ -164,6 +164,12 @@ def compute_generation_behavior_metrics(
             "vp_total_per_game": (vp_total / vp_denom) if vp_denom > 0 else 0.0,
             "town_placements_per_game": (town_placements / vp_denom) if vp_denom > 0 else 0.0,
             "greenery_placements_per_game": (greenery_placements / vp_denom) if vp_denom > 0 else 0.0,
+            
+            # Advanced Metrics for Hard Mode
+            # Efficiency: Total VP per Action (Card Plays + SPs)
+            "efficiency_ratio": (vp_total / max(1.0, action_denom)),
+            # Synergy: Card VP per Card Play (High value implies strong engine/tag synergy)
+            "synergy_score": (vp_cards / max(1.0, card_plays_delta)),
         }
 
     card_actions_total = totals["card_play_actions"] + totals["standard_project_actions"]
@@ -203,6 +209,9 @@ def compute_generation_behavior_metrics(
         "payment_reject_count": int(payment_reject_delta),
         "input_reject_count_total": int(getattr(game_cluster, "input_reject_count", 0)),
         "payment_reject_count_total": int(getattr(game_cluster, "payment_reject_count", 0)),
+        # Aggregated Advanced Metrics
+        "efficiency_ratio": (float(totals["vp_total"]) / max(1.0, float(card_actions_total))),
+        "synergy_score": (float(totals["vp_cards"]) / max(1.0, float(totals["card_play_actions"]))),
     }
     return generation_metrics, per_agent
 

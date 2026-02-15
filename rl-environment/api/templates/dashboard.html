@@ -1,421 +1,604 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TFM RL Dashboard</title>
   <style>
-    :root{
-      --bg:#0b1220;
-      --panel:#121a2b;
-      --panel-2:#0f172a;
-      --line:#27344f;
-      --text:#dbe6ff;
-      --muted:#90a3c7;
-      --accent:#4ea8ff;
-      --good:#22c55e;
-      --warn:#f59e0b;
-      --bad:#ef4444;
-      --link:#9ed0ff;
+    :root {
+      --bg: #0b1220;
+      --panel: #121a2b;
+      --panel-2: #0f172a;
+      --line: #27344f;
+      --text: #dbe6ff;
+      --muted: #90a3c7;
+      --accent: #4ea8ff;
+      --good: #22c55e;
+      --warn: #f59e0b;
+      --bad: #ef4444;
+      --link: #9ed0ff;
     }
-    *{box-sizing:border-box}
-    body{margin:0;background:radial-gradient(circle at 20% -10%,#1f2a45 0,#0b1220 50%,#070d1a 100%);color:var(--text);font-family:"Segoe UI",Tahoma,sans-serif}
-    .wrap{max-width:1400px;margin:0 auto;padding:16px}
-    .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:12px}
-    .title{margin:0;font-size:1.6rem}
-    .muted{color:var(--muted);font-size:.9rem}
-    .mono{font-family:Consolas,Menlo,monospace}
-    .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:12px}
-    .card{background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--line);border-radius:12px;padding:12px}
-    .card h3{margin:.1rem 0 .55rem 0;font-size:1rem}
-    .kv{display:grid;grid-template-columns:1fr auto;gap:6px;font-size:.92rem}
-    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;border:1px solid var(--line);background:#0b1427;color:var(--muted)}
-    .good{color:var(--good)}
-    .warn{color:var(--warn)}
-    .bad{color:var(--bad)}
-    button{background:#1d4ed8;color:#fff;border:0;border-radius:8px;padding:8px 12px;cursor:pointer}
-    button:hover{background:#2563eb}
-    button:disabled{opacity:.6;cursor:default}
-    a{color:var(--link);text-decoration:none}
-    a:hover{text-decoration:underline}
-    .actions{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
-    .actions .row-btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-    .action-status{max-width:440px;text-align:right}
-    .links{display:flex;flex-direction:column;gap:8px;max-height:320px;overflow:auto;padding-right:4px}
-    .link-item{border:1px solid var(--line);border-radius:8px;padding:8px;background:#0d1527}
-    .link-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-    .link-row .mono{font-size:.84rem}
-    table{width:100%;border-collapse:collapse;font-size:.86rem}
-    th,td{border-bottom:1px solid var(--line);padding:6px;text-align:right}
-    th:first-child,td:first-child{text-align:left}
-    .pill-good,.pill-bad{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.72rem}
-    .pill-good{background:rgba(34,197,94,.16);color:#8df0b2}
-    .pill-bad{background:rgba(239,68,68,.16);color:#ffb1b1}
+
+    * {
+      box-sizing: border-box
+    }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 20% -10%, #1f2a45 0, #0b1220 50%, #070d1a 100%);
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, sans-serif
+    }
+
+    .wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 16px
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px
+    }
+
+    .title {
+      margin: 0;
+      font-size: 1.6rem
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: .9rem
+    }
+
+    .mono {
+      font-family: Consolas, Menlo, monospace
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+      margin-bottom: 12px
+    }
+
+    .card {
+      background: linear-gradient(180deg, var(--panel), var(--panel-2));
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px
+    }
+
+    .card h3 {
+      margin: .1rem 0 .55rem 0;
+      font-size: 1rem
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px;
+      font-size: .92rem
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: .75rem;
+      border: 1px solid var(--line);
+      background: #0b1427;
+      color: var(--muted)
+    }
+
+    .good {
+      color: var(--good)
+    }
+
+    .warn {
+      color: var(--warn)
+    }
+
+    .bad {
+      color: var(--bad)
+    }
+
+    button {
+      background: #1d4ed8;
+      color: #fff;
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer
+    }
+
+    button:hover {
+      background: #2563eb
+    }
+
+    button:disabled {
+      opacity: .6;
+      cursor: default
+    }
+
+    a {
+      color: var(--link);
+      text-decoration: none
+    }
+
+    a:hover {
+      text-decoration: underline
+    }
+
+    .actions {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 8px
+    }
+
+    .actions .row-btns {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end
+    }
+
+    .action-status {
+      max-width: 440px;
+      text-align: right
+    }
+
+    .links {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 320px;
+      overflow: auto;
+      padding-right: 4px
+    }
+
+    .link-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #0d1527
+    }
+
+    .link-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center
+    }
+
+    .link-row .mono {
+      font-size: .84rem
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .86rem
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 6px;
+      text-align: right
+    }
+
+    th:first-child,
+    td:first-child {
+      text-align: left
+    }
+
+    .pill-good,
+    .pill-bad {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: .72rem
+    }
+
+    .pill-good {
+      background: rgba(34, 197, 94, .16);
+      color: #8df0b2
+    }
+
+    .pill-bad {
+      background: rgba(239, 68, 68, .16);
+      color: #ffb1b1
+    }
   </style>
 </head>
+
 <body>
-<div class="wrap">
-  <div class="top">
-    <div>
-      <h1 class="title">Terraforming Mars RL Training Dashboard</h1>
-      <div class="muted">Live monitor for PPO rollout, league pools, frozen-opponent benchmarks, promotion gates, and recent game links.</div>
-      <div id="status" class="muted">Loading...</div>
-    </div>
-    <div class="actions">
-      <div class="row-btns">
-        <button onclick="refreshAll()">Refresh</button>
-        <button id="btnPlayBest" onclick="startHumanVsBest()">Play vs Best Agent</button>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <h1 class="title">Terraforming Mars RL Training Dashboard</h1>
+        <div class="muted">Live monitor for PPO rollout, league pools, frozen-opponent benchmarks, promotion gates, and
+          recent game links.</div>
+        <div id="status" class="muted">Loading...</div>
       </div>
-      <div id="playBestStatus" class="muted action-status"></div>
+      <div class="actions">
+        <div class="row-btns">
+          <button onclick="refreshAll()">Refresh</button>
+          <button id="btnPlayBest" onclick="startHumanVsBest()">Play vs Best Agent</button>
+        </div>
+        <div id="playBestStatus" class="muted action-status"></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <h3>Training Snapshot</h3>
+        <div id="training"></div>
+      </div>
+      <div class="card">
+        <h3>PPO Loop</h3>
+        <div id="policyLoop"></div>
+      </div>
+      <div class="card">
+        <h3>League + Promotion Gate</h3>
+        <div id="leagueGate"></div>
+      </div>
+      <div class="card">
+        <h3>Frozen Pool + Fixed Benchmark</h3>
+        <div id="benchmark"></div>
+      </div>
+      <div class="card">
+        <h3>Server Health</h3>
+        <div id="servers"></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <h3>Recent Games</h3>
+        <div class="muted">Latest game URLs tracked by coordinator (click to open game page).</div>
+        <div id="recentGames" class="links"></div>
+      </div>
+      <div class="card">
+        <h3>Recent End Screens</h3>
+        <div class="muted">Recent finished games with player end-screen links.</div>
+        <div id="recentEndScreens" class="links"></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <h3>Behavior Reliability</h3>
+        <div id="behavior"></div>
+      </div>
+      <div class="card">
+        <h3>Hard Mode Metrics</h3>
+        <div id="hardMetrics"></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <h3>Resource and Card Utilization</h3>
+        <div id="utilization"></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <h3>End-Screen VP Tracking</h3>
+        <div class="muted">Per-generation aggregates aligned with end-screen categories.</div>
+        <div id="vpBreakdown"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Top Agents (Selection Fitness)</h3>
+      <div id="population"></div>
     </div>
   </div>
 
-  <div class="row">
-    <div class="card">
-      <h3>Training Snapshot</h3>
-      <div id="training"></div>
-    </div>
-    <div class="card">
-      <h3>PPO Loop</h3>
-      <div id="policyLoop"></div>
-    </div>
-    <div class="card">
-      <h3>League + Promotion Gate</h3>
-      <div id="leagueGate"></div>
-    </div>
-    <div class="card">
-      <h3>Frozen Pool + Fixed Benchmark</h3>
-      <div id="benchmark"></div>
-    </div>
-    <div class="card">
-      <h3>Server Health</h3>
-      <div id="servers"></div>
-    </div>
-  </div>
+  <script>
+    const AUTO_REFRESH_MS = {{ auto_refresh_ms }};
 
-  <div class="row">
-    <div class="card">
-      <h3>Recent Games</h3>
-      <div class="muted">Latest game URLs tracked by coordinator (click to open game page).</div>
-      <div id="recentGames" class="links"></div>
-    </div>
-    <div class="card">
-      <h3>Recent End Screens</h3>
-      <div class="muted">Recent finished games with player end-screen links.</div>
-      <div id="recentEndScreens" class="links"></div>
-    </div>
-  </div>
-
-  <div class="row">
-    <div class="card">
-      <h3>Behavior Reliability</h3>
-      <div id="behavior"></div>
-    </div>
-    <div class="card">
-      <h3>Resource and Card Utilization</h3>
-      <div id="utilization"></div>
-    </div>
-  </div>
-
-  <div class="row">
-    <div class="card">
-      <h3>End-Screen VP Tracking</h3>
-      <div class="muted">Per-generation aggregates aligned with end-screen categories.</div>
-      <div id="vpBreakdown"></div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3>Top Agents (Selection Fitness)</h3>
-    <div id="population"></div>
-  </div>
-</div>
-
-<script>
-const AUTO_REFRESH_MS = {{ auto_refresh_ms }};
-
-function n(v, d = 0) { return Number(v ?? d); }
-function pct(v) { return `${(100 * n(v)).toFixed(1)}%`; }
-function fmt(v) { return Number(v || 0).toLocaleString(); }
-function f2(v) { return n(v).toFixed(2); }
-function f4(v) { return n(v).toFixed(4); }
-function f6(v) { return n(v).toFixed(6); }
-function esc(v) {
-  return String(v ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("\"", "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function renderKV(target, pairs) {
-  target.innerHTML = `<div class="kv">${pairs.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("")}</div>`;
-}
-
-function linkHtml(url, label) {
-  const normalized = normalizeExternalUrl(url);
-  if (!normalized) {
-    return `<span class="muted">Invalid link</span>`;
-  }
-  const safeUrl = esc(normalized);
-  const safeLabel = esc(label);
-  return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`;
-}
-
-function normalizeExternalUrl(url) {
-  let raw = String(url || "").trim();
-  if (!raw) return "";
-  raw = raw.replace("/ui/game?", "/game?");
-  if (raw.includes(",")) {
-    const parts = raw.split(",").map((x) => String(x || "").trim()).filter(Boolean);
-    const preferred = parts.find((part) => {
-      const low = part.toLowerCase();
-      return low.includes("/game?") || low.includes("/the-end?") || low.includes("/player?");
-    });
-    raw = preferred || (parts[0] || raw);
-  }
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) {
-    raw = `http://${raw}`;
-  }
-  try {
-    const parsed = new URL(raw, window.location.origin);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return "";
+    function n(v, d = 0) { return Number(v ?? d); }
+    function pct(v) { return `${(100 * n(v)).toFixed(1)}%`; }
+    function fmt(v) { return Number(v || 0).toLocaleString(); }
+    function f2(v) { return n(v).toFixed(2); }
+    function f4(v) { return n(v).toFixed(4); }
+    function f6(v) { return n(v).toFixed(6); }
+    function esc(v) {
+      return String(v ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#39;");
     }
-    return parsed.toString();
-  } catch (_err) {
-    return "";
-  }
-}
 
-function renderRecentGames(games) {
-  const target = document.getElementById("recentGames");
-  if (!Array.isArray(games) || games.length === 0) {
-    target.innerHTML = `<div class="muted">No recent games tracked yet.</div>`;
-    return;
-  }
+    function renderKV(target, pairs) {
+      target.innerHTML = `<div class="kv">${pairs.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("")}</div>`;
+    }
 
-    const rows = games.slice(-20).reverse().map((g) => {
-      const gameId = String(g?.game_id || "unknown");
-      const gameUrl = String(g?.url || "");
-      const normalized = normalizeExternalUrl(gameUrl);
-      return `<div class="link-item">
+    function linkHtml(url, label) {
+      const normalized = normalizeExternalUrl(url);
+      if (!normalized) {
+        return `<span class="muted">Invalid link</span>`;
+      }
+      const safeUrl = esc(normalized);
+      const safeLabel = esc(label);
+      return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`;
+    }
+
+    function normalizeExternalUrl(url) {
+      let raw = String(url || "").trim();
+      if (!raw) return "";
+      raw = raw.replace("/ui/game?", "/game?");
+      if (raw.includes(",")) {
+        const parts = raw.split(",").map((x) => String(x || "").trim()).filter(Boolean);
+        const preferred = parts.find((part) => {
+          const low = part.toLowerCase();
+          return low.includes("/game?") || low.includes("/the-end?") || low.includes("/player?");
+        });
+        raw = preferred || (parts[0] || raw);
+      }
+      if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) {
+        raw = `http://${raw}`;
+      }
+      try {
+        const parsed = new URL(raw, window.location.origin);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          return "";
+        }
+        return parsed.toString();
+      } catch (_err) {
+        return "";
+      }
+    }
+
+    function renderRecentGames(games) {
+      const target = document.getElementById("recentGames");
+      if (!Array.isArray(games) || games.length === 0) {
+        target.innerHTML = `<div class="muted">No recent games tracked yet.</div>`;
+        return;
+      }
+
+      const rows = games.slice(-20).reverse().map((g) => {
+        const gameId = String(g?.game_id || "unknown");
+        const gameUrl = String(g?.url || "");
+        const normalized = normalizeExternalUrl(gameUrl);
+        return `<div class="link-item">
       <div class="link-row">
         <span class="badge mono">${esc(gameId)}</span>
         ${normalized ? linkHtml(normalized, "Open Game") : `<span class="muted">No URL</span>`}
       </div>
       ${normalized ? `<div class="muted mono">${esc(normalized)}</div>` : ""}
     </div>`;
-  }).join("");
-  target.innerHTML = rows;
-}
+      }).join("");
+      target.innerHTML = rows;
+    }
 
-function renderRecentEndScreens(entries) {
-  const target = document.getElementById("recentEndScreens");
-  if (!Array.isArray(entries) || entries.length === 0) {
-    target.innerHTML = `<div class="muted">No end-screen links tracked yet.</div>`;
-    return;
-  }
+    function renderRecentEndScreens(entries) {
+      const target = document.getElementById("recentEndScreens");
+      if (!Array.isArray(entries) || entries.length === 0) {
+        target.innerHTML = `<div class="muted">No end-screen links tracked yet.</div>`;
+        return;
+      }
 
-  const rows = entries.slice(-12).reverse().map((entry) => {
-    const gameId = String(entry?.game_id || "unknown");
-    const screens = Array.isArray(entry?.end_screens) ? entry.end_screens : [];
-    const screenLinks = screens.length
-      ? screens.map((url, idx) => linkHtml(String(url), `Player ${idx + 1}`)).join(" | ")
-      : `<span class="muted">No links</span>`;
-    return `<div class="link-item">
+      const rows = entries.slice(-12).reverse().map((entry) => {
+        const gameId = String(entry?.game_id || "unknown");
+        const screens = Array.isArray(entry?.end_screens) ? entry.end_screens : [];
+        const screenLinks = screens.length
+          ? screens.map((url, idx) => linkHtml(String(url), `Player ${idx + 1}`)).join(" | ")
+          : `<span class="muted">No links</span>`;
+        return `<div class="link-item">
       <div class="link-row">
         <span class="badge mono">${esc(gameId)}</span>
       </div>
       <div class="link-row">${screenLinks}</div>
     </div>`;
-  }).join("");
+      }).join("");
 
-  target.innerHTML = rows;
-}
-
-async function startHumanVsBest() {
-  const button = document.getElementById("btnPlayBest");
-  const status = document.getElementById("playBestStatus");
-  if (button) {
-    button.disabled = true;
-    button.textContent = "Starting...";
-  }
-  if (status) {
-    status.textContent = "";
-  }
-
-  try {
-    const response = await fetch("/play/human-vs-best", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ human_name: "You", bot_count: 3 }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload?.detail || `HTTP ${response.status}`);
+      target.innerHTML = rows;
     }
 
-    const gameLink = linkHtml(payload?.game_url, "Open Game");
-    const playerLink = linkHtml(payload?.player_url, "Open Player View");
-    const gameId = esc(String(payload?.game_id || ""));
-    if (status) {
-      status.innerHTML = `<span class="good">Started ${gameId}</span> | ${gameLink} | ${playerLink}`;
+    async function startHumanVsBest() {
+      const button = document.getElementById("btnPlayBest");
+      const status = document.getElementById("playBestStatus");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Starting...";
+      }
+      if (status) {
+        status.textContent = "";
+      }
+
+      try {
+        const response = await fetch("/play/human-vs-best", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ human_name: "You", bot_count: 3 }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload?.detail || `HTTP ${response.status}`);
+        }
+
+        const gameLink = linkHtml(payload?.game_url, "Open Game");
+        const playerLink = linkHtml(payload?.player_url, "Open Player View");
+        const gameId = esc(String(payload?.game_id || ""));
+        if (status) {
+          status.innerHTML = `<span class="good">Started ${gameId}</span> | ${gameLink} | ${playerLink}`;
+        }
+        await refreshAll();
+      } catch (err) {
+        if (status) {
+          const message = err && err.message ? err.message : String(err);
+          status.innerHTML = `<span class="bad">Failed to start: ${esc(message)}</span>`;
+        }
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = "Play vs Best Agent";
+        }
+      }
     }
-    await refreshAll();
-  } catch (err) {
-    if (status) {
-      const message = err && err.message ? err.message : String(err);
-      status.innerHTML = `<span class="bad">Failed to start: ${esc(message)}</span>`;
-    }
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = "Play vs Best Agent";
-    }
-  }
-}
 
-async function refreshAll() {
-  try {
-    const [statsRes, popRes] = await Promise.all([fetch("/stats"), fetch("/population")]);
-    if (!statsRes.ok || !popRes.ok) {
-      throw new Error(`HTTP ${statsRes.status}/${popRes.status}`);
-    }
-    const stats = await statsRes.json();
-    const pop = await popRes.json();
-    const gm = stats.generation_metrics || {};
-    const gate = stats.generation_gate || {};
+    async function refreshAll() {
+      try {
+        const [statsRes, popRes] = await Promise.all([fetch("/stats"), fetch("/population")]);
+        if (!statsRes.ok || !popRes.ok) {
+          throw new Error(`HTTP ${statsRes.status}/${popRes.status}`);
+        }
+        const stats = await statsRes.json();
+        const pop = await popRes.json();
+        const gm = stats.generation_metrics || {};
+        const gate = stats.generation_gate || {};
 
-    document.getElementById("status").textContent =
-      `Generation ${n(stats.population?.current_generation)} | Updated ${new Date().toLocaleTimeString()}`;
+        document.getElementById("status").textContent =
+          `Generation ${n(stats.population?.current_generation)} | Updated ${new Date().toLocaleTimeString()}`;
 
-    renderKV(document.getElementById("training"), [
-      ["Population", fmt(stats.population?.size)],
-      ["Best eval fitness", f2(stats.population?.best_eval_fitness)],
-      ["Avg eval fitness", f2(stats.population?.avg_eval_fitness)],
-      ["Games played", fmt(stats.population?.total_games_played)],
-      ["Games this generation", fmt(gm["total_games_evaluated"])],
-      ["Tournament completion", pct(stats.tournaments?.completion_rate)],
-    ]);
+        renderKV(document.getElementById("training"), [
+          ["Population", fmt(stats.population?.size)],
+          ["Best eval fitness", f2(stats.population?.best_eval_fitness)],
+          ["Avg eval fitness", f2(stats.population?.avg_eval_fitness)],
+          ["Games played", fmt(stats.population?.total_games_played)],
+          ["Games this generation", fmt(gm["total_games_evaluated"])],
+          ["Tournament completion", pct(stats.tournaments?.completion_rate)],
+        ]);
 
-    renderKV(document.getElementById("policyLoop"), [
-      ["Agents optimized", fmt(gm["ppo/agents_optimized"])],
-      ["Rollout steps", fmt(gm["rollout/steps_collected"])],
-      ["Schema filtered", fmt(gm["rollout/schema_filtered"])],
-      ["Policy loss", f4(gm["ppo/policy_loss"])],
-      ["Value loss", f4(gm["ppo/value_loss"])],
-      ["Approx KL", f4(gm["ppo/approx_kl"])],
-      ["Target KL", f4(gm["ppo/target_kl"])],
-      ["Entropy", f4(gm["ppo/entropy"])],
-      ["Clip fraction", f4(gm["ppo/clip_fraction"])],
-      ["Early-stop ratio", pct(gm["ppo/early_stop_kl_ratio"])],
-      ["LR adj ratio", pct(gm["ppo/lr_adjustment_applied"])],
-      ["PPO LR", f6(gm["ppo/learning_rate"])],
-      ["Explained variance", f4(gm["ppo/explained_variance"])],
-    ]);
+        renderKV(document.getElementById("policyLoop"), [
+          ["Agents optimized", fmt(gm["ppo/agents_optimized"])],
+          ["Rollout steps", fmt(gm["rollout/steps_collected"])],
+          ["Schema filtered", fmt(gm["rollout/schema_filtered"])],
+          ["Policy loss", f4(gm["ppo/policy_loss"])],
+          ["Value loss", f4(gm["ppo/value_loss"])],
+          ["Approx KL", f4(gm["ppo/approx_kl"])],
+          ["Target KL", f4(gm["ppo/target_kl"])],
+          ["Entropy", f4(gm["ppo/entropy"])],
+          ["Clip fraction", f4(gm["ppo/clip_fraction"])],
+          ["Early-stop ratio", pct(gm["ppo/early_stop_kl_ratio"])],
+          ["LR adj ratio", pct(gm["ppo/lr_adjustment_applied"])],
+          ["PPO LR", f6(gm["ppo/learning_rate"])],
+          ["Explained variance", f4(gm["ppo/explained_variance"])],
+        ]);
 
-    const gatePassed = n(gate.pass_rate) >= 0.999;
-    const gateThresholds = gate.thresholds || {};
-    const resourceMode = String(gateThresholds.resource_spend_mode || "legacy_per_resource");
-    renderKV(document.getElementById("leagueGate"), [
-      ["Main pool size", fmt(gm["league/main_pool_size"])],
-      ["Historical pool size", fmt(gm["league/historical_pool_size"])],
-      ["Exploiter pool size", fmt(gm["league/exploiter_pool_size"])],
-      ["Matchmaking ordering applied", gm["league/matchmaking_ordering_applied"] ? "yes" : "no"],
-      ["Gate pass rate", `<span class="${gatePassed ? "good" : "warn"}">${pct(gate.pass_rate)}</span>`],
-      ["Failed agents", fmt(gate.failed_agents)],
-      ["Total gate penalty", f2(gate.total_penalty)],
-      ["Resource gate mode", esc(resourceMode)],
-      ["Steel floor / game", f2(gateThresholds.min_steel_spent_per_game)],
-      ["Titanium floor / game", f2(gateThresholds.min_titanium_spent_per_game)],
-      ["Global payment gate", gate.global_payment_gate_failed ? `<span class="bad">failed</span>` : `<span class="good">ok</span>`],
-    ]);
+        const gatePassed = n(gate.pass_rate) >= 0.999;
+        const gateThresholds = gate.thresholds || {};
+        const resourceMode = String(gateThresholds.resource_spend_mode || "legacy_per_resource");
+        renderKV(document.getElementById("leagueGate"), [
+          ["Main pool size", fmt(gm["league/main_pool_size"])],
+          ["Historical pool size", fmt(gm["league/historical_pool_size"])],
+          ["Exploiter pool size", fmt(gm["league/exploiter_pool_size"])],
+          ["Matchmaking ordering applied", gm["league/matchmaking_ordering_applied"] ? "yes" : "no"],
+          ["Gate pass rate", `<span class="${gatePassed ? "good" : "warn"}">${pct(gate.pass_rate)}</span>`],
+          ["Failed agents", fmt(gate.failed_agents)],
+          ["Total gate penalty", f2(gate.total_penalty)],
+          ["Resource gate mode", esc(resourceMode)],
+          ["Steel floor / game", f2(gateThresholds.min_steel_spent_per_game)],
+          ["Titanium floor / game", f2(gateThresholds.min_titanium_spent_per_game)],
+          ["Global payment gate", gate.global_payment_gate_failed ? `<span class="bad">failed</span>` : `<span class="good">ok</span>`],
+        ]);
 
-    const frozenRan = Boolean(gm["frozen_pool/ran"]);
-    const benchmarkRan = Boolean(gm["benchmark/fixed/ran"]);
-    const frozenSkipReason = String(gm["frozen_pool/skip_reason"] || "n/a");
-    const benchmarkSkipReason = String(gm["benchmark/fixed/skip_reason"] || "n/a");
-    renderKV(document.getElementById("benchmark"), [
-      ["Frozen pool enabled", gm["frozen_pool/enabled"] ? "yes" : "no"],
-      ["Frozen pool ran", frozenRan ? `<span class="good">yes</span>` : `<span class="warn">no</span>`],
-      ["Frozen pool checkpoints", fmt(gm["frozen_pool/checkpoints_available"])],
-      ["Frozen games / agent", fmt(gm["frozen_pool/games_per_agent"])],
-      ["Frozen games completed", fmt(gm["frozen_pool/games_completed"])],
-      ["Frozen win rate", pct(gm["frozen_pool/win_rate"])],
-      ["Frozen avg VP", f2(gm["frozen_pool/avg_vp"])],
-      ["Frozen avg rank", f2(gm["frozen_pool/avg_rank"])],
-      ["Frozen completion", pct(gm["frozen_pool/completion_rate"])],
-      ["Frozen skip reason", esc(frozenSkipReason)],
-      ["Benchmark enabled", gm["benchmark/fixed/enabled"] ? "yes" : "no"],
-      ["Benchmark interval", fmt(gm["benchmark/fixed/interval"])],
-      ["Benchmark ran", benchmarkRan ? `<span class="good">yes</span>` : `<span class="warn">no</span>`],
-      ["Benchmark checkpoints", fmt(gm["benchmark/fixed/checkpoints_available"])],
-      ["Benchmark games / agent", fmt(gm["benchmark/fixed/games_per_agent"])],
-      ["Benchmark games completed", fmt(gm["benchmark/fixed/games_completed"])],
-      ["Benchmark win rate", pct(gm["benchmark/fixed/win_rate"])],
-      ["Benchmark avg VP", f2(gm["benchmark/fixed/avg_vp"])],
-      ["Benchmark avg rank", f2(gm["benchmark/fixed/avg_rank"])],
-      ["Benchmark completion", pct(gm["benchmark/fixed/completion_rate"])],
-      ["Benchmark skip reason", esc(benchmarkSkipReason)],
-    ]);
+        const frozenRan = Boolean(gm["frozen_pool/ran"]);
+        const benchmarkRan = Boolean(gm["benchmark/fixed/ran"]);
+        const frozenSkipReason = String(gm["frozen_pool/skip_reason"] || "n/a");
+        const benchmarkSkipReason = String(gm["benchmark/fixed/skip_reason"] || "n/a");
+        renderKV(document.getElementById("benchmark"), [
+          ["Frozen pool enabled", gm["frozen_pool/enabled"] ? "yes" : "no"],
+          ["Frozen pool ran", frozenRan ? `<span class="good">yes</span>` : `<span class="warn">no</span>`],
+          ["Frozen pool checkpoints", fmt(gm["frozen_pool/checkpoints_available"])],
+          ["Frozen games / agent", fmt(gm["frozen_pool/games_per_agent"])],
+          ["Frozen games completed", fmt(gm["frozen_pool/games_completed"])],
+          ["Frozen win rate", pct(gm["frozen_pool/win_rate"])],
+          ["Frozen avg VP", f2(gm["frozen_pool/avg_vp"])],
+          ["Frozen avg rank", f2(gm["frozen_pool/avg_rank"])],
+          ["Frozen completion", pct(gm["frozen_pool/completion_rate"])],
+          ["Frozen skip reason", esc(frozenSkipReason)],
+          ["Benchmark enabled", gm["benchmark/fixed/enabled"] ? "yes" : "no"],
+          ["Benchmark interval", fmt(gm["benchmark/fixed/interval"])],
+          ["Benchmark ran", benchmarkRan ? `<span class="good">yes</span>` : `<span class="warn">no</span>`],
+          ["Benchmark checkpoints", fmt(gm["benchmark/fixed/checkpoints_available"])],
+          ["Benchmark games / agent", fmt(gm["benchmark/fixed/games_per_agent"])],
+          ["Benchmark games completed", fmt(gm["benchmark/fixed/games_completed"])],
+          ["Benchmark win rate", pct(gm["benchmark/fixed/win_rate"])],
+          ["Benchmark avg VP", f2(gm["benchmark/fixed/avg_vp"])],
+          ["Benchmark avg rank", f2(gm["benchmark/fixed/avg_rank"])],
+          ["Benchmark completion", pct(gm["benchmark/fixed/completion_rate"])],
+          ["Benchmark skip reason", esc(benchmarkSkipReason)],
+        ]);
 
-    renderKV(document.getElementById("servers"), [
-      ["Healthy servers", fmt(stats.servers?.healthy_servers)],
-      ["Total servers", fmt(stats.servers?.total_servers)],
-      ["Active games", fmt(stats.servers?.active_games)],
-      ["Queue depth", fmt(stats.servers?.queue_depth)],
-      ["Payment rejects", fmt(gm["payment_reject_count"])],
-      ["Input rejects total", fmt(gm["input_reject_count_total"])],
-    ]);
+        renderKV(document.getElementById("servers"), [
+          ["Healthy servers", fmt(stats.servers?.healthy_servers)],
+          ["Total servers", fmt(stats.servers?.total_servers)],
+          ["Active games", fmt(stats.servers?.active_games)],
+          ["Queue depth", fmt(stats.servers?.queue_depth)],
+          ["Payment rejects", fmt(gm["payment_reject_count"])],
+          ["Input rejects total", fmt(gm["input_reject_count_total"])],
+        ]);
 
-    renderKV(document.getElementById("behavior"), [
-      ["Policy success rate", pct(stats.behavior?.policy_success_rate)],
-      ["Policy sample rate", pct(stats.behavior?.policy_sample_rate)],
-      ["Fallback decision rate", pct(stats.behavior?.fallback_decision_rate)],
-      ["Fallback pass rate", pct(stats.behavior?.fallback_pass_rate)],
-      ["Action mask coverage", pct(stats.behavior?.action_mask_coverage_rate)],
-      ["Server rejections", fmt(stats.behavior?.action_rejected_by_server)],
-      ["Total decisions", fmt(stats.behavior?.total_decisions)],
-    ]);
+        renderKV(document.getElementById("behavior"), [
+          ["Policy success rate", pct(stats.behavior?.policy_success_rate)],
+          ["Policy sample rate", pct(stats.behavior?.policy_sample_rate)],
+          ["Fallback decision rate", pct(stats.behavior?.fallback_decision_rate)],
+          ["Fallback pass rate", pct(stats.behavior?.fallback_pass_rate)],
+          ["Action mask coverage", pct(stats.behavior?.action_mask_coverage_rate)],
+          ["Server rejections", fmt(stats.behavior?.action_rejected_by_server)],
+          ["Total decisions", fmt(stats.behavior?.total_decisions)],
+        ]);
 
-    renderKV(document.getElementById("utilization"), [
-      ["Card plays per game", f2(gm["card_plays_per_game"])],
-      ["Standard project ratio", pct(gm["standard_project_ratio"])],
-      ["Steel spent per game", f2(gm["steel_spent_per_game"])],
-      ["Titanium spent per game", f2(gm["titanium_spent_per_game"])],
-      ["Steel spent (gen)", fmt(gm["steel_spent"])],
-      ["Titanium spent (gen)", fmt(gm["titanium_spent"])],
-    ]);
+        renderKV(document.getElementById("hardMetrics"), [
+          ["Efficiency (VP/Action)", f2(gm["efficiency_ratio"])],
+          ["Synergy (CardVP/Play)", f2(gm["synergy_score"])],
+          ["Value Loss", f4(gm["ppo/value_loss"])],
+          ["Entropy", f4(gm["ppo/entropy"])],
+        ]);
 
-    renderKV(document.getElementById("vpBreakdown"), [
-      ["Terraforming VP / game", f2(gm["vp_terraforming_per_game"])],
-      ["Milestones VP / game", f2(gm["vp_milestones_per_game"])],
-      ["Awards VP / game", f2(gm["vp_awards_per_game"])],
-      ["Greenery VP / game", f2(gm["vp_greenery_per_game"])],
-      ["Town/City VP / game", f2(gm["vp_city_per_game"])],
-      ["Cards VP / game", f2(gm["vp_cards_per_game"])],
-      ["Total VP / game", f2(gm["vp_total_per_game"])],
-      ["Town placements / game", f2(gm["town_placements_per_game"])],
-      ["Greenery placements / game", f2(gm["greenery_placements_per_game"])],
-    ]);
+        renderKV(document.getElementById("utilization"), [
+          ["Card plays per game", f2(gm["card_plays_per_game"])],
+          ["Standard project ratio", pct(gm["standard_project_ratio"])],
+          ["Steel spent per game", f2(gm["steel_spent_per_game"])],
+          ["Titanium spent per game", f2(gm["titanium_spent_per_game"])],
+          ["Steel spent (gen)", fmt(gm["steel_spent"])],
+          ["Titanium spent (gen)", fmt(gm["titanium_spent"])],
+        ]);
 
-    renderRecentGames(stats.recent_games || []);
-    renderRecentEndScreens(stats.recent_end_screens || []);
+        renderKV(document.getElementById("vpBreakdown"), [
+          ["Terraforming VP / game", f2(gm["vp_terraforming_per_game"])],
+          ["Milestones VP / game", f2(gm["vp_milestones_per_game"])],
+          ["Awards VP / game", f2(gm["vp_awards_per_game"])],
+          ["Greenery VP / game", f2(gm["vp_greenery_per_game"])],
+          ["Town/City VP / game", f2(gm["vp_city_per_game"])],
+          ["Cards VP / game", f2(gm["vp_cards_per_game"])],
+          ["Total VP / game", f2(gm["vp_total_per_game"])],
+          ["Town placements / game", f2(gm["town_placements_per_game"])],
+          ["Greenery placements / game", f2(gm["greenery_placements_per_game"])],
+        ]);
 
-    const rows = (pop.population || []).slice(0, 16).map((a) => {
-      const gateInfo = a.promotion_gate || {};
-      const gateBehavior = gateInfo.behavior || {};
-      const gateCell = gateInfo.passed === false
-        ? `<span class="pill-bad">failed</span>`
-        : `<span class="pill-good">passed</span>`;
-      return `<tr>
+        renderRecentGames(stats.recent_games || []);
+        renderRecentEndScreens(stats.recent_end_screens || []);
+
+        const rows = (pop.population || []).slice(0, 16).map((a) => {
+          const gateInfo = a.promotion_gate || {};
+          const gateBehavior = gateInfo.behavior || {};
+          const gateCell = gateInfo.passed === false
+            ? `<span class="pill-bad">failed</span>`
+            : `<span class="pill-good">passed</span>`;
+          return `<tr>
         <td class="mono">${esc(String(a.id || "").slice(0, 8))}</td>
         <td>${f2(a.last_eval_fitness)}</td>
-        <td>${f2(a.last_raw_eval_fitness)}</td>
+        <td>${f2(a.elo)}</td>
         <td>${pct(a.win_rate)}</td>
         <td>${f2(a.avg_vp)}</td>
+        <td>${f2(a.efficiency)}</td>
+        <td>${f2(a.synergy)}</td>
         <td>${pct(a.policy_success_rate)}</td>
         <td>${pct(a.fallback_pass_rate)}</td>
         <td>${f2(gateBehavior.vp_terraforming_per_game)}</td>
@@ -429,17 +612,19 @@ async function refreshAll() {
         <td>${n(a.total_decisions)}</td>
         <td>${gateCell}</td>
       </tr>`;
-    }).join("");
-    document.getElementById("population").innerHTML = `<table>
+        }).join("");
+        document.getElementById("population").innerHTML = `<table>
       <thead>
         <tr>
           <th>Agent</th>
-          <th>Eval fitness</th>
-          <th>Raw fitness</th>
-          <th>Win rate</th>
+          <th>Fitness</th>
+          <th>Elo</th>
+          <th>Win Rate</th>
           <th>Avg VP</th>
-          <th>Policy success</th>
-          <th>Pass rate</th>
+          <th>Eff</th>
+          <th>Syn</th>
+          <th>Policy %</th>
+          <th>Pass %</th>
           <th>TR/g</th>
           <th>M/g</th>
           <th>A/g</th>
@@ -454,14 +639,15 @@ async function refreshAll() {
       </thead>
       <tbody>${rows || `<tr><td colspan="17">No data</td></tr>`}</tbody>
     </table>`;
-  } catch (err) {
-    document.getElementById("status").innerHTML =
-      `<span class="bad">Failed to refresh dashboard: ${esc(err)}</span>`;
-  }
-}
+      } catch (err) {
+        document.getElementById("status").innerHTML =
+          `<span class="bad">Failed to refresh dashboard: ${esc(err)}</span>`;
+      }
+    }
 
-refreshAll();
-setInterval(refreshAll, AUTO_REFRESH_MS);
-</script>
+    refreshAll();
+    setInterval(refreshAll, AUTO_REFRESH_MS);
+  </script>
 </body>
+
 </html>

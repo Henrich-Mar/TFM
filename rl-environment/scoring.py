@@ -40,6 +40,7 @@ def calculate_terminal_reward(rank: Any, victory_points: Any, completed: Any) ->
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
+        # Apply Hard Mode scaling
         return float(value)
     except Exception:
         return float(default)
@@ -315,12 +316,32 @@ def _card_nominal_vp(card: Optional[Dict[str, Any]]) -> float:
     return max(0.0, _safe_float(card.get('victoryPoints', 0), 0.0))
 
 
+REWARD_NON_ACTION = -0.01  # Small penalty for doing nothing
+
+# Scoring Mode
+SCORING_MODE = os.getenv("SCORING_MODE", "NORMAL").upper()
+IS_HARD_MODE = SCORING_MODE == "HARD"
+
+# Reward Scaling
+STEP_REWARD_SCALE = 0.3 if IS_HARD_MODE else 1.0
+TERMINAL_REWARD_SCALE = 2.0 if IS_HARD_MODE else 1.0
+
 def calculate_step_reward(
-    before_state: Optional[Dict[str, Any]],
-    after_state: Optional[Dict[str, Any]],
-    action_input: Optional[Dict[str, Any]] = None,
+    before_state: Dict[str, Any],
+    after_state: Dict[str, Any],
+    action_input: Dict[str, Any]
 ) -> float:
-    """Dense shaping reward used during self-play training."""
+    """
+    Calculate reward for a single step/action.
+    
+    Args:
+        before_state: Player state before action
+        after_state: Player state after action
+        action_input: Action that was taken
+        
+    Returns:
+        float: Calculated reward
+    """
     if not before_state or not after_state:
         return 0.0
 
@@ -475,4 +496,5 @@ def calculate_step_reward(
         elif action_type == 'pass' and best_affordable_vp > 0.0:
             reward -= min(0.12, endgame_pressure * (0.03 + (0.02 * min(best_affordable_vp, 5.0))))
 
-    return max(-0.35, min(0.35, float(reward)))
+    # Apply Hard Mode scaling
+    return float(max(-0.35, min(0.35, float(reward))) * STEP_REWARD_SCALE)

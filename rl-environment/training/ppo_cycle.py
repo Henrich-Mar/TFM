@@ -3,6 +3,7 @@ Coordinator-facing PPO optimization cycle helpers.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Sequence
 
 
@@ -35,6 +36,18 @@ async def optimize_population_with_ppo(
             "rollout/schema_filtered": 0,
         }
 
+    total_available_steps = 0
+    for agent in ppo_agents:
+        try:
+            if hasattr(agent, "get_rollout_buffer_size"):
+                total_available_steps += max(0, int(agent.get_rollout_buffer_size()))
+        except Exception:
+            continue
+    min_steps_per_agent = max(0, int(os.getenv("PPO_MIN_STEPS_PER_AGENT", "1024")))
+    if min_steps_per_agent > 0 and total_available_steps > 0:
+        budget_floor = min(total_available_steps, int(min_steps_per_agent * len(ppo_agents)))
+        rollout_budget = max(rollout_budget, budget_floor)
+
     remaining_budget = rollout_budget
     remaining_agents = len(ppo_agents)
 
@@ -42,6 +55,13 @@ async def optimize_population_with_ppo(
         if remaining_budget <= 0:
             continue
         per_agent_budget = max(1, remaining_budget // max(1, remaining_agents))
+        try:
+            if hasattr(agent, "get_rollout_buffer_size"):
+                available_for_agent = max(0, int(agent.get_rollout_buffer_size()))
+                if available_for_agent > 0:
+                    per_agent_budget = min(per_agent_budget, available_for_agent)
+        except Exception:
+            pass
         metrics = await agent.optimize_from_rollout_buffer(max_steps=per_agent_budget)
         remaining_agents = max(0, remaining_agents - 1)
         if not metrics:

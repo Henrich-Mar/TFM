@@ -19,7 +19,7 @@ from collections import deque
 from game_interface import GameInstance, ServerTransportError
 from .state_encoder import StateEncoder
 from .action_decoder import ActionDecoder
-from scoring import calculate_terminal_reward, calculate_step_reward
+from scoring import calculate_terminal_reward, calculate_step_reward_decomposition
 import random
 import aiohttp
 
@@ -32,6 +32,8 @@ class AgentConfig:
     state_size: int = 512
     hidden_size: int = 256
     num_layers: int = 3
+    recurrent_size: int = 128
+    phase_head_count: int = 6
     learning_rate: float = 3e-4
     discount_factor: float = 0.99
     epsilon: float = 0.05  # Reduced for more policy-driven behavior
@@ -46,49 +48,135 @@ class AgentConfig:
 class TerraformingMarsNetwork(nn.Module):
     def __init__(self, config: AgentConfig):
         super().__init__()
-        
-        # State encoder - processes game state
+
+        self.action_dim = 1000
+        self.recurrent_size = max(16, int(config.recurrent_size))
+        self.phase_head_count = max(2, int(config.phase_head_count))
+
+        # Shared state encoder trunk.
         layers = []
-        # Input layer
         layers.append(nn.Linear(config.state_size, config.hidden_size))
         layers.append(nn.ReLU())
         layers.append(nn.Dropout(0.1))
-        
-        # Hidden layers
+
         for _ in range(max(1, config.num_layers - 2)):
             layers.append(nn.Linear(config.hidden_size, config.hidden_size))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(0.1))
-            
-        # Final shared layer before heads
+
         layers.append(nn.Linear(config.hidden_size, config.hidden_size))
         layers.append(nn.ReLU())
-        
+
         self.state_encoder = nn.Sequential(*layers)
-        
-        # Value head - estimates position value
+        self.recurrent_cell = nn.GRUCell(config.hidden_size, self.recurrent_size)
+        self.recurrent_to_hidden = nn.Linear(self.recurrent_size, config.hidden_size)
+        self.phase_embedding = nn.Embedding(self.phase_head_count, config.hidden_size)
+
+        # Phase-specific policy heads.
+        self.policy_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(config.hidden_size, config.hidden_size),
+                nn.ReLU(),
+                nn.Linear(config.hidden_size, self.action_dim),
+            )
+            for _ in range(self.phase_head_count)
+        ])
+
+        # Scalar value head.
         self.value_head = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size // 2),
             nn.ReLU(),
             nn.Linear(config.hidden_size // 2, 1),
             nn.Tanh()
         )
-        
-        # Action policy head - outputs action probabilities
-        self.policy_head = nn.Sequential(
-            nn.Linear(config.hidden_size, config.hidden_size),
+
+        # Auxiliary targets:
+        # [milestone_claimability, award_ev, playable_cards, steel_target, titanium_target]
+        self.aux_head = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size // 2),
             nn.ReLU(),
-            nn.Linear(config.hidden_size, 1000),  # Large action space
+            nn.Linear(config.hidden_size // 2, 5),
         )
-        
-    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass: return policy and value"""
-        x = self.state_encoder(state)
-        
-        value = self.value_head(x)
-        policy_logits = self.policy_head(x)
-        
-        return policy_logits, value
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        phase_indices: Optional[torch.Tensor] = None,
+        recurrent_state: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Forward pass with phase-conditioned policy, recurrent memory, and auxiliary heads."""
+        shared = self.state_encoder(state)
+        batch_size = int(shared.shape[0])
+        device = shared.device
+
+        if recurrent_state is None:
+            recurrent_state = torch.zeros((batch_size, self.recurrent_size), dtype=shared.dtype, device=device)
+        else:
+            recurrent_state = recurrent_state.to(device=device, dtype=shared.dtype)
+            if recurrent_state.dim() == 1:
+                recurrent_state = recurrent_state.unsqueeze(0)
+            if int(recurrent_state.shape[0]) != batch_size:
+                recurrent_state = recurrent_state[:1].repeat(batch_size, 1)
+            if int(recurrent_state.shape[1]) < self.recurrent_size:
+                padded = torch.zeros((batch_size, self.recurrent_size), dtype=shared.dtype, device=device)
+                padded[:, :int(recurrent_state.shape[1])] = recurrent_state
+                recurrent_state = padded
+            elif int(recurrent_state.shape[1]) > self.recurrent_size:
+                recurrent_state = recurrent_state[:, :self.recurrent_size]
+
+        recurrent_out = self.recurrent_cell(shared, recurrent_state)
+        recurrent_context = torch.tanh(self.recurrent_to_hidden(recurrent_out))
+        fused = shared + recurrent_context
+
+        if phase_indices is None:
+            phase_indices = torch.zeros((batch_size,), dtype=torch.long, device=device)
+        else:
+            phase_indices = phase_indices.to(device=device, dtype=torch.long).reshape(-1)
+            if int(phase_indices.shape[0]) != batch_size:
+                phase_indices = phase_indices[:1].repeat(batch_size)
+        phase_indices = torch.clamp(phase_indices, 0, self.phase_head_count - 1)
+
+        phase_bias = self.phase_embedding(phase_indices)
+        policy_input = fused + phase_bias
+
+        all_phase_logits = torch.stack([head(policy_input) for head in self.policy_heads], dim=1)
+        gather_idx = phase_indices.view(batch_size, 1, 1).expand(-1, 1, self.action_dim)
+        policy_logits = all_phase_logits.gather(1, gather_idx).squeeze(1)
+
+        value = self.value_head(fused)
+        aux_predictions = torch.sigmoid(self.aux_head(fused))
+
+        return {
+            "policy_logits": policy_logits,
+            "value": value,
+            "recurrent_state": recurrent_out,
+            "aux_predictions": aux_predictions,
+        }
+
+
+def _normalize_network_output(raw_output: Any) -> Dict[str, Optional[torch.Tensor]]:
+    if isinstance(raw_output, dict):
+        policy_logits = raw_output.get("policy_logits")
+        value = raw_output.get("value")
+        recurrent_state = raw_output.get("recurrent_state")
+        aux_predictions = raw_output.get("aux_predictions")
+    elif isinstance(raw_output, (tuple, list)) and len(raw_output) >= 2:
+        policy_logits = raw_output[0]
+        value = raw_output[1]
+        recurrent_state = raw_output[2] if len(raw_output) > 2 else None
+        aux_predictions = raw_output[3] if len(raw_output) > 3 else None
+    else:
+        raise ValueError("Unsupported network output format")
+
+    if policy_logits is None or value is None:
+        raise ValueError("Network output missing policy/value tensors")
+
+    return {
+        "policy_logits": policy_logits,
+        "value": value,
+        "recurrent_state": recurrent_state,
+        "aux_predictions": aux_predictions,
+    }
 # Removed conflicting Agent class - using RLAgent instead
         
 class RLAgent:
@@ -146,9 +234,20 @@ class RLAgent:
             minibatch_size=self._safe_env_int("PPO_MINIBATCH_SIZE", 1024),
             entropy_coef=self._safe_env_float("PPO_ENTROPY_COEF", 0.01),
             value_coef=self._safe_env_float("PPO_VALUE_COEF", 0.5),
+            aux_coef=self._safe_env_float("PPO_AUX_COEF", 0.1),
             max_grad_norm=self._safe_env_float("PPO_MAX_GRAD_NORM", 1.0),
             target_kl=self._safe_env_float("PPO_TARGET_KL", 0.02),
         )
+        self.reward_shaping_initial_coef = max(0.0, self._safe_env_float("PPO_SHAPING_INITIAL_COEF", 1.0))
+        self.reward_shaping_final_coef = max(0.0, self._safe_env_float("PPO_SHAPING_FINAL_COEF", 0.0))
+        self.reward_shaping_anneal_games = max(1, self._safe_env_int("PPO_SHAPING_ANNEAL_GAMES", 1200))
+        self.rare_state_priority_bonus = max(0.0, self._safe_env_float("PPO_RARE_STATE_PRIORITY_BONUS", 0.9))
+        self.rare_high_cost_payment_threshold = max(1.0, self._safe_env_float("PPO_RARE_HIGH_COST_PAYMENT_THRESHOLD", 20.0))
+        self.reward_tr_weight = self._safe_env_float("PPO_SHAPING_TR_WEIGHT", 1.0)
+        self.reward_cards_vp_weight = self._safe_env_float("PPO_SHAPING_CARDS_VP_WEIGHT", 1.0)
+        self.reward_city_greenery_weight = self._safe_env_float("PPO_SHAPING_CITY_GREENERY_WEIGHT", 1.0)
+        self.reward_milestones_awards_weight = self._safe_env_float("PPO_SHAPING_MILESTONES_AWARDS_WEIGHT", 1.0)
+        self.reward_other_weight = self._safe_env_float("PPO_SHAPING_OTHER_WEIGHT", 0.5)
         self.rollout_buffer: deque[PPORolloutStep] = deque(maxlen=max(1, int(self.ppo_buffer_max_steps)))
         self.poll_interval_sec = float(os.getenv("AGENT_POLL_INTERVAL_SEC", "0.2"))
         self.post_move_sleep_sec = float(os.getenv("AGENT_POST_MOVE_SLEEP_SEC", "0.0"))
@@ -157,6 +256,7 @@ class RLAgent:
         self._last_stuck_log_by_player: Dict[str, float] = {}
         self._rejected_actions_by_prompt: Dict[str, set[int]] = {}
         self._rejected_action_prompt_order: deque[str] = deque()
+        self._recurrent_hidden_by_player: Dict[str, torch.Tensor] = {}
         
         # Performance tracking
         self.games_played = 0
@@ -181,10 +281,19 @@ class RLAgent:
             'card_play_actions': 0,
             'steel_spent': 0,
             'titanium_spent': 0,
+            'project_payment_value_total': 0.0,
+            'metal_payment_value_total': 0.0,
+            'steel_payment_value_total': 0.0,
+            'titanium_payment_value_total': 0.0,
             'action_mask_observations': 0,
             'action_legal_count_total': 0,
             'action_rejected_by_server': 0,
             'policy_actions_blocked_by_reject_cache': 0,
+            'rare_state_samples': 0,
+            'rare_award_funding': 0,
+            'rare_milestone_timing': 0,
+            'rare_draft_keep_buy': 0,
+            'rare_high_cost_payment': 0,
         }
 
     @staticmethod
@@ -200,6 +309,199 @@ class RLAgent:
             return int(os.getenv(name, str(default)))
         except Exception:
             return int(default)
+
+    def _forward_network(
+        self,
+        state_tensor: torch.Tensor,
+        phase_indices: Optional[torch.Tensor] = None,
+        recurrent_state: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Optional[torch.Tensor]]:
+        try:
+            raw = self.network(state_tensor, phase_indices=phase_indices, recurrent_state=recurrent_state)
+        except TypeError:
+            raw = self.network(state_tensor)
+        return _normalize_network_output(raw)
+
+    def _zero_recurrent_state(self) -> torch.Tensor:
+        recurrent_size = max(1, int(getattr(self.network, "recurrent_size", max(16, self.config.hidden_size // 2))))
+        return torch.zeros((recurrent_size,), dtype=torch.float32)
+
+    def _get_recurrent_state_for_player(self, player_id: Optional[str]) -> torch.Tensor:
+        if not player_id:
+            return self._zero_recurrent_state()
+        cached = self._recurrent_hidden_by_player.get(str(player_id))
+        if isinstance(cached, torch.Tensor):
+            return cached.detach().clone().float().reshape(-1)
+        return self._zero_recurrent_state()
+
+    def _set_recurrent_state_for_player(self, player_id: Optional[str], recurrent_state: Any) -> None:
+        if not player_id:
+            return
+        if recurrent_state is None:
+            self._recurrent_hidden_by_player.pop(str(player_id), None)
+            return
+        if isinstance(recurrent_state, torch.Tensor):
+            vec = recurrent_state.detach().cpu().float().reshape(-1)
+        else:
+            try:
+                vec = torch.tensor(np.asarray(recurrent_state, dtype=np.float32).reshape(-1), dtype=torch.float32)
+            except Exception:
+                return
+        self._recurrent_hidden_by_player[str(player_id)] = vec
+
+    def _clear_recurrent_state_for_player(self, player_id: Optional[str]) -> None:
+        if player_id:
+            self._recurrent_hidden_by_player.pop(str(player_id), None)
+
+    def _extract_phase_index(self, player_state: Optional[Dict[str, Any]]) -> int:
+        phase = ""
+        if isinstance(player_state, dict):
+            game = player_state.get("game", {}) or {}
+            phase = str(game.get("phase", "") or "").strip().lower()
+        phase_map = {
+            "research": 0,
+            "drafting": 1,
+            "action": 2,
+            "production": 3,
+            "solar": 4,
+        }
+        return int(phase_map.get(phase, 5))
+
+    def _project_award_points_for_color(self, scores: List[Dict[str, Any]], own_color: str) -> float:
+        if not scores or not own_color:
+            return 0.0
+        own_color_l = str(own_color).strip().lower()
+        normalized: List[Tuple[str, float]] = []
+        for row in scores:
+            if not isinstance(row, dict):
+                continue
+            color = str(row.get("playerColor", "") or "").strip().lower()
+            if not color:
+                continue
+            try:
+                score = float(row.get("playerScore", 0) or 0)
+            except Exception:
+                score = 0.0
+            normalized.append((color, score))
+        if not normalized:
+            return 0.0
+        normalized.sort(key=lambda pair: pair[1], reverse=True)
+        top_score = normalized[0][1]
+        top_colors = [color for color, score in normalized if score == top_score]
+        if own_color_l in top_colors:
+            return 5.0
+        if len(top_colors) > 1:
+            return 0.0
+        remaining = normalized[len(top_colors):]
+        if not remaining:
+            return 0.0
+        second_score = remaining[0][1]
+        second_colors = [color for color, score in remaining if score == second_score]
+        if own_color_l in second_colors:
+            return 2.0
+        return 0.0
+
+    def _compute_aux_targets(self, player_state: Optional[Dict[str, Any]]) -> Dict[str, float]:
+        targets = {
+            "milestone_claimability": 0.0,
+            "award_ev": 0.0,
+            "playable_cards": 0.0,
+            "steel_target": 0.0,
+            "titanium_target": 0.0,
+        }
+        if not isinstance(player_state, dict):
+            return targets
+
+        game = player_state.get("game", {}) or {}
+        player = player_state.get("thisPlayer", {}) or {}
+        own_color = str(player.get("color", "") or "").strip().lower()
+
+        # Milestone claimability proxy from open milestone score previews.
+        best_open_ratio = 0.0
+        for milestone in game.get("milestones", []) or []:
+            if not isinstance(milestone, dict):
+                continue
+            if milestone.get("playerName"):
+                continue
+            scores = [row for row in (milestone.get("scores", []) or []) if isinstance(row, dict)]
+            if not scores:
+                continue
+            own_score = 0.0
+            max_score = 0.0
+            for row in scores:
+                try:
+                    score = float(row.get("playerScore", 0) or 0)
+                except Exception:
+                    score = 0.0
+                max_score = max(max_score, score)
+                if own_color and str(row.get("playerColor", "") or "").strip().lower() == own_color:
+                    own_score = score
+            if max_score > 0:
+                best_open_ratio = max(best_open_ratio, min(own_score / max_score, 1.0))
+        targets["milestone_claimability"] = float(max(0.0, min(best_open_ratio, 1.0)))
+
+        # Award EV proxy from currently funded awards.
+        award_points = 0.0
+        for award in game.get("awards", []) or []:
+            if not isinstance(award, dict):
+                continue
+            if not award.get("playerName"):
+                continue
+            scores = [row for row in (award.get("scores", []) or []) if isinstance(row, dict)]
+            award_points += self._project_award_points_for_color(scores, own_color)
+        targets["award_ev"] = float(max(0.0, min(award_points / 15.0, 1.0)))
+
+        waiting_for = player_state.get("waitingFor", {}) or {}
+        prompt_cards = waiting_for.get("cards", []) if isinstance(waiting_for, dict) else []
+        hand_cards = player_state.get("cardsInHand", []) or []
+        if isinstance(prompt_cards, list) and prompt_cards:
+            cards_source = [c for c in prompt_cards if isinstance(c, dict)]
+        else:
+            cards_source = [c for c in hand_cards if isinstance(c, dict)]
+
+        mc = float(player.get("megaCredits", 0) or 0)
+        steel = float(player.get("steel", 0) or 0)
+        titanium = float(player.get("titanium", 0) or 0)
+        steel_prod = float(player.get("steelProduction", 0) or 0)
+        titanium_prod = float(player.get("titaniumProduction", 0) or 0)
+        steel_value = float(player.get("steelValue", 2) or 2)
+        titanium_value = float(player.get("titaniumValue", 3) or 3)
+
+        playable_now = 0
+        building_opps = 0
+        space_opps = 0
+        for card in cards_source:
+            card_name = str(card.get("name", "") or "")
+            tags = {}
+            try:
+                tags = self.state_encoder._get_card_tags(card_name, fallback=card.get("tags", {}))
+            except Exception:
+                tags = {}
+            try:
+                card_cost = float(card.get("calculatedCost", card.get("cost", 0)) or 0)
+            except Exception:
+                card_cost = 0.0
+
+            purchasing_power = mc
+            if tags.get("Building", 0):
+                purchasing_power += steel * steel_value
+                building_opps += 1
+            if tags.get("Space", 0):
+                purchasing_power += titanium * titanium_value
+                space_opps += 1
+            if card_cost <= 0.0 or purchasing_power >= card_cost:
+                playable_now += 1
+
+        targets["playable_cards"] = float(max(0.0, min(float(playable_now) / 10.0, 1.0)))
+
+        pool_count = float(max(1, len(cards_source)))
+        building_ratio = float(building_opps) / pool_count
+        space_ratio = float(space_opps) / pool_count
+        steel_liquidity = min(((steel * steel_value) + (max(steel_prod, 0.0) * steel_value * 2.0)) / 80.0, 1.0)
+        titanium_liquidity = min(((titanium * titanium_value) + (max(titanium_prod, 0.0) * titanium_value * 2.0)) / 90.0, 1.0)
+        targets["steel_target"] = float(max(0.0, min(steel_liquidity * (0.25 + 0.75 * building_ratio), 1.0)))
+        targets["titanium_target"] = float(max(0.0, min(titanium_liquidity * (0.25 + 0.75 * space_ratio), 1.0)))
+        return targets
 
     def _exploration_progress(self) -> float:
         games = max(0, int(self.games_played))
@@ -341,6 +643,7 @@ class RLAgent:
         try:
             # Join the game
             player_id = await game_instance.join_player(player_name)
+            self._set_recurrent_state_for_player(player_id, self._zero_recurrent_state())
             logger.info(f"Agent {self.id[:8]} joined game as {player_name} (ID: {player_id})")
             logger.info(
                 "Agent %s debug links: game=%s player_api(public)=%s player_api(internal)=%s",
@@ -391,6 +694,11 @@ class RLAgent:
         except Exception as e:
             logger.error(f"Agent {self.id[:8]} failed during game: {e}")
             raise
+        finally:
+            try:
+                self._clear_recurrent_state_for_player(locals().get("player_id"))
+            except Exception:
+                pass
 
     async def _sleep_if_needed(self, seconds: float):
         delay = max(0.0, float(seconds or 0.0))
@@ -514,20 +822,66 @@ class RLAgent:
                     if policy_action_idx is not None:
                         self._record_action_choice(int(policy_action_idx), policy_action, player_state)
                         self._clear_rejected_action(player_id, player_state, int(policy_action_idx))
+                    if action_meta is not None:
+                        self._set_recurrent_state_for_player(
+                            player_id,
+                            action_meta.get("recurrent_state_out"),
+                        )
                     logger.info(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
                     if sampled_from_policy and policy_action_idx is not None:
+                        if action_meta is not None:
+                            rare_award = float(action_meta.get("rare_award_funding", 0.0))
+                            rare_milestone = float(action_meta.get("rare_milestone_timing", 0.0))
+                            rare_draft = float(action_meta.get("rare_draft_keep_buy", 0.0))
+                            rare_high_cost = float(action_meta.get("rare_high_cost_payment", 0.0))
+                            if (rare_award + rare_milestone + rare_draft + rare_high_cost) > 0.0:
+                                self._bump_decision_stat('rare_state_samples')
+                            if rare_award > 0.0:
+                                self._bump_decision_stat('rare_award_funding')
+                            if rare_milestone > 0.0:
+                                self._bump_decision_stat('rare_milestone_timing')
+                            if rare_draft > 0.0:
+                                self._bump_decision_stat('rare_draft_keep_buy')
+                            if rare_high_cost > 0.0:
+                                self._bump_decision_stat('rare_high_cost_payment')
                         if len(episode_steps) < self.config.max_episode_steps:
                             step_reward = 0.0
+                            reward_tr_component = 0.0
+                            reward_cards_vp_component = 0.0
+                            reward_city_greenery_component = 0.0
+                            reward_milestones_awards_component = 0.0
+                            reward_other_component = 0.0
+                            reward_shaping_coef = self._current_reward_shaping_coef()
                             if self.train_from_self_play:
                                 try:
                                     post_action_state = await game_instance.get_player_state(player_id)
                                 except Exception:
                                     post_action_state = None
-                                step_reward = calculate_step_reward(
+                                reward_breakdown = calculate_step_reward_decomposition(
                                     before_state=player_state,
                                     after_state=post_action_state,
                                     action_input=policy_action,
                                 )
+                                step_reward_scale = float(reward_breakdown.get("step_reward_scale", 1.0))
+                                weighted_tr = float(self.reward_tr_weight) * float(reward_breakdown.get("tr_component", 0.0))
+                                weighted_cards_vp = float(self.reward_cards_vp_weight) * float(reward_breakdown.get("cards_vp_component", 0.0))
+                                weighted_city_greenery = float(self.reward_city_greenery_weight) * float(reward_breakdown.get("city_greenery_component", 0.0))
+                                weighted_milestones_awards = float(self.reward_milestones_awards_weight) * float(reward_breakdown.get("milestones_awards_component", 0.0))
+                                weighted_other = float(self.reward_other_weight) * float(reward_breakdown.get("other_component", 0.0))
+                                weighted_raw = (
+                                    weighted_tr
+                                    + weighted_cards_vp
+                                    + weighted_city_greenery
+                                    + weighted_milestones_awards
+                                    + weighted_other
+                                )
+                                weighted_scaled = max(-0.35, min(0.35, weighted_raw)) * step_reward_scale
+                                step_reward = float(reward_shaping_coef * weighted_scaled)
+                                reward_tr_component = float(weighted_tr * step_reward_scale)
+                                reward_cards_vp_component = float(weighted_cards_vp * step_reward_scale)
+                                reward_city_greenery_component = float(weighted_city_greenery * step_reward_scale)
+                                reward_milestones_awards_component = float(weighted_milestones_awards * step_reward_scale)
+                                reward_other_component = float(weighted_other * step_reward_scale)
                             if action_meta is not None:
                                 episode_steps.append(
                                     {
@@ -537,6 +891,21 @@ class RLAgent:
                                         "logp_old": float(action_meta.get("logp_old", 0.0)),
                                         "value_old": float(action_meta.get("value_old", 0.0)),
                                         "legal_actions": list(action_meta.get("legal_actions", [])),
+                                        "phase_index": int(action_meta.get("phase_index", 0)),
+                                        "recurrent_state": list(action_meta.get("recurrent_state", [])),
+                                        "aux_targets": dict(action_meta.get("aux_targets", {})),
+                                        "aux_predictions": list(action_meta.get("aux_predictions", [])),
+                                        "rare_state_weight": float(action_meta.get("rare_state_weight", 1.0)),
+                                        "rare_award_funding": float(action_meta.get("rare_award_funding", 0.0)),
+                                        "rare_milestone_timing": float(action_meta.get("rare_milestone_timing", 0.0)),
+                                        "rare_draft_keep_buy": float(action_meta.get("rare_draft_keep_buy", 0.0)),
+                                        "rare_high_cost_payment": float(action_meta.get("rare_high_cost_payment", 0.0)),
+                                        "reward_tr_component": float(reward_tr_component),
+                                        "reward_cards_vp_component": float(reward_cards_vp_component),
+                                        "reward_city_greenery_component": float(reward_city_greenery_component),
+                                        "reward_milestones_awards_component": float(reward_milestones_awards_component),
+                                        "reward_other_component": float(reward_other_component),
+                                        "reward_shaping_coef": float(reward_shaping_coef),
                                     }
                                 )
                     await self._sleep_if_needed(self.post_move_sleep_sec)
@@ -715,6 +1084,158 @@ class RLAgent:
     def _bump_decision_stat(self, key: str, amount: int = 1):
         self.decision_stats[key] = int(self.decision_stats.get(key, 0)) + int(amount)
 
+    def _bump_decision_stat_float(self, key: str, amount: float = 0.0):
+        current = float(self.decision_stats.get(key, 0.0) or 0.0)
+        self.decision_stats[key] = float(current + float(amount))
+
+    @staticmethod
+    def _iter_action_payloads(action_input: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not isinstance(action_input, dict):
+            return []
+        payloads: List[Dict[str, Any]] = []
+        stack: List[Dict[str, Any]] = [action_input]
+        while stack:
+            payload = stack.pop()
+            if not isinstance(payload, dict):
+                continue
+            payloads.append(payload)
+            nested_response = payload.get('response')
+            if isinstance(nested_response, dict):
+                stack.append(nested_response)
+            nested_responses = payload.get('responses')
+            if isinstance(nested_responses, list):
+                for item in nested_responses:
+                    if isinstance(item, dict):
+                        stack.append(item)
+        return payloads
+
+    def _current_reward_shaping_coef(self) -> float:
+        initial = max(0.0, float(self.reward_shaping_initial_coef))
+        final = max(0.0, float(self.reward_shaping_final_coef))
+        anneal_games = max(1, int(self.reward_shaping_anneal_games))
+        progress = max(0.0, min(1.0, float(self.games_played) / float(anneal_games)))
+        return float(initial + ((final - initial) * progress))
+
+    @staticmethod
+    def _normalize_text(value: Any) -> str:
+        if isinstance(value, dict):
+            value = value.get("message", "")
+        return str(value or "").strip().lower()
+
+    def _estimate_payment_values(
+        self,
+        payment: Optional[Dict[str, Any]],
+        player_state: Optional[Dict[str, Any]],
+    ) -> Dict[str, float]:
+        if not isinstance(payment, dict):
+            return {
+                "steel_units": 0.0,
+                "titanium_units": 0.0,
+                "mc_units": 0.0,
+                "steel_value_spent": 0.0,
+                "titanium_value_spent": 0.0,
+                "metal_value_spent": 0.0,
+                "total_value_spent": 0.0,
+            }
+        player = {}
+        if isinstance(player_state, dict):
+            player = player_state.get("thisPlayer", {}) or {}
+        steel_value = float(player.get("steelValue", 2) or 2)
+        titanium_value = float(player.get("titaniumValue", 3) or 3)
+        try:
+            steel_units = float(payment.get("steel", 0) or 0)
+        except Exception:
+            steel_units = 0.0
+        try:
+            titanium_units = float(payment.get("titanium", 0) or 0)
+        except Exception:
+            titanium_units = 0.0
+        mc_units = 0.0
+        for key in ("megaCredits", "megacredits", "mega_credit", "mc", "credits"):
+            if key in payment:
+                try:
+                    mc_units += float(payment.get(key, 0) or 0)
+                except Exception:
+                    continue
+        steel_value_spent = max(0.0, steel_units) * max(0.0, steel_value)
+        titanium_value_spent = max(0.0, titanium_units) * max(0.0, titanium_value)
+        metal_value_spent = steel_value_spent + titanium_value_spent
+        total_value_spent = metal_value_spent + max(0.0, mc_units)
+        return {
+            "steel_units": float(max(0.0, steel_units)),
+            "titanium_units": float(max(0.0, titanium_units)),
+            "mc_units": float(max(0.0, mc_units)),
+            "steel_value_spent": float(steel_value_spent),
+            "titanium_value_spent": float(titanium_value_spent),
+            "metal_value_spent": float(metal_value_spent),
+            "total_value_spent": float(total_value_spent),
+        }
+
+    def _estimate_action_payment_value(
+        self,
+        action_input: Optional[Dict[str, Any]],
+        player_state: Optional[Dict[str, Any]],
+    ) -> float:
+        total = 0.0
+        for payload in self._iter_action_payloads(action_input):
+            payment_summary = self._estimate_payment_values(payload.get("payment"), player_state)
+            total += float(payment_summary.get("total_value_spent", 0.0))
+        return float(total)
+
+    def _infer_rare_state_flags(
+        self,
+        player_state: Optional[Dict[str, Any]],
+        action_input: Optional[Dict[str, Any]],
+    ) -> Dict[str, float]:
+        waiting_for = {}
+        if isinstance(player_state, dict):
+            waiting_for = player_state.get("waitingFor", {}) or {}
+        waiting_type = self._normalize_text(waiting_for.get("type", ""))
+        waiting_title = self._normalize_text(waiting_for.get("title", ""))
+        option_text = " ".join(
+            self._normalize_text((opt or {}).get("title", ""))
+            for opt in (waiting_for.get("options", []) or [])
+            if isinstance(opt, dict)
+        )
+        action_text = self._normalize_text((action_input or {}).get("type", ""))
+        combined = " ".join([waiting_type, waiting_title, option_text, action_text]).strip()
+
+        is_award_funding = (
+            ("award" in combined and "fund" in combined)
+            or action_text in ("fundaward", "fund_award", "award")
+            or waiting_type in ("fundaward", "award")
+        )
+        is_milestone_timing = (
+            ("milestone" in combined and ("claim" in combined or "fund" in combined))
+            or action_text in ("claimmilestone", "milestone")
+            or waiting_type in ("milestone", "claimmilestone")
+        )
+        is_draft_keep_buy = (
+            waiting_type in ("initialcards", "selectinitialcards", "draft", "draftcards")
+            or ("draft" in combined)
+            or ("keep" in combined and "card" in combined)
+            or ("buy" in combined and "card" in combined)
+        )
+        payment_value = self._estimate_action_payment_value(action_input, player_state)
+        is_high_cost_payment = payment_value >= float(self.rare_high_cost_payment_threshold)
+
+        rare_count = (
+            int(is_award_funding)
+            + int(is_milestone_timing)
+            + int(is_draft_keep_buy)
+            + int(is_high_cost_payment)
+        )
+        weight = 1.0 + (float(self.rare_state_priority_bonus) * float(rare_count))
+        return {
+            "award_funding": 1.0 if is_award_funding else 0.0,
+            "milestone_timing": 1.0 if is_milestone_timing else 0.0,
+            "draft_keep_buy": 1.0 if is_draft_keep_buy else 0.0,
+            "high_cost_payment": 1.0 if is_high_cost_payment else 0.0,
+            "weight": float(max(1.0, weight)),
+            "payment_value": float(payment_value),
+            "rare_count": float(rare_count),
+        }
+
     def _categorize_action(self, action_index: int) -> str:
         pass_base = int(self.action_decoder.action_types.get('PASS', 900))
         mask_base = int(self.action_decoder.action_types.get('SELECT_CARD_MASK', -1))
@@ -826,9 +1347,7 @@ class RLAgent:
         if not isinstance(action_input, dict):
             return
 
-        stack: List[Dict[str, Any]] = [action_input]
-        while stack:
-            payload = stack.pop()
+        for payload in self._iter_action_payloads(action_input):
             if not isinstance(payload, dict):
                 continue
 
@@ -849,19 +1368,23 @@ class RLAgent:
                     titanium_units = int(payment.get('titanium', 0) or 0)
                 except Exception:
                     titanium_units = 0
+                payment_summary = self._estimate_payment_values(payment, player_state)
+                payment_total = float(payment_summary.get("total_value_spent", 0.0))
+                metal_total = float(payment_summary.get("metal_value_spent", 0.0))
+                if payment_total > 0.0:
+                    self._bump_decision_stat_float('project_payment_value_total', payment_total)
+                if metal_total > 0.0:
+                    self._bump_decision_stat_float('metal_payment_value_total', metal_total)
+                steel_value_spent = float(payment_summary.get("steel_value_spent", 0.0))
+                titanium_value_spent = float(payment_summary.get("titanium_value_spent", 0.0))
+                if steel_value_spent > 0.0:
+                    self._bump_decision_stat_float('steel_payment_value_total', steel_value_spent)
+                if titanium_value_spent > 0.0:
+                    self._bump_decision_stat_float('titanium_payment_value_total', titanium_value_spent)
                 if steel_units > 0:
                     self._bump_decision_stat('steel_spent', steel_units)
                 if titanium_units > 0:
                     self._bump_decision_stat('titanium_spent', titanium_units)
-
-            nested_response = payload.get('response')
-            if isinstance(nested_response, dict):
-                stack.append(nested_response)
-            nested_responses = payload.get('responses')
-            if isinstance(nested_responses, list):
-                for item in nested_responses:
-                    if isinstance(item, dict):
-                        stack.append(item)
     
     async def _get_action_from_network(
         self,
@@ -874,9 +1397,21 @@ class RLAgent:
         try:
             # Convert to tensor
             state_tensor = torch.FloatTensor(state_vector).unsqueeze(0)
-             
+            phase_index = int(self._extract_phase_index(player_state))
+            phase_tensor = torch.tensor([phase_index], dtype=torch.long)
+            recurrent_state_in = self._get_recurrent_state_for_player(player_id)
+            recurrent_state_tensor = recurrent_state_in.unsqueeze(0)
+
             with torch.no_grad():
-                policy_logits, value = self.network(state_tensor)
+                out = self._forward_network(
+                    state_tensor,
+                    phase_indices=phase_tensor,
+                    recurrent_state=recurrent_state_tensor,
+                )
+                policy_logits = out["policy_logits"]
+                value = out["value"]
+                recurrent_state_out = out.get("recurrent_state")
+                aux_predictions = out.get("aux_predictions")
 
                 # Use decayed/capped exploration temperature for action selection.
                 policy_temperature = self._effective_policy_temperature()
@@ -1007,15 +1542,33 @@ class RLAgent:
              
             # Convert to game input
             action_input = self.action_decoder.decode_action(action_index, player_state)
-            action_meta: Optional[Dict[str, Any]] = None
+            aux_targets = self._compute_aux_targets(player_state)
+            rare_flags = self._infer_rare_state_flags(player_state, action_input)
+            recurrent_out_vec: List[float] = []
+            if isinstance(recurrent_state_out, torch.Tensor):
+                recurrent_out_vec = recurrent_state_out.detach().cpu().reshape(-1).tolist()
+            aux_pred_vec: List[float] = []
+            if isinstance(aux_predictions, torch.Tensor):
+                aux_pred_vec = aux_predictions.detach().cpu().reshape(-1).tolist()
+            action_meta: Optional[Dict[str, Any]] = {
+                "phase_index": int(phase_index),
+                "recurrent_state": recurrent_state_in.detach().cpu().reshape(-1).tolist(),
+                "recurrent_state_out": recurrent_out_vec,
+                "aux_targets": aux_targets,
+                "aux_predictions": aux_pred_vec,
+                "rare_state_weight": float(rare_flags.get("weight", 1.0)),
+                "rare_award_funding": float(rare_flags.get("award_funding", 0.0)),
+                "rare_milestone_timing": float(rare_flags.get("milestone_timing", 0.0)),
+                "rare_draft_keep_buy": float(rare_flags.get("draft_keep_buy", 0.0)),
+                "rare_high_cost_payment": float(rare_flags.get("high_cost_payment", 0.0)),
+                "payment_value_estimate": float(rare_flags.get("payment_value", 0.0)),
+            }
             if sampled_from_policy and sampled_distribution is not None:
                 action_prob = float(sampled_distribution[int(action_index)].item())
-                action_meta = {
-                    "logp_old": float(np.log(max(1e-8, action_prob))),
-                    "value_old": float(value.squeeze().item()),
-                    "legal_actions": [int(a) for a in available_actions],
-                    "policy_temperature": float(policy_temperature),
-                }
+                action_meta["logp_old"] = float(np.log(max(1e-8, action_prob)))
+                action_meta["value_old"] = float(value.squeeze().item())
+                action_meta["legal_actions"] = [int(a) for a in available_actions]
+                action_meta["policy_temperature"] = float(policy_temperature)
 
             return action_input, action_index, sampled_from_policy, action_meta
              
@@ -1201,6 +1754,12 @@ class RLAgent:
                 reward = float(step.get("reward", 0.0))
                 if idx == len(steps) - 1:
                     reward += float(terminal_reward)
+                aux_raw = step.get("aux_targets", {})
+                if not isinstance(aux_raw, dict):
+                    aux_raw = {}
+                aux_pred_raw = list(step.get("aux_predictions", []) or [])
+                while len(aux_pred_raw) < 5:
+                    aux_pred_raw.append(0.0)
                 rollout_steps.append(
                     PPORolloutStep(
                         state=state_vector,
@@ -1210,6 +1769,29 @@ class RLAgent:
                         reward=reward,
                         done=(idx == len(steps) - 1),
                         legal_actions=[int(a) for a in step.get("legal_actions", [])],
+                        phase_index=int(step.get("phase_index", 0)),
+                        recurrent_state=np.asarray(step.get("recurrent_state", []), dtype=np.float32).reshape(-1),
+                        aux_milestone_claimability=float(aux_raw.get("milestone_claimability", 0.0)),
+                        aux_award_ev=float(aux_raw.get("award_ev", 0.0)),
+                        aux_playable_cards=float(aux_raw.get("playable_cards", 0.0)),
+                        aux_steel_target=float(aux_raw.get("steel_target", 0.0)),
+                        aux_titanium_target=float(aux_raw.get("titanium_target", 0.0)),
+                        aux_pred_milestone_claimability=float(aux_pred_raw[0] or 0.0),
+                        aux_pred_award_ev=float(aux_pred_raw[1] or 0.0),
+                        aux_pred_playable_cards=float(aux_pred_raw[2] or 0.0),
+                        aux_pred_steel_target=float(aux_pred_raw[3] or 0.0),
+                        aux_pred_titanium_target=float(aux_pred_raw[4] or 0.0),
+                        rare_state_weight=float(step.get("rare_state_weight", 1.0) or 1.0),
+                        rare_award_funding=float(step.get("rare_award_funding", 0.0) or 0.0),
+                        rare_milestone_timing=float(step.get("rare_milestone_timing", 0.0) or 0.0),
+                        rare_draft_keep_buy=float(step.get("rare_draft_keep_buy", 0.0) or 0.0),
+                        rare_high_cost_payment=float(step.get("rare_high_cost_payment", 0.0) or 0.0),
+                        reward_tr_component=float(step.get("reward_tr_component", 0.0) or 0.0),
+                        reward_cards_vp_component=float(step.get("reward_cards_vp_component", 0.0) or 0.0),
+                        reward_city_greenery_component=float(step.get("reward_city_greenery_component", 0.0) or 0.0),
+                        reward_milestones_awards_component=float(step.get("reward_milestones_awards_component", 0.0) or 0.0),
+                        reward_other_component=float(step.get("reward_other_component", 0.0) or 0.0),
+                        reward_shaping_coef=float(step.get("reward_shaping_coef", 0.0) or 0.0),
                         state_schema_version=self.state_schema_version,
                     )
                 )
@@ -1321,10 +1903,32 @@ class RLAgent:
             steps = episode_steps[-max(1, self.config.max_episode_steps):]
             states = torch.from_numpy(np.stack([np.asarray(step.get("state"), dtype=np.float32) for step in steps], axis=0)).float()
             actions = torch.tensor([int(step.get("action", 0)) for step in steps], dtype=torch.long)
+            phase_indices = torch.tensor([int(step.get("phase_index", 0)) for step in steps], dtype=torch.long)
             step_rewards = [
                 float(step.get("reward", 0.0))
                 for step in steps
             ]
+            recurrent_states: Optional[torch.Tensor] = None
+            recurrent_dim = max(0, int(getattr(self.network, "recurrent_size", 0)))
+            if recurrent_dim > 0:
+                recurrent_states = torch.zeros((len(steps), recurrent_dim), dtype=torch.float32)
+                for row_idx, step in enumerate(steps):
+                    vec = np.asarray(step.get("recurrent_state", []), dtype=np.float32).reshape(-1)
+                    if vec.size <= 0:
+                        continue
+                    use = min(recurrent_dim, int(vec.size))
+                    recurrent_states[row_idx, :use] = torch.from_numpy(vec[:use])
+
+            aux_targets = torch.zeros((len(steps), 5), dtype=torch.float32)
+            for row_idx, step in enumerate(steps):
+                aux = step.get("aux_targets", {}) or {}
+                if not isinstance(aux, dict):
+                    aux = {}
+                aux_targets[row_idx, 0] = float(aux.get("milestone_claimability", 0.0))
+                aux_targets[row_idx, 1] = float(aux.get("award_ev", 0.0))
+                aux_targets[row_idx, 2] = float(aux.get("playable_cards", 0.0))
+                aux_targets[row_idx, 3] = float(aux.get("steel_target", 0.0))
+                aux_targets[row_idx, 4] = float(aux.get("titanium_target", 0.0))
 
             # Dense+terminal reward: back-propagate step shaping and final outcome.
             running_return = float(terminal_reward)
@@ -1338,7 +1942,14 @@ class RLAgent:
                 returns_t = (returns_t - returns_t.mean()) / (returns_t.std() + 1e-6)
 
             self.network.train()
-            policy_logits, values = self.network(states)
+            out = self._forward_network(
+                states,
+                phase_indices=phase_indices,
+                recurrent_state=recurrent_states,
+            )
+            policy_logits = out["policy_logits"]
+            values = out["value"]
+            aux_predictions = out.get("aux_predictions")
             policy_logits = policy_logits / max(float(self.config.temperature), 1e-3)
             log_probs = F.log_softmax(policy_logits, dim=-1)
             chosen_log_probs = log_probs.gather(1, actions.unsqueeze(1)).squeeze(1)
@@ -1353,9 +1964,14 @@ class RLAgent:
 
             policy_loss = -(chosen_log_probs * advantages).mean()
             value_loss = F.mse_loss(values, returns_t)
+            if aux_predictions is not None:
+                aux_loss = F.mse_loss(aux_predictions, aux_targets)
+            else:
+                aux_loss = torch.tensor(0.0, dtype=torch.float32, device=value_loss.device)
             total_loss = (
                 policy_loss
                 + float(self.config.value_loss_coef) * value_loss
+                + float(self.ppo_hparams.aux_coef) * aux_loss
                 - float(self.config.entropy_coef) * entropy
             )
 
@@ -1368,7 +1984,7 @@ class RLAgent:
             logger.info(
                 f"Agent {self.id[:8]} self-play update: "
                 f"steps={len(steps)}, reward={terminal_reward:.3f}, shaped_sum={sum(step_rewards):.3f}, "
-                f"policy_loss={policy_loss.item():.4f}, value_loss={value_loss.item():.4f}"
+                f"policy_loss={policy_loss.item():.4f}, value_loss={value_loss.item():.4f}, aux_loss={aux_loss.item():.4f}"
             )
     
     def get_fitness_score(self) -> float:
@@ -1401,6 +2017,15 @@ class RLAgent:
         card_play_actions = int(self.decision_stats.get('card_play_actions', 0))
         steel_spent = int(self.decision_stats.get('steel_spent', 0))
         titanium_spent = int(self.decision_stats.get('titanium_spent', 0))
+        project_payment_value_total = float(self.decision_stats.get('project_payment_value_total', 0.0) or 0.0)
+        metal_payment_value_total = float(self.decision_stats.get('metal_payment_value_total', 0.0) or 0.0)
+        steel_payment_value_total = float(self.decision_stats.get('steel_payment_value_total', 0.0) or 0.0)
+        titanium_payment_value_total = float(self.decision_stats.get('titanium_payment_value_total', 0.0) or 0.0)
+        rare_state_samples = int(self.decision_stats.get('rare_state_samples', 0))
+        rare_award_funding = int(self.decision_stats.get('rare_award_funding', 0))
+        rare_milestone_timing = int(self.decision_stats.get('rare_milestone_timing', 0))
+        rare_draft_keep_buy = int(self.decision_stats.get('rare_draft_keep_buy', 0))
+        rare_high_cost_payment = int(self.decision_stats.get('rare_high_cost_payment', 0))
         action_mask_observations = int(self.decision_stats.get('action_mask_observations', 0))
         action_legal_count_total = int(self.decision_stats.get('action_legal_count_total', 0))
         action_rejected_by_server = int(self.decision_stats.get('action_rejected_by_server', 0))
@@ -1447,6 +2072,19 @@ class RLAgent:
             'steel_spent_per_game': _ratio(steel_spent, int(self.games_played)),
             'titanium_spent': titanium_spent,
             'titanium_spent_per_game': _ratio(titanium_spent, int(self.games_played)),
+            'project_payment_value_total': float(project_payment_value_total),
+            'metal_payment_value_total': float(metal_payment_value_total),
+            'steel_payment_value_total': float(steel_payment_value_total),
+            'titanium_payment_value_total': float(titanium_payment_value_total),
+            'project_payment_value_per_game': (float(project_payment_value_total) / float(self.games_played)) if int(self.games_played) > 0 else 0.0,
+            'metal_payment_value_per_game': (float(metal_payment_value_total) / float(self.games_played)) if int(self.games_played) > 0 else 0.0,
+            'metal_conversion_efficiency': (float(metal_payment_value_total) / float(project_payment_value_total)) if project_payment_value_total > 0.0 else 0.0,
+            'rare_state_samples': rare_state_samples,
+            'rare_state_rate': _ratio(rare_state_samples, total_decisions),
+            'rare_award_funding': rare_award_funding,
+            'rare_milestone_timing': rare_milestone_timing,
+            'rare_draft_keep_buy': rare_draft_keep_buy,
+            'rare_high_cost_payment': rare_high_cost_payment,
             'action_legal_count_mean': _ratio(action_legal_count_total, action_mask_observations),
             'action_mask_coverage_rate': _ratio(action_mask_observations, total_decisions),
             'action_rejected_by_server': action_rejected_by_server,
@@ -1547,7 +2185,17 @@ class RLAgent:
         self.network = TerraformingMarsNetwork(self.config)
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
 
-        self.network.load_state_dict(checkpoint['network_state_dict'])
+        state_dict = checkpoint.get('network_state_dict', {}) or {}
+        load_result = self.network.load_state_dict(state_dict, strict=False)
+        missing = list(getattr(load_result, "missing_keys", []) or [])
+        unexpected = list(getattr(load_result, "unexpected_keys", []) or [])
+        if missing or unexpected:
+            logger.warning(
+                "Model load used non-strict mode for %s (missing=%d unexpected=%d)",
+                path,
+                len(missing),
+                len(unexpected),
+            )
 
         optimizer_state = checkpoint.get('optimizer_state_dict')
         if optimizer_state:

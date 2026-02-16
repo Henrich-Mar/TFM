@@ -340,39 +340,51 @@ IS_HARD_MODE = SCORING_MODE == "HARD"
 STEP_REWARD_SCALE = 0.3 if IS_HARD_MODE else 1.0
 TERMINAL_REWARD_SCALE = 2.0 if IS_HARD_MODE else 1.0
 
-def calculate_step_reward(
+def calculate_step_reward_decomposition(
     before_state: Dict[str, Any],
     after_state: Dict[str, Any],
-    action_input: Dict[str, Any]
-) -> float:
+    action_input: Dict[str, Any],
+) -> Dict[str, float]:
     """
-    Calculate reward for a single step/action.
-    
-    Args:
-        before_state: Player state before action
-        after_state: Player state after action
-        action_input: Action that was taken
-        
-    Returns:
-        float: Calculated reward
+    Return decomposed dense reward components used for value-shaping diagnostics.
     """
     if not before_state or not after_state:
-        return 0.0
+        return {
+            "tr_component": 0.0,
+            "cards_vp_component": 0.0,
+            "city_greenery_component": 0.0,
+            "milestones_awards_component": 0.0,
+            "other_component": 0.0,
+            "raw_total": 0.0,
+            "scaled_total": 0.0,
+        }
 
     before_player = _extract_player(before_state)
     after_player = _extract_player(after_state)
     before_game = _extract_game(before_state)
     after_game = _extract_game(after_state)
     if not before_player or not after_player:
-        return 0.0
+        return {
+            "tr_component": 0.0,
+            "cards_vp_component": 0.0,
+            "city_greenery_component": 0.0,
+            "milestones_awards_component": 0.0,
+            "other_component": 0.0,
+            "raw_total": 0.0,
+            "scaled_total": 0.0,
+        }
 
-    reward = 0.0
+    tr_component = 0.0
+    cards_vp_component = 0.0
+    city_greenery_component = 0.0
+    milestones_awards_component = 0.0
+    other_component = 0.0
 
     # Reward tangible engine growth.
     before_tableau = before_player.get('tableau', []) or []
     after_tableau = after_player.get('tableau', []) or []
     tableau_delta = len(after_tableau) - len(before_tableau)
-    reward += max(-0.08, min(0.18, 0.05 * float(tableau_delta)))
+    other_component += max(-0.08, min(0.18, 0.05 * float(tableau_delta)))
 
     production_keys = [
         'megaCreditProduction',
@@ -385,26 +397,31 @@ def calculate_step_reward(
     production_delta = 0.0
     for key in production_keys:
         production_delta += _safe_float(after_player.get(key, 0), 0.0) - _safe_float(before_player.get(key, 0), 0.0)
-    reward += max(-0.10, min(0.14, 0.02 * production_delta))
+    other_component += max(-0.10, min(0.14, 0.02 * production_delta))
 
-    # Reward direct VP improvements from milestones and awards.
+    # Decomposed VP-driven shaping buckets.
+    terraforming_delta = _vp_component(after_player, 'terraforming') - _vp_component(before_player, 'terraforming')
+    tr_component += max(-0.08, min(0.16, 0.045 * terraforming_delta))
+
     milestone_delta = _vp_component(after_player, 'milestones') - _vp_component(before_player, 'milestones')
-    reward += max(-0.06, min(0.20, 0.035 * milestone_delta))
+    milestones_awards_component += max(-0.06, min(0.20, 0.035 * milestone_delta))
 
     award_delta = _vp_component(after_player, 'awards') - _vp_component(before_player, 'awards')
-    reward += max(-0.08, min(0.18, 0.030 * award_delta))
+    milestones_awards_component += max(-0.08, min(0.18, 0.030 * award_delta))
 
-    # Reward greener-city map synergy (city VP component is adjacency-driven).
     city_combo_delta = _vp_component(after_player, 'city') - _vp_component(before_player, 'city')
     greenery_delta = _vp_component(after_player, 'greenery') - _vp_component(before_player, 'greenery')
     combo_delta = city_combo_delta + (0.25 * greenery_delta)
-    reward += max(-0.10, min(0.15, 0.05 * combo_delta))
+    city_greenery_component += max(-0.10, min(0.15, 0.05 * combo_delta))
+
+    cards_vp_delta = _vp_component(after_player, 'cards') - _vp_component(before_player, 'cards')
+    cards_vp_component += max(-0.10, min(0.18, 0.045 * cards_vp_delta))
 
     # Reward card quality improvements in hand.
     before_hand = _extract_hand(before_state, before_player)
     after_hand = _extract_hand(after_state, after_player)
     hand_delta = _hand_quality(after_hand, after_player) - _hand_quality(before_hand, before_player)
-    reward += max(-0.12, min(0.12, 0.20 * hand_delta))
+    other_component += max(-0.12, min(0.12, 0.20 * hand_delta))
 
     # Reward productive resource utilization pressure conversion.
     before_steel = _safe_float(before_player.get('steel', 0), 0.0)
@@ -418,23 +435,22 @@ def calculate_step_reward(
     titanium_spent = max(0.0, before_titanium - after_titanium)
     mc_spent = max(0.0, before_mc - after_mc)
     utilization_reward = (0.015 * steel_spent) + (0.02 * titanium_spent) + (0.002 * min(mc_spent, 25.0))
-    reward += max(0.0, min(0.14, utilization_reward))
+    other_component += max(0.0, min(0.14, utilization_reward))
 
-    # Bias learning signal toward card-engine development.
     action_type = ''
     if isinstance(action_input, dict):
         action_type = str(action_input.get('type', '') or '').lower()
     if action_type == 'projectcard' or (action_type == 'card' and 'card' in action_input):
-        reward += 0.07
+        cards_vp_component += 0.07
     elif action_type == 'standardproject':
-        reward -= 0.04
+        other_component -= 0.04
         affordable_cards = sum(1 for card in before_hand if _can_afford_card_now(card, before_player))
         if affordable_cards > 0:
-            reward -= min(0.08, 0.02 * float(affordable_cards))
+            other_component -= min(0.08, 0.02 * float(affordable_cards))
 
     # Light penalty for pass to discourage low-value inactivity.
     if action_type == 'pass':
-        reward -= 0.02
+        other_component -= 0.02
 
     # Penalize routine sell-patents behavior, especially when playable cards were already affordable.
     before_waiting = before_state.get('waitingFor', {}) if isinstance(before_state, dict) else {}
@@ -450,10 +466,10 @@ def calculate_step_reward(
         and 'sell patent' in before_title_l
     )
     if is_sell_patents_action:
-        reward -= min(0.10, 0.04 * float(len(sold_cards)))
+        other_component -= min(0.10, 0.04 * float(len(sold_cards)))
         affordable_cards = sum(1 for card in before_hand if _can_afford_card_now(card, before_player))
         if affordable_cards > 0:
-            reward -= min(0.10, 0.02 * float(affordable_cards))
+            other_component -= min(0.10, 0.02 * float(affordable_cards))
 
     generation_raw = _safe_float(before_game.get('generation', 1), 1.0)
     generation_progress = max(0.0, min(generation_raw / 14.0, 1.0))
@@ -468,7 +484,7 @@ def calculate_step_reward(
         milestone_claim_reward = 0.09 * float(milestone_claim_delta) * early_factor
         if before_mc >= 8.0:
             milestone_claim_reward += 0.04 * float(milestone_claim_delta) * early_factor
-        reward += min(0.18, milestone_claim_reward)
+        milestones_awards_component += min(0.18, milestone_claim_reward)
 
     # Awards closing pressure: reinforce positive EV funding and discourage poor-value funding.
     before_owned_awards = _owned_funded_awards(before_game, before_player)
@@ -489,9 +505,9 @@ def calculate_step_reward(
             expected_net_vp = expected_vp - (estimated_cost / 5.0)
             timing_factor = 0.5 + (0.5 * generation_progress)
             if expected_net_vp > 0.0:
-                reward += min(0.18, (0.04 + (0.035 * expected_net_vp)) * timing_factor)
+                milestones_awards_component += min(0.18, (0.04 + (0.035 * expected_net_vp)) * timing_factor)
             else:
-                reward -= min(0.14, (0.03 + (0.04 * abs(expected_net_vp))) * timing_factor)
+                milestones_awards_component -= min(0.14, (0.03 + (0.04 * abs(expected_net_vp))) * timing_factor)
 
     # Final-generation card VP pressure: prefer affordable VP cards over low-ceiling alternatives.
     selected_card_name = _extract_selected_card_name(action_input)
@@ -504,11 +520,40 @@ def calculate_step_reward(
     best_affordable_vp = max((_card_nominal_vp(card) for card in affordable_vp_cards), default=0.0)
     if endgame_pressure > 0.0:
         if selected_card_vp > 0.0:
-            reward += min(0.16, endgame_pressure * (0.05 + (0.03 * min(selected_card_vp, 4.0))))
+            cards_vp_component += min(0.16, endgame_pressure * (0.05 + (0.03 * min(selected_card_vp, 4.0))))
         elif action_type == 'standardproject' and best_affordable_vp > 0.0:
-            reward -= min(0.16, endgame_pressure * (0.05 + (0.02 * min(best_affordable_vp, 5.0))))
+            cards_vp_component -= min(0.16, endgame_pressure * (0.05 + (0.02 * min(best_affordable_vp, 5.0))))
         elif action_type == 'pass' and best_affordable_vp > 0.0:
-            reward -= min(0.12, endgame_pressure * (0.03 + (0.02 * min(best_affordable_vp, 5.0))))
+            cards_vp_component -= min(0.12, endgame_pressure * (0.03 + (0.02 * min(best_affordable_vp, 5.0))))
 
-    # Apply Hard Mode scaling
-    return float(max(-0.35, min(0.35, float(reward))) * STEP_REWARD_SCALE)
+    raw_total = (
+        tr_component
+        + cards_vp_component
+        + city_greenery_component
+        + milestones_awards_component
+        + other_component
+    )
+    clamped_total = float(max(-0.35, min(0.35, float(raw_total))))
+    scaled_total = float(clamped_total * STEP_REWARD_SCALE)
+    return {
+        "tr_component": float(tr_component),
+        "cards_vp_component": float(cards_vp_component),
+        "city_greenery_component": float(city_greenery_component),
+        "milestones_awards_component": float(milestones_awards_component),
+        "other_component": float(other_component),
+        "raw_total": float(raw_total),
+        "clamped_total": float(clamped_total),
+        "step_reward_scale": float(STEP_REWARD_SCALE),
+        "scaled_total": float(scaled_total),
+    }
+
+
+def calculate_step_reward(
+    before_state: Dict[str, Any],
+    after_state: Dict[str, Any],
+    action_input: Dict[str, Any],
+) -> float:
+    """
+    Backward-compatible scalar step reward wrapper.
+    """
+    return float(calculate_step_reward_decomposition(before_state, after_state, action_input).get("scaled_total", 0.0))

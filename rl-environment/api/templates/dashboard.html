@@ -293,6 +293,17 @@
 
     <div class="row">
       <div class="card">
+        <h3>Auxiliary Head Errors</h3>
+        <div id="auxErrors"></div>
+      </div>
+      <div class="card">
+        <h3>Rare-State + Shaping</h3>
+        <div id="rareShaping"></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card">
         <h3>Resource and Card Utilization</h3>
         <div id="utilization"></div>
       </div>
@@ -540,17 +551,23 @@
         const gatePassed = n(gate.pass_rate) >= 0.999;
         const gateThresholds = gate.thresholds || {};
         const resourceMode = String(gateThresholds.resource_spend_mode || "legacy_per_resource");
+        const conversionMode = String(gateThresholds.resource_conversion_mode || "legacy");
         renderKV(document.getElementById("leagueGate"), [
           ["Main pool size", fmt(gm["league/main_pool_size"])],
           ["Historical pool size", fmt(gm["league/historical_pool_size"])],
           ["Exploiter pool size", fmt(gm["league/exploiter_pool_size"])],
           ["Matchmaking ordering applied", gm["league/matchmaking_ordering_applied"] ? "yes" : "no"],
+          ["Opp pool recent/historical/exploiter", `${fmt(gm["league/opponent_pool_recent_size"])} / ${fmt(gm["league/opponent_pool_historical_size"])} / ${fmt(gm["league/opponent_pool_exploiter_size"])}`],
+          ["Opp sample recent/historical/exploiter", `${pct(gm["league/opponent_sample_recent_ratio"])} / ${pct(gm["league/opponent_sample_historical_ratio"])} / ${pct(gm["league/opponent_sample_exploiter_ratio"])}`],
           ["Gate pass rate", `<span class="${gatePassed ? "good" : "warn"}">${pct(gate.pass_rate)}</span>`],
           ["Failed agents", fmt(gate.failed_agents)],
           ["Total gate penalty", f2(gate.total_penalty)],
           ["Resource gate mode", esc(resourceMode)],
+          ["Conversion gate mode", esc(conversionMode)],
           ["Steel floor / game", f2(gateThresholds.min_steel_spent_per_game)],
           ["Titanium floor / game", f2(gateThresholds.min_titanium_spent_per_game)],
+          ["Steel conversion floor", pct(gateThresholds.min_steel_conversion_efficiency)],
+          ["Titanium conversion floor", pct(gateThresholds.min_titanium_conversion_efficiency)],
           ["Global payment gate", gate.global_payment_gate_failed ? `<span class="bad">failed</span>` : `<span class="good">ok</span>`],
         ]);
 
@@ -605,8 +622,38 @@
         renderKV(document.getElementById("hardMetrics"), [
           ["Efficiency (VP/Action)", f2(gm["efficiency_ratio"])],
           ["Synergy (CardVP/Play)", f2(gm["synergy_score"])],
+          ["Metal conversion efficiency", pct(gm["metal_conversion_efficiency"])],
+          ["Steel conversion efficiency", pct(gm["steel_conversion_efficiency"])],
+          ["Titanium conversion efficiency", pct(gm["titanium_conversion_efficiency"])],
           ["Value Loss", f4(gm["ppo/value_loss"])],
           ["Entropy", f4(gm["ppo/entropy"])],
+        ]);
+
+        renderKV(document.getElementById("auxErrors"), [
+          ["MSE milestone_claimability", f4(gm["ppo/aux_mse_milestone_claimability"])],
+          ["MSE award_ev", f4(gm["ppo/aux_mse_award_ev"])],
+          ["MSE playable_cards", f4(gm["ppo/aux_mse_playable_cards"])],
+          ["MSE steel_target", f4(gm["ppo/aux_mse_steel_target"])],
+          ["MSE titanium_target", f4(gm["ppo/aux_mse_titanium_target"])],
+          ["MAE milestone_claimability", f4(gm["ppo/aux_mae_milestone_claimability"])],
+          ["MAE award_ev", f4(gm["ppo/aux_mae_award_ev"])],
+          ["MAE playable_cards", f4(gm["ppo/aux_mae_playable_cards"])],
+          ["MAE steel_target", f4(gm["ppo/aux_mae_steel_target"])],
+          ["MAE titanium_target", f4(gm["ppo/aux_mae_titanium_target"])],
+        ]);
+
+        renderKV(document.getElementById("rareShaping"), [
+          ["Rare-state priority enabled", gm["ppo/rare_state_priority_enabled"] ? "yes" : "no"],
+          ["Rare-state priority alpha", f2(gm["ppo/rare_state_priority_alpha"])],
+          ["Rare base ratio", pct(gm["rollout/rare_state_base_ratio"])],
+          ["Rare sampled ratio", pct(gm["rollout/rare_state_sampled_ratio"])],
+          ["Rare sampled: award/milestone", `${pct(gm["rollout/rare_state_sampled_ratio_award_funding"])} / ${pct(gm["rollout/rare_state_sampled_ratio_milestone_timing"])}`],
+          ["Rare sampled: draft/high-cost", `${pct(gm["rollout/rare_state_sampled_ratio_draft_keep_buy"])} / ${pct(gm["rollout/rare_state_sampled_ratio_high_cost_payment"])}`],
+          ["Reward TR component", f4(gm["rollout/reward_tr_component_mean"])],
+          ["Reward cards VP component", f4(gm["rollout/reward_cards_vp_component_mean"])],
+          ["Reward city/greenery component", f4(gm["rollout/reward_city_greenery_component_mean"])],
+          ["Reward milestones/awards component", f4(gm["rollout/reward_milestones_awards_component_mean"])],
+          ["Reward shaping coef", f4(gm["rollout/reward_shaping_coef_mean"])],
         ]);
 
         renderKV(document.getElementById("utilization"), [

@@ -21,6 +21,10 @@ def snapshot_population_behavior(population: Sequence[Any]) -> Dict[str, Dict[st
             "sell_patents_actions": float(action_counts.get("sell_patents", 0) or 0),
             "steel_spent": float(stats.get("steel_spent", 0) or 0),
             "titanium_spent": float(stats.get("titanium_spent", 0) or 0),
+            "project_payment_value_total": float(stats.get("project_payment_value_total", 0.0) or 0.0),
+            "metal_payment_value_total": float(stats.get("metal_payment_value_total", 0.0) or 0.0),
+            "steel_payment_value_total": float(stats.get("steel_payment_value_total", 0.0) or 0.0),
+            "titanium_payment_value_total": float(stats.get("titanium_payment_value_total", 0.0) or 0.0),
         }
     return snapshot
 
@@ -43,6 +47,10 @@ def compute_generation_behavior_metrics(
         "sell_patents_actions": 0.0,
         "steel_spent": 0.0,
         "titanium_spent": 0.0,
+        "project_payment_value_total": 0.0,
+        "metal_payment_value_total": 0.0,
+        "steel_payment_value_total": 0.0,
+        "titanium_payment_value_total": 0.0,
         "vp_terraforming": 0.0,
         "vp_milestones": 0.0,
         "vp_awards": 0.0,
@@ -104,6 +112,10 @@ def compute_generation_behavior_metrics(
         sell_patents_delta = max(0.0, float(curr.get("sell_patents_actions", 0.0)) - float(prev.get("sell_patents_actions", 0.0)))
         steel_spent_delta = max(0.0, float(curr.get("steel_spent", 0.0)) - float(prev.get("steel_spent", 0.0)))
         titanium_spent_delta = max(0.0, float(curr.get("titanium_spent", 0.0)) - float(prev.get("titanium_spent", 0.0)))
+        project_payment_value_delta = max(0.0, float(curr.get("project_payment_value_total", 0.0)) - float(prev.get("project_payment_value_total", 0.0)))
+        metal_payment_value_delta = max(0.0, float(curr.get("metal_payment_value_total", 0.0)) - float(prev.get("metal_payment_value_total", 0.0)))
+        steel_payment_value_delta = max(0.0, float(curr.get("steel_payment_value_total", 0.0)) - float(prev.get("steel_payment_value_total", 0.0)))
+        titanium_payment_value_delta = max(0.0, float(curr.get("titanium_payment_value_total", 0.0)) - float(prev.get("titanium_payment_value_total", 0.0)))
         endscreen_games = max(0.0, float(endscreen.get("games", 0.0)))
         vp_terraforming = max(0.0, float(endscreen.get("vp_terraforming", 0.0)))
         vp_milestones = max(0.0, float(endscreen.get("vp_milestones", 0.0)))
@@ -122,6 +134,10 @@ def compute_generation_behavior_metrics(
         totals["sell_patents_actions"] += sell_patents_delta
         totals["steel_spent"] += steel_spent_delta
         totals["titanium_spent"] += titanium_spent_delta
+        totals["project_payment_value_total"] += project_payment_value_delta
+        totals["metal_payment_value_total"] += metal_payment_value_delta
+        totals["steel_payment_value_total"] += steel_payment_value_delta
+        totals["titanium_payment_value_total"] += titanium_payment_value_delta
         totals["vp_terraforming"] += vp_terraforming
         totals["vp_milestones"] += vp_milestones
         totals["vp_awards"] += vp_awards
@@ -141,6 +157,10 @@ def compute_generation_behavior_metrics(
             "sell_patents_actions": sell_patents_delta,
             "steel_spent": steel_spent_delta,
             "titanium_spent": titanium_spent_delta,
+            "project_payment_value_total": project_payment_value_delta,
+            "metal_payment_value_total": metal_payment_value_delta,
+            "steel_payment_value_total": steel_payment_value_delta,
+            "titanium_payment_value_total": titanium_payment_value_delta,
             "vp_terraforming": vp_terraforming,
             "vp_milestones": vp_milestones,
             "vp_awards": vp_awards,
@@ -155,6 +175,13 @@ def compute_generation_behavior_metrics(
             "sell_patents_per_game": (sell_patents_delta / games_delta) if games_delta > 0 else 0.0,
             "steel_spent_per_game": (steel_spent_delta / games_delta) if games_delta > 0 else 0.0,
             "titanium_spent_per_game": (titanium_spent_delta / games_delta) if games_delta > 0 else 0.0,
+            "project_payment_value_per_game": (project_payment_value_delta / games_delta) if games_delta > 0 else 0.0,
+            "metal_payment_value_per_game": (metal_payment_value_delta / games_delta) if games_delta > 0 else 0.0,
+            "steel_payment_value_per_game": (steel_payment_value_delta / games_delta) if games_delta > 0 else 0.0,
+            "titanium_payment_value_per_game": (titanium_payment_value_delta / games_delta) if games_delta > 0 else 0.0,
+            "metal_conversion_efficiency": (metal_payment_value_delta / project_payment_value_delta) if project_payment_value_delta > 0 else 0.0,
+            "steel_conversion_efficiency": (steel_payment_value_delta / project_payment_value_delta) if project_payment_value_delta > 0 else 0.0,
+            "titanium_conversion_efficiency": (titanium_payment_value_delta / project_payment_value_delta) if project_payment_value_delta > 0 else 0.0,
             "vp_terraforming_per_game": (vp_terraforming / vp_denom) if vp_denom > 0 else 0.0,
             "vp_milestones_per_game": (vp_milestones / vp_denom) if vp_denom > 0 else 0.0,
             "vp_awards_per_game": (vp_awards / vp_denom) if vp_denom > 0 else 0.0,
@@ -188,6 +215,23 @@ def compute_generation_behavior_metrics(
         "titanium_spent": int(totals["titanium_spent"]),
         "steel_spent_per_game": (float(totals["steel_spent"]) / games_total) if games_total > 0 else 0.0,
         "titanium_spent_per_game": (float(totals["titanium_spent"]) / games_total) if games_total > 0 else 0.0,
+        "project_payment_value_total": float(totals["project_payment_value_total"]),
+        "metal_payment_value_total": float(totals["metal_payment_value_total"]),
+        "steel_payment_value_total": float(totals["steel_payment_value_total"]),
+        "titanium_payment_value_total": float(totals["titanium_payment_value_total"]),
+        "project_payment_value_per_game": (float(totals["project_payment_value_total"]) / games_total) if games_total > 0 else 0.0,
+        "metal_payment_value_per_game": (float(totals["metal_payment_value_total"]) / games_total) if games_total > 0 else 0.0,
+        "steel_payment_value_per_game": (float(totals["steel_payment_value_total"]) / games_total) if games_total > 0 else 0.0,
+        "titanium_payment_value_per_game": (float(totals["titanium_payment_value_total"]) / games_total) if games_total > 0 else 0.0,
+        "metal_conversion_efficiency": (
+            float(totals["metal_payment_value_total"]) / float(totals["project_payment_value_total"])
+        ) if float(totals["project_payment_value_total"]) > 0.0 else 0.0,
+        "steel_conversion_efficiency": (
+            float(totals["steel_payment_value_total"]) / float(totals["project_payment_value_total"])
+        ) if float(totals["project_payment_value_total"]) > 0.0 else 0.0,
+        "titanium_conversion_efficiency": (
+            float(totals["titanium_payment_value_total"]) / float(totals["project_payment_value_total"])
+        ) if float(totals["project_payment_value_total"]) > 0.0 else 0.0,
         "vp_terraforming": float(totals["vp_terraforming"]),
         "vp_milestones": float(totals["vp_milestones"]),
         "vp_awards": float(totals["vp_awards"]),
@@ -223,6 +267,8 @@ class PromotionGateConfig:
     max_standard_project_ratio: float
     min_steel_spent_per_game: float
     min_titanium_spent_per_game: float
+    min_steel_conversion_efficiency: float
+    min_titanium_conversion_efficiency: float
     max_payment_reject_count: int
     penalty_points: float
     global_payment_penalty_points: float
@@ -252,12 +298,28 @@ def apply_promotion_gates(
         standard_project_ratio = float(behavior.get("standard_project_ratio", 0.0))
         steel_spent_per_game = float(behavior.get("steel_spent_per_game", 0.0))
         titanium_spent_per_game = float(behavior.get("titanium_spent_per_game", 0.0))
+        project_payment_value_total = float(behavior.get("project_payment_value_total", 0.0))
+        steel_conversion_efficiency = float(behavior.get("steel_conversion_efficiency", 0.0))
+        titanium_conversion_efficiency = float(behavior.get("titanium_conversion_efficiency", 0.0))
         steel_floor_cfg = max(0.0, float(gate_config.min_steel_spent_per_game))
         titanium_floor_cfg = max(0.0, float(gate_config.min_titanium_spent_per_game))
+        steel_conversion_floor_cfg = max(0.0, float(gate_config.min_steel_conversion_efficiency))
+        titanium_conversion_floor_cfg = max(0.0, float(gate_config.min_titanium_conversion_efficiency))
         resource_floor_enabled = (steel_floor_cfg > 0.0) or (titanium_floor_cfg > 0.0)
         steel_lazy = (steel_floor_cfg > 0.0) and (steel_spent_per_game < steel_floor_cfg)
         titanium_lazy = (titanium_floor_cfg > 0.0) and (titanium_spent_per_game < titanium_floor_cfg)
         lazy_resource_fail = resource_floor_enabled and steel_lazy and titanium_lazy
+        has_project_payments = project_payment_value_total > 0.0
+        steel_conversion_fail = (
+            has_project_payments
+            and steel_conversion_floor_cfg > 0.0
+            and steel_conversion_efficiency < steel_conversion_floor_cfg
+        )
+        titanium_conversion_fail = (
+            has_project_payments
+            and titanium_conversion_floor_cfg > 0.0
+            and titanium_conversion_efficiency < titanium_conversion_floor_cfg
+        )
         if gate_config.enabled and float(behavior.get("games_played", 0.0)) > 0.0:
             if card_plays_per_game < float(gate_config.min_card_plays_per_game):
                 fail_reasons.append("card_plays_per_game")
@@ -267,6 +329,8 @@ def apply_promotion_gates(
             # utilization are simultaneously below configured floors.
             if lazy_resource_fail:
                 fail_reasons.append("resource_spend_lazy")
+            if steel_conversion_fail or titanium_conversion_fail:
+                fail_reasons.append("metal_conversion_efficiency")
 
         penalty = 0.0
         if gate_config.enabled:
@@ -276,6 +340,8 @@ def apply_promotion_gates(
                 sp_cap = max(1e-6, float(gate_config.max_standard_project_ratio))
                 steel_floor = max(0.0, float(gate_config.min_steel_spent_per_game))
                 titanium_floor = max(0.0, float(gate_config.min_titanium_spent_per_game))
+                steel_conversion_floor = max(0.0, float(gate_config.min_steel_conversion_efficiency))
+                titanium_conversion_floor = max(0.0, float(gate_config.min_titanium_conversion_efficiency))
 
                 card_deficit = min(max(0.0, card_floor - card_plays_per_game) / card_floor, 2.0)
                 sp_excess = min(max(0.0, standard_project_ratio - sp_cap) / sp_cap, 2.0)
@@ -289,10 +355,24 @@ def apply_promotion_gates(
                 if lazy_resource_fail:
                     # Combined underutilization pressure, not "spend as much as possible".
                     resource_lazy_deficit = min((steel_deficit + titanium_deficit) / 2.0, 2.0)
+                steel_conversion_deficit = 0.0
+                if has_project_payments and steel_conversion_floor > 0.0:
+                    steel_conversion_deficit = min(
+                        max(0.0, steel_conversion_floor - steel_conversion_efficiency) / steel_conversion_floor,
+                        2.0,
+                    )
+                titanium_conversion_deficit = 0.0
+                if has_project_payments and titanium_conversion_floor > 0.0:
+                    titanium_conversion_deficit = min(
+                        max(0.0, titanium_conversion_floor - titanium_conversion_efficiency) / titanium_conversion_floor,
+                        2.0,
+                    )
                 severity_penalty += float(gate_config.penalty_points) * (
                     (2.0 * card_deficit)
                     + (1.5 * sp_excess)
                     + (0.8 * resource_lazy_deficit)
+                    + (0.9 * steel_conversion_deficit)
+                    + (0.9 * titanium_conversion_deficit)
                 )
                 penalty += severity_penalty
             if global_payment_gate_failed:
@@ -323,7 +403,10 @@ def apply_promotion_gates(
             "max_standard_project_ratio": float(gate_config.max_standard_project_ratio),
             "min_steel_spent_per_game": float(gate_config.min_steel_spent_per_game),
             "min_titanium_spent_per_game": float(gate_config.min_titanium_spent_per_game),
+            "min_steel_conversion_efficiency": float(gate_config.min_steel_conversion_efficiency),
+            "min_titanium_conversion_efficiency": float(gate_config.min_titanium_conversion_efficiency),
             "resource_spend_mode": "lazy_both_below_floor",
+            "resource_conversion_mode": "per_metal_floor",
             "max_payment_reject_count": int(gate_config.max_payment_reject_count),
         },
         "penalty_points": float(gate_config.penalty_points),

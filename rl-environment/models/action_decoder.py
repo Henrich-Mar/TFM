@@ -1879,16 +1879,49 @@ def _can_afford_card_with_payment_options(
     return payment is not None
 
 # --- Metadata helpers for tags when missing ---
+def _metadata_candidate_paths() -> List[str]:
+    module_dir = os.path.abspath(os.path.dirname(__file__))
+    one_up = os.path.abspath(os.path.join(module_dir, '..'))
+    two_up = os.path.abspath(os.path.join(module_dir, '..', '..'))
+
+    candidate_paths: List[str] = []
+    env_path = os.getenv('TM_CARD_METADATA_PATH')
+    if env_path:
+        candidate_paths.append(env_path)
+    candidate_paths.extend([
+        os.path.join(one_up, 'card_metadata.json'),
+        os.path.join(two_up, 'card_metadata.json'),
+        os.path.join(two_up, 'terraforming-mars', 'card_metadata.json'),
+        os.path.join(one_up, 'terraforming-mars', 'card_metadata.json'),
+    ])
+
+    resolved: List[str] = []
+    seen = set()
+    for candidate in candidate_paths:
+        if not candidate:
+            continue
+        path = os.path.abspath(candidate)
+        if path in seen:
+            continue
+        seen.add(path)
+        resolved.append(path)
+    return resolved
+
 def _metadata_loader() -> Dict[str, Dict[str, Any]]:
-    path = os.getenv('TM_CARD_METADATA_PATH')
-    if not path:
-        return {}
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    for path in _metadata_candidate_paths():
+        if not os.path.exists(path):
+            continue
+        if os.path.getsize(path) <= 0:
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                logger.info("Loaded card metadata for %d cards from %s", len(data), path)
+                return data
+        except Exception as e:
+            logger.warning("Failed to load card metadata from %s: %s", path, e)
+    return {}
 
 _CARD_META_CACHE: Dict[str, Dict[str, Any]] = _metadata_loader()
 
@@ -1899,11 +1932,23 @@ def _metadata_tags(card_name: str) -> Dict[str, int]:
     if not meta:
         return {}
     out: Dict[str, int] = {}
-    for t in meta.get('tags', []) or []:
+    tags = meta.get('tags', []) or []
+    if isinstance(tags, dict):
+        for key, present in tags.items():
+            if not present:
+                continue
+            ts = str(key).strip()
+            if ts and ts[0].islower():
+                ts = ts.capitalize()
+            if ts:
+                out[ts] = 1
+        return out
+    for t in tags:
         ts = str(t).strip()
         if ts and ts[0].islower():
             ts = ts.capitalize()
-        out[ts] = 1
+        if ts:
+            out[ts] = 1
     return out
 def _can_afford_card(player: Dict[str, Any], card: Dict[str, Any]) -> bool:
     """Check if player can afford to play a card"""

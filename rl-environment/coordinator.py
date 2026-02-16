@@ -110,6 +110,8 @@ class RLCoordinator:
         self.gate_max_standard_project_ratio = self._safe_env_float("GATE_MAX_STANDARD_PROJECT_RATIO", 0.58)
         self.gate_min_steel_spent_per_game = self._safe_env_float("GATE_MIN_STEEL_SPENT_PER_GAME", 0.25)
         self.gate_min_titanium_spent_per_game = self._safe_env_float("GATE_MIN_TITANIUM_SPENT_PER_GAME", 0.12)
+        self.gate_min_steel_conversion_efficiency = self._safe_env_float("GATE_MIN_STEEL_CONVERSION_EFFICIENCY", 0.03)
+        self.gate_min_titanium_conversion_efficiency = self._safe_env_float("GATE_MIN_TITANIUM_CONVERSION_EFFICIENCY", 0.04)
         self.gate_max_payment_reject_count = self._safe_env_int("GATE_MAX_PAYMENT_REJECT_COUNT", 0)
         self.gate_penalty_points = self._safe_env_float("GATE_PENALTY_POINTS", 8.0)
         self.gate_global_payment_penalty_points = self._safe_env_float("GATE_GLOBAL_PAYMENT_PENALTY_POINTS", 6.0)
@@ -121,6 +123,16 @@ class RLCoordinator:
         self.training_pool_generation_window = max(1, self._safe_env_int("TRAINING_POOL_GENERATION_WINDOW", 8))
         self.training_pool_max_checkpoints = max(3, self._safe_env_int("TRAINING_POOL_MAX_CHECKPOINTS", 48))
         self.training_pool_min_checkpoints = max(3, self._safe_env_int("TRAINING_POOL_MIN_CHECKPOINTS", 3))
+        self.training_pool_recent_generations = max(1, self._safe_env_int("TRAINING_POOL_RECENT_GENERATIONS", 2))
+        self.training_pool_exploiter_per_generation = max(1, self._safe_env_int("TRAINING_POOL_EXPLOITER_PER_GENERATION", 1))
+        self.training_pool_recent_weight = max(0.0, self._safe_env_float("TRAINING_POOL_RECENT_WEIGHT", 0.5))
+        self.training_pool_historical_weight = max(0.0, self._safe_env_float("TRAINING_POOL_HISTORICAL_WEIGHT", 0.3))
+        self.training_pool_exploiter_weight = max(0.0, self._safe_env_float("TRAINING_POOL_EXPLOITER_WEIGHT", 0.2))
+        self._training_pool_weighted_checkpoints: Dict[str, List[str]] = {
+            "recent": [],
+            "historical": [],
+            "exploiters": [],
+        }
         self.fixed_benchmark_enabled = str(os.getenv("FIXED_BENCHMARK_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off")
         self.fixed_benchmark_interval = max(1, self._safe_env_int("FIXED_BENCHMARK_INTERVAL", 5))
         self.fixed_benchmark_games_per_agent = max(1, self._safe_env_int("FIXED_BENCHMARK_GAMES_PER_AGENT", 2))
@@ -445,6 +457,8 @@ class RLCoordinator:
                 max_standard_project_ratio=float(self.gate_max_standard_project_ratio),
                 min_steel_spent_per_game=float(self.gate_min_steel_spent_per_game),
                 min_titanium_spent_per_game=float(self.gate_min_titanium_spent_per_game),
+                min_steel_conversion_efficiency=float(self.gate_min_steel_conversion_efficiency),
+                min_titanium_conversion_efficiency=float(self.gate_min_titanium_conversion_efficiency),
                 max_payment_reject_count=int(self.gate_max_payment_reject_count),
                 penalty_points=float(self.gate_penalty_points),
                 global_payment_penalty_points=float(self.gate_global_payment_penalty_points),
@@ -538,25 +552,101 @@ class RLCoordinator:
     def _resolve_training_opponent_checkpoints(self) -> List[str]:
         models_root = self._default_models_root()
         generations = self._available_generations(models_root)
+        self._training_pool_weighted_checkpoints = {
+            "recent": [],
+            "historical": [],
+            "exploiters": [],
+        }
         if not generations:
             return []
 
         window = max(1, int(self.training_pool_generation_window))
         candidate_generations = generations[-window:]
-        checkpoint_candidates: List[str] = []
         top_per_generation = max(1, int(self.save_top_k))
+        recent_generations = set(candidate_generations[-max(1, int(self.training_pool_recent_generations)):])
+        recent_candidates: List[str] = []
+        historical_candidates: List[str] = []
+        exploiter_candidates: List[str] = []
         for generation in reversed(candidate_generations):
-            checkpoint_candidates.extend(
-                self._all_generation_checkpoints(models_root, generation)[:top_per_generation]
-            )
+            checkpoints = self._all_generation_checkpoints(models_root, generation)
+            if not checkpoints:
+                continue
+            top_slice = checkpoints[:top_per_generation]
+            if generation in recent_generations:
+                recent_candidates.extend(top_slice)
+            else:
+                historical_candidates.extend(top_slice)
+            exploiter_take = max(1, min(len(checkpoints), int(self.training_pool_exploiter_per_generation)))
+            exploiter_candidates.extend(checkpoints[-exploiter_take:])
+
+        self._training_pool_weighted_checkpoints = {
+            "recent": self._dedupe_existing_checkpoints(recent_candidates),
+            "historical": self._dedupe_existing_checkpoints(historical_candidates),
+            "exploiters": self._dedupe_existing_checkpoints(exploiter_candidates),
+        }
+        if not self._training_pool_weighted_checkpoints["recent"]:
+            self._training_pool_weighted_checkpoints["recent"] = list(self._training_pool_weighted_checkpoints["historical"])
+
+        checkpoint_candidates: List[str] = []
+        checkpoint_candidates.extend(self._training_pool_weighted_checkpoints["recent"])
+        checkpoint_candidates.extend(self._training_pool_weighted_checkpoints["historical"])
+        checkpoint_candidates.extend(self._training_pool_weighted_checkpoints["exploiters"])
         max_pool = max(3, int(self.training_pool_max_checkpoints))
         return self._dedupe_existing_checkpoints(checkpoint_candidates)[:max_pool]
 
-    @staticmethod
-    def _sample_checkpoint_pool(checkpoint_pool: List[str], sample_size: int, rng: random.Random) -> List[str]:
+    def _sample_checkpoint_pool(
+        self,
+        checkpoint_pool: List[str],
+        sample_size: int,
+        rng: random.Random,
+        weighted_pool: Optional[Dict[str, List[str]]] = None,
+        sample_mix: Optional[Dict[str, int]] = None,
+    ) -> List[str]:
         if not checkpoint_pool:
             return []
         target = max(1, int(sample_size))
+        if weighted_pool:
+            categories = {
+                "recent": [ckpt for ckpt in list(weighted_pool.get("recent", []) or []) if ckpt in checkpoint_pool],
+                "historical": [ckpt for ckpt in list(weighted_pool.get("historical", []) or []) if ckpt in checkpoint_pool],
+                "exploiters": [ckpt for ckpt in list(weighted_pool.get("exploiters", []) or []) if ckpt in checkpoint_pool],
+            }
+            base_weights = {
+                "recent": max(0.0, float(self.training_pool_recent_weight)),
+                "historical": max(0.0, float(self.training_pool_historical_weight)),
+                "exploiters": max(0.0, float(self.training_pool_exploiter_weight)),
+            }
+            if (base_weights["recent"] + base_weights["historical"] + base_weights["exploiters"]) <= 0.0:
+                base_weights = {"recent": 1.0, "historical": 1.0, "exploiters": 1.0}
+            selected: List[str] = []
+            attempts = 0
+            max_attempts = max(16, target * 8)
+            while len(selected) < target and attempts < max_attempts:
+                available_cats = [key for key, values in categories.items() if values]
+                if not available_cats:
+                    break
+                cat_weights = [max(1e-6, base_weights[cat]) for cat in available_cats]
+                chosen_cat = rng.choices(available_cats, weights=cat_weights, k=1)[0]
+                pool = [ckpt for ckpt in categories[chosen_cat] if ckpt not in selected]
+                if not pool:
+                    pool = list(categories[chosen_cat])
+                if not pool:
+                    attempts += 1
+                    continue
+                sampled = str(rng.choice(pool))
+                selected.append(sampled)
+                if sample_mix is not None:
+                    sample_mix[chosen_cat] = int(sample_mix.get(chosen_cat, 0)) + 1
+                attempts += 1
+            if len(selected) < target:
+                fallback = [ckpt for ckpt in checkpoint_pool if ckpt not in selected]
+                while len(selected) < target and fallback:
+                    pick = str(rng.choice(fallback))
+                    selected.append(pick)
+                    fallback = [ckpt for ckpt in fallback if ckpt != pick]
+            if selected:
+                return selected[:target]
+
         if len(checkpoint_pool) >= target:
             return list(rng.sample(checkpoint_pool, k=target))
         return [str(rng.choice(checkpoint_pool)) for _ in range(target)]
@@ -629,6 +719,7 @@ class RLCoordinator:
         games_per_agent: int,
         label: str,
         global_game_semaphore: Optional[asyncio.Semaphore] = None,
+        weighted_pool: Optional[Dict[str, List[str]]] = None,
     ) -> Dict[str, Any]:
         start_time = datetime.now()
         rounds = max(1, int(games_per_agent))
@@ -640,13 +731,20 @@ class RLCoordinator:
         # Cache frozen checkpoint loads during this matchup batch to avoid repeated
         # synchronous disk deserialization for every game.
         frozen_cache: Dict[str, RLAgent] = {}
+        sample_mix = {"recent": 0, "historical": 0, "exploiters": 0}
 
         for _round_idx in range(rounds):
             round_tasks = [
                 asyncio.create_task(
                     self._run_single_checkpoint_pool_game(
                         anchor_agent=anchor_agent,
-                        opponent_checkpoints=self._sample_checkpoint_pool(checkpoint_pool, 3, rng),
+                        opponent_checkpoints=self._sample_checkpoint_pool(
+                            checkpoint_pool,
+                            3,
+                            rng,
+                            weighted_pool=weighted_pool,
+                            sample_mix=sample_mix if weighted_pool else None,
+                        ),
                         label=label,
                         global_game_semaphore=global_game_semaphore,
                         frozen_cache=frozen_cache,
@@ -675,6 +773,7 @@ class RLCoordinator:
             "successful_games": int(successful_games),
             "failed_games": int(failed_games),
             "total_planned_games": int(planned_games),
+            "sample_mix": dict(sample_mix),
         }
 
     @staticmethod
@@ -756,6 +855,9 @@ class RLCoordinator:
             "frozen_pool/checkpoints_available": 0,
             "frozen_pool/games_per_agent": int(self.training_pool_games_per_agent),
             "frozen_pool/min_checkpoints": int(self.training_pool_min_checkpoints),
+            "league/opponent_diversity_recent_weight": float(self.training_pool_recent_weight),
+            "league/opponent_diversity_historical_weight": float(self.training_pool_historical_weight),
+            "league/opponent_diversity_exploiter_weight": float(self.training_pool_exploiter_weight),
         }
         if not self.training_opponent_pool_enabled or int(self.training_pool_games_per_agent) <= 0:
             metrics["frozen_pool/skip_reason"] = "disabled"
@@ -763,6 +865,10 @@ class RLCoordinator:
 
         checkpoint_pool = self._resolve_training_opponent_checkpoints()
         metrics["frozen_pool/checkpoints_available"] = int(len(checkpoint_pool))
+        weighted_pool = dict(self._training_pool_weighted_checkpoints or {})
+        metrics["league/opponent_pool_recent_size"] = int(len(weighted_pool.get("recent", []) or []))
+        metrics["league/opponent_pool_historical_size"] = int(len(weighted_pool.get("historical", []) or []))
+        metrics["league/opponent_pool_exploiter_size"] = int(len(weighted_pool.get("exploiters", []) or []))
         if len(checkpoint_pool) < int(self.training_pool_min_checkpoints):
             metrics["frozen_pool/skip_reason"] = "insufficient_checkpoint_pool"
             return [], metrics
@@ -774,9 +880,15 @@ class RLCoordinator:
             games_per_agent=int(self.training_pool_games_per_agent),
             label="training_pool",
             global_game_semaphore=global_game_semaphore,
+            weighted_pool=weighted_pool,
         )
         summary = self._summarize_anchor_results(anchors, matchup_result)
         aggregate = dict(summary.get("aggregate", {}) or {})
+        sample_mix = dict(matchup_result.get("sample_mix", {}) or {})
+        mix_total = float(sum(float(v) for v in sample_mix.values()))
+        recent_ratio = (float(sample_mix.get("recent", 0)) / mix_total) if mix_total > 0 else 0.0
+        historical_ratio = (float(sample_mix.get("historical", 0)) / mix_total) if mix_total > 0 else 0.0
+        exploiter_ratio = (float(sample_mix.get("exploiters", 0)) / mix_total) if mix_total > 0 else 0.0
 
         metrics.update(
             {
@@ -790,6 +902,12 @@ class RLCoordinator:
                 "frozen_pool/avg_rank": float(aggregate.get("avg_rank", 0.0)),
                 "frozen_pool/completion_rate": float(aggregate.get("completion_rate", 0.0)),
                 "frozen_pool/sample_checkpoints": checkpoint_pool[: min(8, len(checkpoint_pool))],
+                "league/opponent_sample_recent": float(sample_mix.get("recent", 0)),
+                "league/opponent_sample_historical": float(sample_mix.get("historical", 0)),
+                "league/opponent_sample_exploiter": float(sample_mix.get("exploiters", 0)),
+                "league/opponent_sample_recent_ratio": float(recent_ratio),
+                "league/opponent_sample_historical_ratio": float(historical_ratio),
+                "league/opponent_sample_exploiter_ratio": float(exploiter_ratio),
             }
         )
         return [matchup_result], metrics
@@ -915,14 +1033,58 @@ class RLCoordinator:
             cfg['generation_gate_summary'] = gate_summary
             cfg['promotion_gate'] = gate_per_agent.get(agent.id, {})
             gate_behavior = dict((gate_per_agent.get(agent.id, {}) or {}).get("behavior", {}) or {})
+            behavior_snapshot = {}
+            try:
+                if hasattr(agent, "get_behavior_stats"):
+                    behavior_snapshot = dict(agent.get_behavior_stats() or {})
+            except Exception:
+                behavior_snapshot = {}
+            generation_metrics = dict(self.last_generation_behavior_metrics or {})
+            ppo_metrics = {
+                key.split("/", 1)[1]: value
+                for key, value in generation_metrics.items()
+                if str(key).startswith("ppo/")
+            }
+            rollout_metrics = {
+                key.split("/", 1)[1]: value
+                for key, value in generation_metrics.items()
+                if str(key).startswith("rollout/")
+            }
+            league_metrics = {
+                key.split("/", 1)[1]: value
+                for key, value in generation_metrics.items()
+                if str(key).startswith("league/")
+            }
+            frozen_pool_metrics = {
+                key.split("/", 1)[1]: value
+                for key, value in generation_metrics.items()
+                if str(key).startswith("frozen_pool/")
+            }
             agent_elo = float(self.metrics_tracker.get_elo(agent.id))
             efficiency_ratio = float(gate_behavior.get("efficiency_ratio", 0.0))
             synergy_score = float(gate_behavior.get("synergy_score", 0.0))
             cfg['elo'] = agent_elo
+            cfg['saved_generation'] = int(generation)
             cfg['advanced_metrics'] = {
                 "elo": agent_elo,
                 "efficiency_ratio": efficiency_ratio,
                 "synergy_score": synergy_score,
+            }
+            cfg['behavior_snapshot'] = behavior_snapshot
+            cfg['generation_behavior_agent'] = gate_behavior
+            cfg['rare_state_tracking'] = {
+                "rare_state_samples": int(behavior_snapshot.get("rare_state_samples", 0) or 0),
+                "rare_state_rate": float(behavior_snapshot.get("rare_state_rate", 0.0) or 0.0),
+                "rare_award_funding": int(behavior_snapshot.get("rare_award_funding", 0) or 0),
+                "rare_milestone_timing": int(behavior_snapshot.get("rare_milestone_timing", 0) or 0),
+                "rare_draft_keep_buy": int(behavior_snapshot.get("rare_draft_keep_buy", 0) or 0),
+                "rare_high_cost_payment": int(behavior_snapshot.get("rare_high_cost_payment", 0) or 0),
+            }
+            cfg['training_diagnostics'] = {
+                "ppo": ppo_metrics,
+                "rollout": rollout_metrics,
+                "league": league_metrics,
+                "frozen_pool": frozen_pool_metrics,
             }
             cfg['end_screen_tracking'] = {
                 "vp_terraforming_per_game": float(gate_behavior.get("vp_terraforming_per_game", 0.0)),

@@ -20,12 +20,10 @@ class StateEncoder:
     def __init__(self, state_size: int = 512):
         self.state_size = state_size
         
-        # Card mappings (top cards by frequency)
-        self.common_cards = self._get_common_cards()
-        self.card_to_index = {card: i for i, card in enumerate(self.common_cards)}
-        
-        # Optional: load authoritative card metadata exported from TS server
+        # Load authoritative card metadata first; derive common_cards from it when available
         self.card_metadata_by_name: Dict[str, Dict[str, Any]] = self._load_card_metadata()
+        self.common_cards = self._get_common_cards(self.card_metadata_by_name)
+        self.card_to_index = {card: i for i, card in enumerate(self.common_cards)}
 
     def _space_type_lower(self, value: Any) -> str:
         return str(value or '').strip().lower()
@@ -64,10 +62,14 @@ class StateEncoder:
 
         return is_city, is_greenery, is_ocean
     
-    def _get_common_cards(self) -> List[str]:
-        """Get list of most common cards for encoding"""
-        # This would normally be loaded from game data
-        # For now, using a representative sample
+    def _get_common_cards(
+        self, card_metadata: Optional[Dict[str, Dict[str, Any]]] = None
+    ) -> List[str]:
+        """Get list of cards for encoding. Uses card names from card_metadata when
+        available; otherwise falls back to a hardcoded sample + placeholders.
+        """
+        if card_metadata:
+            return sorted(card_metadata.keys())
         return [
             'PowerPlant', 'Mine', 'Research', 'Colony', 'City', 'Greenery',
             'SolarPower', 'Livestock', 'Fish', 'Microbes', 'Animals',
@@ -75,7 +77,7 @@ class StateEncoder:
             'Geothermal', 'SolarWindPower', 'WaveEnergy', 'Zeppelins',
             'BuildingIndustries', 'SpaceElevator', 'LunarBeam', 'MassConverter',
             'PhysicsComplex', 'ResearchCoordination', 'TechnologyDemonstration'
-        ] + [f"Card_{i}" for i in range(200)]  # Placeholder for remaining cards
+        ] + [f"Card_{i}" for i in range(200)]  # Fallback when card_metadata not loaded
     
     def encode(self, player_state: Dict[str, Any]) -> np.ndarray:
         """Encode complete game state into feature vector"""

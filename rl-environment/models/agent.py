@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AgentConfig:
-    state_size: int = 512
+    state_size: int = 1024
     hidden_size: int = 256
     num_layers: int = 3
     recurrent_size: int = 128
@@ -91,11 +91,12 @@ class TerraformingMarsNetwork(nn.Module):
         )
 
         # Auxiliary targets:
-        # [milestone_claimability, award_ev, playable_cards, steel_target, titanium_target]
+        # [milestone_claimability (70), award_ev, playable_cards, steel_target, titanium_target]
+        # Total: 70 milestones + 4 other = 74 outputs
         self.aux_head = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size // 2),
             nn.ReLU(),
-            nn.Linear(config.hidden_size // 2, 5),
+            nn.Linear(config.hidden_size // 2, 74),  # 70 milestones + 4 other aux targets
         )
 
     def forward(
@@ -144,13 +145,27 @@ class TerraformingMarsNetwork(nn.Module):
         policy_logits = all_phase_logits.gather(1, gather_idx).squeeze(1)
 
         value = self.value_head(fused)
-        aux_predictions = torch.sigmoid(self.aux_head(fused))
+        aux_raw = self.aux_head(fused)
+        
+        # Split aux predictions: first 70 are milestones (use sigmoid for multi-label binary classification)
+        # Last 4 are other aux targets (award_ev, playable_cards, steel_target, titanium_target)
+        aux_milestone_logits = aux_raw[:, :70]  # Logits for 70 milestones
+        aux_other = aux_raw[:, 70:]  # Other 4 aux targets
+        
+        # Apply sigmoid to milestones (multi-label binary classification)
+        aux_milestone_preds = torch.sigmoid(aux_milestone_logits)
+        # Apply sigmoid to other aux targets (keeping original behavior)
+        aux_other_preds = torch.sigmoid(aux_other)
+        
+        # Concatenate back together for compatibility
+        aux_predictions = torch.cat([aux_milestone_preds, aux_other_preds], dim=1)
 
         return {
             "policy_logits": policy_logits,
             "value": value,
             "recurrent_state": recurrent_out,
             "aux_predictions": aux_predictions,
+            "aux_milestone_logits": aux_milestone_logits,  # Raw logits for BCE loss
         }
 
 
@@ -401,9 +416,9 @@ class RLAgent:
             return 2.0
         return 0.0
 
-    def _compute_aux_targets(self, player_state: Optional[Dict[str, Any]]) -> Dict[str, float]:
+    def _compute_aux_targets(self, player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         targets = {
-            "milestone_claimability": 0.0,
+            "milestone_claimability": np.zeros(70, dtype=np.float32),  # Vector of 70 milestone claimability scores
             "award_ev": 0.0,
             "playable_cards": 0.0,
             "steel_target": 0.0,
@@ -416,16 +431,38 @@ class RLAgent:
         player = player_state.get("thisPlayer", {}) or {}
         own_color = str(player.get("color", "") or "").strip().lower()
 
-        # Milestone claimability proxy from open milestone score previews.
-        best_open_ratio = 0.0
-        for milestone in game.get("milestones", []) or []:
-            if not isinstance(milestone, dict):
+        # Build milestone lookup map
+        milestones_raw = [m for m in (game.get("milestones", []) or []) if isinstance(m, dict)]
+        milestone_by_name: Dict[str, Dict[str, Any]] = {}
+        for m in milestones_raw:
+            name = str(m.get("name", "") or "").strip()
+            if name:
+                milestone_by_name[name] = m
+
+        # Compute claimability for each milestone in fixed order
+        milestone_claimability = np.zeros(70, dtype=np.float32)
+        for idx, milestone_name in enumerate(StateEncoder._ALL_MILESTONES):
+            milestone = milestone_by_name.get(milestone_name)
+            if not milestone:
+                # Milestone doesn't exist in this game
+                milestone_claimability[idx] = 0.0
                 continue
+            
+            # Check if already claimed
             if milestone.get("playerName"):
+                owner_color = str(milestone.get("playerColor", "") or "").strip().lower()
+                if own_color and owner_color == own_color:
+                    milestone_claimability[idx] = 1.0  # I have it
+                else:
+                    milestone_claimability[idx] = 0.0  # Opponent has it
                 continue
+            
+            # Unclaimed - calculate progress from scores
             scores = [row for row in (milestone.get("scores", []) or []) if isinstance(row, dict)]
             if not scores:
+                milestone_claimability[idx] = 0.0
                 continue
+            
             own_score = 0.0
             max_score = 0.0
             for row in scores:
@@ -434,11 +471,17 @@ class RLAgent:
                 except Exception:
                     score = 0.0
                 max_score = max(max_score, score)
-                if own_color and str(row.get("playerColor", "") or "").strip().lower() == own_color:
+                row_color = str(row.get("playerColor", "") or "").strip().lower()
+                if own_color and row_color == own_color:
                     own_score = score
-            if max_score > 0:
-                best_open_ratio = max(best_open_ratio, min(own_score / max_score, 1.0))
-        targets["milestone_claimability"] = float(max(0.0, min(best_open_ratio, 1.0)))
+            
+            # Normalize progress: own_score / max(threshold, max_score)
+            threshold = 3.0
+            denominator = max(threshold, max_score, 1.0)
+            progress_normalized = min(own_score / denominator, 1.0)
+            milestone_claimability[idx] = float(progress_normalized)
+        
+        targets["milestone_claimability"] = milestone_claimability
 
         # Award EV proxy from currently funded awards.
         award_points = 0.0
@@ -1758,8 +1801,25 @@ class RLAgent:
                 if not isinstance(aux_raw, dict):
                     aux_raw = {}
                 aux_pred_raw = list(step.get("aux_predictions", []) or [])
-                while len(aux_pred_raw) < 5:
+                while len(aux_pred_raw) < 74:
                     aux_pred_raw.append(0.0)
+                
+                # Extract milestone claimability vector
+                milestone_target = aux_raw.get("milestone_claimability")
+                if isinstance(milestone_target, (list, tuple)):
+                    milestone_target = np.asarray(milestone_target[:70], dtype=np.float32)
+                elif isinstance(milestone_target, np.ndarray):
+                    milestone_target = milestone_target.flatten()[:70].astype(np.float32)
+                elif isinstance(milestone_target, (int, float)):
+                    # Backward compatibility: single float -> put in first position
+                    milestone_target = np.zeros(70, dtype=np.float32)
+                    milestone_target[0] = float(milestone_target)
+                else:
+                    milestone_target = np.zeros(70, dtype=np.float32)
+                
+                # Extract milestone predictions (first 70 values)
+                milestone_pred = np.asarray(aux_pred_raw[:70], dtype=np.float32)
+                
                 rollout_steps.append(
                     PPORolloutStep(
                         state=state_vector,
@@ -1771,16 +1831,16 @@ class RLAgent:
                         legal_actions=[int(a) for a in step.get("legal_actions", [])],
                         phase_index=int(step.get("phase_index", 0)),
                         recurrent_state=np.asarray(step.get("recurrent_state", []), dtype=np.float32).reshape(-1),
-                        aux_milestone_claimability=float(aux_raw.get("milestone_claimability", 0.0)),
+                        aux_milestone_claimability=milestone_target,
                         aux_award_ev=float(aux_raw.get("award_ev", 0.0)),
                         aux_playable_cards=float(aux_raw.get("playable_cards", 0.0)),
                         aux_steel_target=float(aux_raw.get("steel_target", 0.0)),
                         aux_titanium_target=float(aux_raw.get("titanium_target", 0.0)),
-                        aux_pred_milestone_claimability=float(aux_pred_raw[0] or 0.0),
-                        aux_pred_award_ev=float(aux_pred_raw[1] or 0.0),
-                        aux_pred_playable_cards=float(aux_pred_raw[2] or 0.0),
-                        aux_pred_steel_target=float(aux_pred_raw[3] or 0.0),
-                        aux_pred_titanium_target=float(aux_pred_raw[4] or 0.0),
+                        aux_pred_milestone_claimability=milestone_pred,
+                        aux_pred_award_ev=float(aux_pred_raw[70] if len(aux_pred_raw) > 70 else 0.0),
+                        aux_pred_playable_cards=float(aux_pred_raw[71] if len(aux_pred_raw) > 71 else 0.0),
+                        aux_pred_steel_target=float(aux_pred_raw[72] if len(aux_pred_raw) > 72 else 0.0),
+                        aux_pred_titanium_target=float(aux_pred_raw[73] if len(aux_pred_raw) > 73 else 0.0),
                         rare_state_weight=float(step.get("rare_state_weight", 1.0) or 1.0),
                         rare_award_funding=float(step.get("rare_award_funding", 0.0) or 0.0),
                         rare_milestone_timing=float(step.get("rare_milestone_timing", 0.0) or 0.0),
@@ -1919,16 +1979,31 @@ class RLAgent:
                     use = min(recurrent_dim, int(vec.size))
                     recurrent_states[row_idx, :use] = torch.from_numpy(vec[:use])
 
-            aux_targets = torch.zeros((len(steps), 5), dtype=torch.float32)
+            aux_targets = torch.zeros((len(steps), 74), dtype=torch.float32)  # 70 milestones + 4 other
             for row_idx, step in enumerate(steps):
                 aux = step.get("aux_targets", {}) or {}
                 if not isinstance(aux, dict):
                     aux = {}
-                aux_targets[row_idx, 0] = float(aux.get("milestone_claimability", 0.0))
-                aux_targets[row_idx, 1] = float(aux.get("award_ev", 0.0))
-                aux_targets[row_idx, 2] = float(aux.get("playable_cards", 0.0))
-                aux_targets[row_idx, 3] = float(aux.get("steel_target", 0.0))
-                aux_targets[row_idx, 4] = float(aux.get("titanium_target", 0.0))
+                
+                # Milestone claimability: vector of 70 values
+                milestone_target = aux.get("milestone_claimability")
+                if isinstance(milestone_target, (list, tuple)):
+                    milestone_vec = np.asarray(milestone_target[:70], dtype=np.float32)
+                    aux_targets[row_idx, :70] = torch.from_numpy(milestone_vec)
+                elif isinstance(milestone_target, np.ndarray):
+                    milestone_vec = milestone_target.flatten()[:70].astype(np.float32)
+                    aux_targets[row_idx, :70] = torch.from_numpy(milestone_vec)
+                elif isinstance(milestone_target, (int, float)):
+                    # Backward compatibility: single float -> put in first position
+                    aux_targets[row_idx, 0] = float(milestone_target)
+                else:
+                    pass  # Already zeros
+                
+                # Other aux targets (indices 70-73)
+                aux_targets[row_idx, 70] = float(aux.get("award_ev", 0.0))
+                aux_targets[row_idx, 71] = float(aux.get("playable_cards", 0.0))
+                aux_targets[row_idx, 72] = float(aux.get("steel_target", 0.0))
+                aux_targets[row_idx, 73] = float(aux.get("titanium_target", 0.0))
 
             # Dense+terminal reward: back-propagate step shaping and final outcome.
             running_return = float(terminal_reward)

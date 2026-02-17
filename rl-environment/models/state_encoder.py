@@ -16,8 +16,43 @@ class StateEncoder:
     _CITY_TILE_TYPES = {2, 3, 20, 37, 43}
     _GREENERY_TILE_TYPES = {0, 36}
     _OCEAN_TILE_TYPES = {1, 20, 21, 22, 36, 43}
+    
+    # Fixed order of all possible milestones (sorted alphabetically for consistency)
+    # This ensures each milestone always appears at the same index for PPO auxiliary head
+    _ALL_MILESTONES = [
+        'Agronomist', 'Architect', 'Briber', 'Builder', 'Builder7',
+        'C. Forester', 'Capitalist', 'Coastguard', 'Colonizer', 'Diversifier',
+        'Ecologist', 'Economizer', 'Energizer', 'Engineer', 'Farmer',
+        'Firestarter', 'Forester', 'Fundraiser', 'Gambler', 'Gardener',
+        'Generalist', 'Geologist', 'Hoverlord', 'Hydrologist', 'Irrigator',
+        'Land Specialist', 'Landshaper', 'Legend', 'Legend4', 'Lobbyist',
+        'Lunarchitect', 'Martian', 'Mayor', 'Metallurgist', 'Minimalist',
+        'Networker', 'One Giant Step', 'Philantropist', 'Pioneer', 'Pioneer4',
+        'Planetologist', 'Planner', 'Polar Explorer', 'Producer', 'Purifier',
+        'Researcher', 'Rim Settler', 'Risktaker', 'Smith', 'Spacefarer',
+        'Spacefarer4', 'Specialist', 'Sponsor', 'T. Collector', 'Tactician',
+        'Tactician4', 'Terra Pioneer', 'Terraformer', 'Terraformer29', 'Terran',
+        'Terran5', 'Thawer', 'Trader', 'Tradesman', 'Tropicalist',
+        'Tunneler', 'Tycoon', 'Tycoon10', 'V. Electrician', 'V. Spacefarer',
+    ]
+    
+    # Fixed order of all possible awards (sorted alphabetically for consistency)
+    _ALL_AWARDS = [
+        'A. Engineer', 'A. Manufacturer', 'A. Zoologist', 'Administrator', 'Banker',
+        'Benefactor', 'Biologist', 'Blacksmith', 'Botanist', 'Celebrity',
+        'Collector', 'Constructor', 'Contractor', 'Cosmic Settler', 'Cultivator',
+        'Curator', 'Desert Settler', 'Edgedancer', 'Electrician', 'Entrepreneur',
+        'Estate Dealer', 'Excavator', 'Excentric', 'Forecaster', 'Founder',
+        'Full Moon', 'Highlander', 'Incorporator', 'Industrialist', 'Investor',
+        'Kingpin', 'Landlord', 'Landscaper', 'Lunar Magnate', 'Magnate',
+        'Manufacturer', 'Metropolist', 'Miner', 'Mogul', 'Naturalist',
+        'Politician', 'Promoter', 'Rugged', 'Scientist', 'Space Baron',
+        'Suburbian', 'T. Politician', 'Thermalist', 'Tourist', 'Traveller',
+        'Urbanist', 'Venuphile', 'Visionary', 'Voyager', 'Warmonger',
+        'Zoologist',
+    ]
 
-    def __init__(self, state_size: int = 512):
+    def __init__(self, state_size: int = 1024):
         self.state_size = state_size
         
         # Load authoritative card metadata first; derive common_cards from it when available
@@ -114,7 +149,8 @@ class StateEncoder:
             # Current action context (50 features)
             features.extend(self._encode_action_context(player_state))
             
-            # Awards and milestones (32 features)
+            # Awards and milestones (504 features: 70 milestones * 4 + 56 awards * 4)
+            # For each milestone/award: [exists_in_game, I_have_it, opponent_has_it, my_progress_normalized]
             features.extend(self._encode_awards_milestones(game_state, player))
             
             # Pad or truncate to exact size
@@ -903,132 +939,199 @@ class StateEncoder:
         game_state: Dict[str, Any],
         current_player: Optional[Dict[str, Any]] = None,
     ) -> List[float]:
-        """Encode milestones/awards with ownership and VP-centric pressure signals."""
-        encoding = [0.0] * 32
-        milestones = [m for m in (game_state.get('milestones', []) or []) if isinstance(m, dict)]
-        awards = [a for a in (game_state.get('awards', []) or []) if isinstance(a, dict)]
+        """Encode milestones/awards with per-milestone/per-award encoding.
+        
+        For each milestone/award in the fixed list, encodes 4 values:
+        1. exists_in_game (1.0 / 0.0) - whether this milestone/award exists in the current game
+        2. I_have_it (1.0 / 0.0) - whether the current player owns/claimed it
+        3. opponent_has_it (1.0 / 0.0) - whether any opponent owns/claimed it
+        4. my_progress_normalized (0.0 - 1.0+) - normalized progress toward claiming/winning it
+        
+        Progress is calculated from scores array:
+        - For milestones: my_score / max(threshold, best_score_among_all_players)
+        - For awards: my_score / max(threshold, best_score_among_all_players)
+        
+        This ensures consistent indexing for PPO auxiliary heads (e.g., aux_pred_milestone_claimability),
+        where Gardener will always be at the same index regardless of which map is being played.
+        The progress value helps the model understand how close it is to claiming milestones/awards.
+        """
+        milestones_raw = [m for m in (game_state.get('milestones', []) or []) if isinstance(m, dict)]
+        awards_raw = [a for a in (game_state.get('awards', []) or []) if isinstance(a, dict)]
 
         own_name = str((current_player or {}).get('name', '') or '').strip()
         own_color = str((current_player or {}).get('color', '') or '').strip().lower()
-        vpb = (current_player or {}).get('victoryPointsBreakdown', {}) or {}
-
-        claimed_milestones = [m for m in milestones if m.get('playerName')]
-        funded_awards = [a for a in awards if a.get('playerName')]
-
-        own_milestones_claimed = 0
-        for milestone in claimed_milestones:
-            claimant_name = str(milestone.get('playerName', '') or '').strip()
-            claimant_color = str(milestone.get('playerColor', '') or '').strip().lower()
-            if (own_name and claimant_name == own_name) or (own_color and claimant_color == own_color):
-                own_milestones_claimed += 1
-
-        own_awards_funded = 0
-        own_award_projected_vp = 0.0
-        own_awards_first = 0
-        own_awards_second = 0
-        projected_award_vp_by_color: Dict[str, float] = {}
-        for award in funded_awards:
-            funder_name = str(award.get('playerName', '') or '').strip()
-            funder_color = str(award.get('playerColor', '') or '').strip().lower()
-            if (own_name and funder_name == own_name) or (own_color and funder_color == own_color):
-                own_awards_funded += 1
-
-            scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
-            own_points = self._project_award_points_for_color(scores, own_color)
-            own_award_projected_vp += own_points
-            if own_points >= 4.99:
-                own_awards_first += 1
-            elif own_points >= 1.99:
-                own_awards_second += 1
-
-            contender_colors = {
-                str(row.get('playerColor', '') or '').strip().lower()
-                for row in scores
-                if isinstance(row, dict)
-            }
-            for contender_color in contender_colors:
-                if not contender_color:
-                    continue
-                contender_points = self._project_award_points_for_color(scores, contender_color)
-                projected_award_vp_by_color[contender_color] = (
-                    float(projected_award_vp_by_color.get(contender_color, 0.0)) + contender_points
-                )
-
-        best_other_projected_award_vp = 0.0
-        for contender_color, projected_vp in projected_award_vp_by_color.items():
-            if contender_color == own_color:
-                continue
-            if projected_vp > best_other_projected_award_vp:
-                best_other_projected_award_vp = float(projected_vp)
-
-        # Scalar summary features (0-15)
-        milestone_total = max(1.0, float(len(milestones)))
-        award_total = max(1.0, float(len(awards)))
-        claimed_count = float(len(claimed_milestones))
-        funded_count = float(len(funded_awards))
-        unclaimed_count = max(0.0, milestone_total - claimed_count)
-        unfunded_count = max(0.0, award_total - funded_count)
-
-        own_milestone_vp = float(vpb.get('milestones', 0) or 0)
-        own_award_vp = float(vpb.get('awards', 0) or 0)
-        milestone_vp_gap = own_milestone_vp - (5.0 * max(0.0, claimed_count - float(own_milestones_claimed)))
-        award_vp_gap = own_award_projected_vp - best_other_projected_award_vp
-
-        # How close current player is on still-open milestones based on score preview.
-        best_unclaimed_ratio = 0.0
-        for milestone in milestones:
-            if milestone.get('playerName'):
-                continue
-            scores = [row for row in (milestone.get('scores', []) or []) if isinstance(row, dict)]
-            if not scores:
-                continue
-            own_score = 0.0
-            max_score = 0.0
-            for row in scores:
-                try:
-                    score = float(row.get('playerScore', 0) or 0)
-                except Exception:
-                    score = 0.0
-                max_score = max(max_score, score)
-                row_color = str(row.get('playerColor', '') or '').strip().lower()
-                if own_color and row_color == own_color:
-                    own_score = score
-            if max_score > 0.0:
-                best_unclaimed_ratio = max(best_unclaimed_ratio, min(own_score / max_score, 1.0))
-
-        encoding[0] = min(claimed_count / milestone_total, 1.0)
-        encoding[1] = min(float(own_milestones_claimed) / 3.0, 1.0)
-        encoding[2] = min(unclaimed_count / milestone_total, 1.0)
-        encoding[3] = min(own_milestone_vp / 15.0, 1.0)
-        encoding[4] = min(max((milestone_vp_gap + 15.0) / 30.0, 0.0), 1.0)
-        encoding[5] = min(funded_count / award_total, 1.0)
-        encoding[6] = min(float(own_awards_funded) / 3.0, 1.0)
-        encoding[7] = min(own_award_projected_vp / 15.0, 1.0)
-        encoding[8] = min(own_award_vp / 20.0, 1.0)
-        encoding[9] = min(max((award_vp_gap + 5.0) / 10.0, 0.0), 1.0)
-        encoding[10] = min(float(own_awards_first) / 3.0, 1.0)
-        encoding[11] = min(float(own_awards_second) / 3.0, 1.0)
-        encoding[12] = min(unfunded_count / award_total, 1.0)
-        encoding[13] = 1.0 if unclaimed_count > 0 else 0.0
-        encoding[14] = 1.0 if unfunded_count > 0 else 0.0
-        encoding[15] = min(max(best_unclaimed_ratio, 0.0), 1.0)
-
-        # Compact slot-level ownership signals (16-31).
-        for idx, milestone in enumerate(milestones[:8]):
-            owner = str(milestone.get('playerName', '') or '').strip()
-            owner_color = str(milestone.get('playerColor', '') or '').strip().lower()
-            if not owner:
-                continue
-            encoding[16 + idx] = 1.0 if ((own_name and owner == own_name) or (own_color and owner_color == own_color)) else 0.5
-
-        for idx, award in enumerate(awards[:8]):
-            funder = str(award.get('playerName', '') or '').strip()
-            funder_color = str(award.get('playerColor', '') or '').strip().lower()
-            if not funder:
-                continue
-            encoding[24 + idx] = 1.0 if ((own_name and funder == own_name) or (own_color and funder_color == own_color)) else 0.5
-
-        logger.debug("Awards/milestones: %s for game/player %s", encoding, game_state.get('id'))
+        
+        # Build lookup maps for quick access
+        milestone_by_name: Dict[str, Dict[str, Any]] = {}
+        for m in milestones_raw:
+            name = str(m.get('name', '') or '').strip()
+            if name:
+                milestone_by_name[name] = m
+        
+        award_by_name: Dict[str, Dict[str, Any]] = {}
+        for a in awards_raw:
+            name = str(a.get('name', '') or '').strip()
+            if name:
+                award_by_name[name] = a
+        
+        # Calculate encoding size: (milestones * 4) + (awards * 4)
+        num_milestones = len(self._ALL_MILESTONES)
+        num_awards = len(self._ALL_AWARDS)
+        encoding_size = (num_milestones * 4) + (num_awards * 4)
+        encoding = [0.0] * encoding_size
+        
+        # Encode milestones: for each milestone in fixed order, encode 4 values
+        for idx, milestone_name in enumerate(self._ALL_MILESTONES):
+            base_idx = idx * 4
+            
+            # Check if milestone exists in this game
+            milestone = milestone_by_name.get(milestone_name)
+            if milestone:
+                encoding[base_idx] = 1.0  # exists_in_game
+                
+                # Check ownership
+                owner_name = str(milestone.get('playerName', '') or '').strip()
+                owner_color = str(milestone.get('playerColor', '') or '').strip().lower()
+                
+                if owner_name or owner_color:
+                    # Someone owns it
+                    is_mine = False
+                    is_opponent = False
+                    
+                    if own_name and owner_name == own_name:
+                        is_mine = True
+                    elif own_color and owner_color == own_color:
+                        is_mine = True
+                    else:
+                        is_opponent = True
+                    
+                    encoding[base_idx + 1] = 1.0 if is_mine else 0.0  # I_have_it
+                    encoding[base_idx + 2] = 1.0 if is_opponent else 0.0  # opponent_has_it
+                    # If claimed, progress is 1.0 (achieved) or 0.0 (opponent has it)
+                    encoding[base_idx + 3] = 1.0 if is_mine else 0.0  # my_progress_normalized
+                else:
+                    # Unclaimed - calculate progress from scores
+                    encoding[base_idx + 1] = 0.0  # I_have_it
+                    encoding[base_idx + 2] = 0.0  # opponent_has_it
+                    
+                    # Extract progress from scores array
+                    scores = [row for row in (milestone.get('scores', []) or []) if isinstance(row, dict)]
+                    my_score = 0.0
+                    max_score = 0.0
+                    
+                    for row in scores:
+                        try:
+                            score = float(row.get('playerScore', 0) or 0)
+                        except Exception:
+                            score = 0.0
+                        max_score = max(max_score, score)
+                        
+                        row_color = str(row.get('playerColor', '') or '').strip().lower()
+                        if own_color and row_color == own_color:
+                            my_score = score
+                    
+                    # Normalize progress: my_score / max(threshold, max_score)
+                    # Threshold prevents division by zero and represents typical milestone requirement
+                    # Most milestones require 3-8 of something, so threshold of 3 is reasonable
+                    threshold = 3.0
+                    denominator = max(threshold, max_score, 1.0)
+                    progress_normalized = min(my_score / denominator, 2.0)  # Cap at 2.0 (200% of threshold)
+                    encoding[base_idx + 3] = float(progress_normalized)  # my_progress_normalized
+            else:
+                # Milestone doesn't exist in this game
+                encoding[base_idx] = 0.0  # exists_in_game
+                encoding[base_idx + 1] = 0.0  # I_have_it
+                encoding[base_idx + 2] = 0.0  # opponent_has_it
+                encoding[base_idx + 3] = 0.0  # my_progress_normalized
+        
+        # Encode awards: for each award in fixed order, encode 4 values
+        awards_base_idx = num_milestones * 4
+        for idx, award_name in enumerate(self._ALL_AWARDS):
+            base_idx = awards_base_idx + (idx * 4)
+            
+            # Check if award exists in this game
+            award = award_by_name.get(award_name)
+            if award:
+                encoding[base_idx] = 1.0  # exists_in_game
+                
+                # Check funding (awards are "funded" not "claimed", but same concept)
+                funder_name = str(award.get('playerName', '') or '').strip()
+                funder_color = str(award.get('playerColor', '') or '').strip().lower()
+                
+                if funder_name or funder_color:
+                    # Someone funded it
+                    is_mine = False
+                    is_opponent = False
+                    
+                    if own_name and funder_name == own_name:
+                        is_mine = True
+                    elif own_color and funder_color == own_color:
+                        is_mine = True
+                    else:
+                        is_opponent = True
+                    
+                    encoding[base_idx + 1] = 1.0 if is_mine else 0.0  # I_have_it (funded)
+                    encoding[base_idx + 2] = 1.0 if is_opponent else 0.0  # opponent_has_it (funded)
+                    
+                    # For funded awards, calculate progress toward winning (1st/2nd place)
+                    scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
+                    my_score = 0.0
+                    max_score = 0.0
+                    
+                    for row in scores:
+                        try:
+                            score = float(row.get('playerScore', 0) or 0)
+                        except Exception:
+                            score = 0.0
+                        max_score = max(max_score, score)
+                        
+                        row_color = str(row.get('playerColor', '') or '').strip().lower()
+                        if own_color and row_color == own_color:
+                            my_score = score
+                    
+                    # Normalize progress: my_score / max(threshold, max_score)
+                    # Awards typically have scores in range 1-20+, threshold of 5 is reasonable
+                    threshold = 5.0
+                    denominator = max(threshold, max_score, 1.0)
+                    progress_normalized = min(my_score / denominator, 2.0)  # Cap at 2.0 (200% of threshold)
+                    encoding[base_idx + 3] = float(progress_normalized)  # my_progress_normalized
+                else:
+                    # Unfunded - calculate progress from scores if available
+                    encoding[base_idx + 1] = 0.0  # I_have_it
+                    encoding[base_idx + 2] = 0.0  # opponent_has_it
+                    
+                    # Extract progress from scores array
+                    scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
+                    my_score = 0.0
+                    max_score = 0.0
+                    
+                    for row in scores:
+                        try:
+                            score = float(row.get('playerScore', 0) or 0)
+                        except Exception:
+                            score = 0.0
+                        max_score = max(max_score, score)
+                        
+                        row_color = str(row.get('playerColor', '') or '').strip().lower()
+                        if own_color and row_color == own_color:
+                            my_score = score
+                    
+                    # Normalize progress
+                    threshold = 5.0
+                    denominator = max(threshold, max_score, 1.0)
+                    progress_normalized = min(my_score / denominator, 2.0)
+                    encoding[base_idx + 3] = float(progress_normalized)  # my_progress_normalized
+            else:
+                # Award doesn't exist in this game
+                encoding[base_idx] = 0.0  # exists_in_game
+                encoding[base_idx + 1] = 0.0  # I_have_it
+                encoding[base_idx + 2] = 0.0  # opponent_has_it
+                encoding[base_idx + 3] = 0.0  # my_progress_normalized
+        
+        logger.debug(
+            "Awards/milestones encoding: %d features (%d milestones * 4 + %d awards * 4) for game/player %s",
+            encoding_size, num_milestones, num_awards, game_state.get('id')
+        )
         return encoding
 
     def _normalize_tag_name(self, value: Any) -> str:

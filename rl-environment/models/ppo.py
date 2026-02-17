@@ -31,12 +31,12 @@ class PPORolloutStep:
     legal_actions: List[int]
     phase_index: int = 0
     recurrent_state: Optional[np.ndarray] = None
-    aux_milestone_claimability: float = 0.0
+    aux_milestone_claimability: Optional[np.ndarray] = None  # Vector of 70 milestone claimability scores
     aux_award_ev: float = 0.0
     aux_playable_cards: float = 0.0
     aux_steel_target: float = 0.0
     aux_titanium_target: float = 0.0
-    aux_pred_milestone_claimability: float = 0.0
+    aux_pred_milestone_claimability: Optional[np.ndarray] = None  # Vector of 70 milestone predictions
     aux_pred_award_ev: float = 0.0
     aux_pred_playable_cards: float = 0.0
     aux_pred_steel_target: float = 0.0
@@ -138,13 +138,28 @@ def _build_recurrent_state_batch(
 
 
 def _build_aux_target_batch(steps: Sequence[PPORolloutStep]) -> torch.Tensor:
-    out = torch.zeros((len(steps), 5), dtype=torch.float32)
+    # 70 milestones + 4 other aux targets = 74 total
+    out = torch.zeros((len(steps), 74), dtype=torch.float32)
     for row_idx, step in enumerate(steps):
-        out[row_idx, 0] = float(getattr(step, "aux_milestone_claimability", 0.0))
-        out[row_idx, 1] = float(getattr(step, "aux_award_ev", 0.0))
-        out[row_idx, 2] = float(getattr(step, "aux_playable_cards", 0.0))
-        out[row_idx, 3] = float(getattr(step, "aux_steel_target", 0.0))
-        out[row_idx, 4] = float(getattr(step, "aux_titanium_target", 0.0))
+        # Milestone claimability: vector of 70 values
+        milestone_target = getattr(step, "aux_milestone_claimability", None)
+        if milestone_target is not None:
+            if isinstance(milestone_target, np.ndarray):
+                milestone_vec = milestone_target.flatten()[:70]  # Ensure exactly 70 values
+                out[row_idx, :70] = torch.from_numpy(milestone_vec.astype(np.float32))
+            elif isinstance(milestone_target, (list, tuple)):
+                milestone_vec = np.asarray(milestone_target[:70], dtype=np.float32)
+                out[row_idx, :min(70, len(milestone_vec))] = torch.from_numpy(milestone_vec[:70])
+        # Fallback: if milestone_target is still a scalar (backward compatibility)
+        elif hasattr(step, "aux_milestone_claimability") and isinstance(getattr(step, "aux_milestone_claimability"), (int, float)):
+            # Old format: single float, put it in first position
+            out[row_idx, 0] = float(getattr(step, "aux_milestone_claimability", 0.0))
+        
+        # Other aux targets (indices 70-73)
+        out[row_idx, 70] = float(getattr(step, "aux_award_ev", 0.0))
+        out[row_idx, 71] = float(getattr(step, "aux_playable_cards", 0.0))
+        out[row_idx, 72] = float(getattr(step, "aux_steel_target", 0.0))
+        out[row_idx, 73] = float(getattr(step, "aux_titanium_target", 0.0))
     return out
 
 
@@ -294,8 +309,8 @@ def optimize_ppo_policy(
     total_clip_fraction = 0.0
     total_grad_norm = 0.0
     total_aux_loss = 0.0
-    total_aux_mse = torch.zeros((5,), dtype=torch.float32)
-    total_aux_mae = torch.zeros((5,), dtype=torch.float32)
+    total_aux_mse = torch.zeros((74,), dtype=torch.float32)  # 70 milestones + 4 other
+    total_aux_mae = torch.zeros((74,), dtype=torch.float32)
     aux_metric_updates = 0
     sampled_total_count = 0.0
     sampled_rare_count = 0.0
@@ -345,6 +360,7 @@ def optimize_ppo_policy(
             logits = out["policy_logits"]
             value_preds = out["value"]
             aux_predictions = out.get("aux_predictions")
+            aux_milestone_logits = out.get("aux_milestone_logits")  # Raw logits for BCE loss
             logits = logits / max(float(policy_temperature), 1e-3)
             masked_logits = logits.masked_fill(~batch_legal_masks, -1e9)
             log_probs = F.log_softmax(masked_logits, dim=-1)
@@ -375,12 +391,47 @@ def optimize_ppo_policy(
             else:
                 value_loss = 0.5 * (value_preds - batch_returns).pow(2).mean()
 
-            if aux_predictions is not None:
+            if aux_predictions is not None and batch_aux_targets.shape[1] >= 74:
+                # Split aux targets: milestones (0:70) and other (70:74)
+                milestone_targets = batch_aux_targets[:, :70]
+                other_targets = batch_aux_targets[:, 70:74]
+                
+                # Use BCEWithLogitsLoss for milestones (multi-label binary classification)
+                if aux_milestone_logits is not None:
+                    milestone_loss = F.binary_cross_entropy_with_logits(
+                        aux_milestone_logits, milestone_targets, reduction='mean'
+                    )
+                else:
+                    # Fallback: use MSE if logits not available
+                    milestone_predictions = aux_predictions[:, :70]
+                    milestone_loss = F.mse_loss(milestone_predictions, milestone_targets)
+                
+                # Use MSE for other aux targets (keeping original behavior)
+                other_predictions = aux_predictions[:, 70:74]
+                other_loss = F.mse_loss(other_predictions, other_targets)
+                
+                # Combined aux loss
+                aux_loss = milestone_loss + other_loss
+                
+                # Update metrics
+                if aux_predictions.dim() == 2:
+                    # Milestone metrics (first 70)
+                    milestone_diff = aux_predictions[:, :70] - milestone_targets
+                    total_aux_mse[:70] += milestone_diff.pow(2).mean(dim=0).detach().cpu()
+                    total_aux_mae[:70] += milestone_diff.abs().mean(dim=0).detach().cpu()
+                    
+                    # Other aux metrics (last 4)
+                    other_diff = other_predictions - other_targets
+                    total_aux_mse[70:74] += other_diff.pow(2).mean(dim=0).detach().cpu()
+                    total_aux_mae[70:74] += other_diff.abs().mean(dim=0).detach().cpu()
+                    aux_metric_updates += 1
+            elif aux_predictions is not None:
+                # Fallback for old format (backward compatibility)
                 aux_loss = F.mse_loss(aux_predictions, batch_aux_targets)
                 if aux_predictions.dim() == 2 and int(aux_predictions.shape[1]) >= 5:
                     diff = aux_predictions[:, :5] - batch_aux_targets[:, :5]
-                    total_aux_mse += diff.pow(2).mean(dim=0).detach().cpu()
-                    total_aux_mae += diff.abs().mean(dim=0).detach().cpu()
+                    total_aux_mse[:5] += diff.pow(2).mean(dim=0).detach().cpu()
+                    total_aux_mae[:5] += diff.abs().mean(dim=0).detach().cpu()
                     aux_metric_updates += 1
             else:
                 aux_loss = torch.tensor(0.0, dtype=torch.float32, device=value_loss.device)
@@ -469,7 +520,15 @@ def optimize_ppo_policy(
         "rollout/reward_shaping_coef_mean": float(reward_components["shaping_coef"].mean().item()),
         "rollout/steps": int(len(steps)),
     }
-    for idx, head_name in enumerate(AUX_HEAD_NAMES):
-        metrics[f"ppo/aux_mse_{head_name}"] = float(total_aux_mse[idx].item()) / float(aux_updates)
-        metrics[f"ppo/aux_mae_{head_name}"] = float(total_aux_mae[idx].item()) / float(aux_updates)
+    # Metrics for milestone claimability (first 70)
+    milestone_mse_mean = float(total_aux_mse[:70].mean().item()) / float(aux_updates) if aux_updates > 0 else 0.0
+    milestone_mae_mean = float(total_aux_mae[:70].mean().item()) / float(aux_updates) if aux_updates > 0 else 0.0
+    metrics["ppo/aux_mse_milestone_claimability"] = milestone_mse_mean
+    metrics["ppo/aux_mae_milestone_claimability"] = milestone_mae_mean
+    
+    # Metrics for other aux heads (indices 70-73)
+    for idx, head_name in enumerate(AUX_HEAD_NAMES[1:], start=70):  # Skip milestone_claimability, start at index 70
+        if idx < 74:
+            metrics[f"ppo/aux_mse_{head_name}"] = float(total_aux_mse[idx].item()) / float(aux_updates) if aux_updates > 0 else 0.0
+            metrics[f"ppo/aux_mae_{head_name}"] = float(total_aux_mae[idx].item()) / float(aux_updates) if aux_updates > 0 else 0.0
     return metrics

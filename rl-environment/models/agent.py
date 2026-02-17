@@ -2261,6 +2261,66 @@ class RLAgent:
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
 
         state_dict = checkpoint.get('network_state_dict', {}) or {}
+        
+        # Handle backward compatibility: old checkpoints had 5 aux outputs, new model has 74
+        old_aux_weight_key = 'aux_head.2.weight'
+        old_aux_bias_key = 'aux_head.2.bias'
+        if old_aux_weight_key in state_dict and old_aux_bias_key in state_dict:
+            old_weight = state_dict[old_aux_weight_key]
+            old_bias = state_dict[old_aux_bias_key]
+            old_size = old_weight.shape[0]  # Number of outputs in old checkpoint
+            
+            current_aux_weight = self.network.aux_head[2].weight
+            current_aux_bias = self.network.aux_head[2].bias
+            current_size = current_aux_weight.shape[0]  # Should be 74
+            
+            if old_size != current_size:
+                logger.info(
+                    "Detected aux head size mismatch: checkpoint has %d outputs, current model has %d. "
+                    "Migrating old checkpoint...",
+                    old_size, current_size
+                )
+                
+                # Create new weight and bias tensors with current model size
+                new_weight = current_aux_weight.clone()  # Initialize with current random weights
+                new_bias = current_aux_bias.clone()
+                
+                # Map old outputs to new positions:
+                # Old format: [milestone_claimability (scalar), award_ev, playable_cards, steel_target, titanium_target]
+                # New format: [milestone_claimability (70), award_ev, playable_cards, steel_target, titanium_target]
+                # So indices 1-4 map to indices 70-73 in new format
+                if old_size == 5:
+                    # Copy old outputs to appropriate positions
+                    # milestone_claimability (old index 0) -> initialize first milestone (index 0) with old value
+                    # For milestones, we'll initialize with a small value based on the old scalar
+                    milestone_init_value = old_weight[0:1, :].mean(dim=0, keepdim=True)
+                    new_weight[0:70, :] = milestone_init_value.expand(70, -1) * 0.1  # Scale down for milestones
+                    
+                    # Copy other 4 outputs to positions 70-73
+                    new_weight[70:74, :] = old_weight[1:5, :]
+                    new_bias[70:74] = old_bias[1:5]
+                    
+                    # Initialize milestone biases with small values
+                    new_bias[0:70] = old_bias[0:1].expand(70) * 0.1
+                    
+                    logger.info(
+                        "Migrated aux head: old milestone scalar -> 70 milestone outputs, "
+                        "old outputs [1-4] -> new outputs [70-73]"
+                    )
+                else:
+                    # Unknown old format, just copy what we can
+                    copy_size = min(old_size, current_size)
+                    new_weight[:copy_size, :] = old_weight[:copy_size, :]
+                    new_bias[:copy_size] = old_bias[:copy_size]
+                    logger.warning(
+                        "Unknown aux head format (old_size=%d). Copied first %d outputs.",
+                        old_size, copy_size
+                    )
+                
+                # Replace in state_dict
+                state_dict[old_aux_weight_key] = new_weight
+                state_dict[old_aux_bias_key] = new_bias
+        
         load_result = self.network.load_state_dict(state_dict, strict=False)
         missing = list(getattr(load_result, "missing_keys", []) or [])
         unexpected = list(getattr(load_result, "unexpected_keys", []) or [])

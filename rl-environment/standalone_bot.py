@@ -16,8 +16,99 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 import aiohttp
 
 from models.agent import RLAgent
+from models.state_encoder import StateEncoder
 
 logger = logging.getLogger(__name__)
+
+
+def _log_agent_metadata(agent: RLAgent):
+    """Log card metadata, milestones, awards, and other agent information."""
+    print("\n" + "=" * 70)
+    print("AGENT METADATA INFORMATION")
+    print("=" * 70)
+    
+    # Card metadata information
+    state_encoder = agent.state_encoder
+    card_metadata = state_encoder.card_metadata_by_name
+    common_cards = state_encoder.common_cards
+    
+    print(f"\n[Card Metadata]")
+    print(f"  Total cards loaded: {len(card_metadata)}")
+    print(f"  Common cards list size: {len(common_cards)}")
+    
+    if card_metadata:
+        # Show card metadata source
+        env_path = os.getenv('TM_CARD_METADATA_PATH')
+        if env_path:
+            print(f"  Metadata source: {env_path} (from TM_CARD_METADATA_PATH)")
+        else:
+            print(f"  Metadata source: Auto-detected from default locations")
+        
+        # Show sample cards with their metadata
+        print(f"\n  Sample cards (first 10):")
+        for i, card_name in enumerate(common_cards[:10]):
+            meta = card_metadata.get(card_name, {})
+            tags = meta.get('tags', [])
+            card_type = meta.get('type', 'unknown')
+            cost_raw = meta.get('cost', None)
+            cost_str = str(cost_raw) if cost_raw is not None else '?'
+            tags_str = ', '.join(str(tag) for tag in tags[:3])
+            if len(tags) > 3:
+                tags_str += '...'
+            print(f"    {i+1:2d}. {card_name:30s} | Type: {card_type:10s} | Cost: {cost_str:>3s} | Tags: {tags_str}")
+        
+        if len(common_cards) > 10:
+            print(f"    ... and {len(common_cards) - 10} more cards")
+        
+        # Count cards by type
+        type_counts = {}
+        for card_name, meta in card_metadata.items():
+            card_type = meta.get('type', 'unknown')
+            type_counts[card_type] = type_counts.get(card_type, 0) + 1
+        
+        if type_counts:
+            print(f"\n  Cards by type:")
+            for card_type, count in sorted(type_counts.items()):
+                print(f"    {card_type:15s}: {count:4d}")
+    else:
+        print("  WARNING: No card metadata loaded - using fallback card list")
+    
+    # Milestones information
+    milestones = StateEncoder._ALL_MILESTONES
+    print(f"\n[Milestones]")
+    print(f"  Total milestones tracked: {len(milestones)}")
+    print(f"  Sample milestones: {', '.join(milestones[:5])}...")
+    
+    # Awards information
+    awards = StateEncoder._ALL_AWARDS
+    print(f"\n[Awards]")
+    print(f"  Total awards tracked: {len(awards)}")
+    print(f"  Sample awards: {', '.join(awards[:5])}...")
+    
+    # Agent configuration
+    print(f"\n[Agent Configuration]")
+    print(f"  Agent ID: {agent.id[:8]}...")
+    print(f"  State size: {agent.config.state_size}")
+    print(f"  Hidden size: {agent.config.hidden_size}")
+    print(f"  Number of layers: {agent.config.num_layers}")
+    print(f"  Recurrent size: {agent.config.recurrent_size}")
+    print(f"  Phase head count: {agent.config.phase_head_count}")
+    print(f"  Learning rate: {agent.config.learning_rate}")
+    print(f"  Temperature: {agent.config.temperature}")
+    print(f"  Epsilon: {agent.config.epsilon}")
+    
+    # Network information
+    network = agent.network
+    print(f"\n[Network Architecture]")
+    total_params = sum(p.numel() for p in network.parameters())
+    trainable_params = sum(p.numel() for p in network.parameters() if p.requires_grad)
+    print(f"  Total parameters: {total_params:,}")
+    print(f"  Trainable parameters: {trainable_params:,}")
+    print(f"  Action dimension: {network.action_dim}")
+    print(f"  Recurrent size: {network.recurrent_size}")
+    print(f"  Phase heads: {network.phase_head_count}")
+    
+    print("=" * 70 + "\n")
 
 
 def _default_models_root() -> str:
@@ -260,6 +351,9 @@ async def _run(args: argparse.Namespace):
         agent.post_move_sleep_sec = max(float(agent.post_move_sleep_sec), min_action_interval_sec)
         agent.failure_pause_sec = max(float(agent.failure_pause_sec), min_action_interval_sec)
         agent.poll_interval_sec = max(float(agent.poll_interval_sec), poll_interval_sec)
+
+        # Log card metadata and state encoder information
+        _log_agent_metadata(agent)
 
         initial_state = await game.get_player_state(player_id)
         resolved_player_name = str(

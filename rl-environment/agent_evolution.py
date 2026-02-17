@@ -65,7 +65,7 @@ class EvolutionManager:
         for i in range(population_size):
             # Create diverse initial configurations
             config = AgentConfig(
-                state_size=512,
+                state_size=self._safe_env_int("AGENT_STATE_SIZE", 1024),
                 hidden_size=self._safe_env_int("AGENT_HIDDEN_SIZE", 256),
                 num_layers=self._safe_env_int("AGENT_NUM_LAYERS", 3),
                 learning_rate=random.uniform(1e-5, 1e-3),
@@ -365,7 +365,7 @@ class EvolutionManager:
                 
                 # Create new random agent
                 config = AgentConfig(
-                    state_size=512,
+                    state_size=self._safe_env_int("AGENT_STATE_SIZE", 1024),
                     hidden_size=self._safe_env_int("AGENT_HIDDEN_SIZE", 256),
                     num_layers=self._safe_env_int("AGENT_NUM_LAYERS", 3),
                     learning_rate=random.uniform(1e-5, 1e-3),

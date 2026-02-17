@@ -197,7 +197,14 @@ def _normalize_network_output(raw_output: Any) -> Dict[str, Optional[torch.Tenso
 class RLAgent:
     def __init__(self, config: AgentConfig = None, agent_id: str = None):
         self.id = agent_id or str(uuid.uuid4())
-        self.config = config or AgentConfig()
+        if config is None:
+            # Read environment variables for default config
+            config = AgentConfig(
+                state_size=RLAgent._safe_env_int("AGENT_STATE_SIZE", 1024),
+                hidden_size=RLAgent._safe_env_int("AGENT_HIDDEN_SIZE", 256),
+                num_layers=RLAgent._safe_env_int("AGENT_NUM_LAYERS", 3),
+            )
+        self.config = config
         # PPO optimizer LR is decoupled from evolutionary config learning_rate by default.
         self.ppo_learning_rate = self._safe_env_float("PPO_LEARNING_RATE", 3e-4)
         self.ppo_lr_min = self._safe_env_float(
@@ -218,7 +225,7 @@ class RLAgent:
         self.network.eval()
         
         # Game interaction components
-        self.state_encoder = StateEncoder()
+        self.state_encoder = StateEncoder(state_size=self.config.state_size)
         self.action_decoder = ActionDecoder()
         
         # Self-play learning configuration (env overrides)

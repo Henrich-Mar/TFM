@@ -329,6 +329,303 @@ def _card_nominal_vp(card: Optional[Dict[str, Any]]) -> float:
         return 0.0
     return max(0.0, _safe_float(card.get('victoryPoints', 0), 0.0))
 
+_CITY_TILE_TYPES = {2, 3, 20, 37, 43}
+_GREENERY_TILE_TYPES = {0, 36}
+_OCEAN_TILE_TYPES = {1, 20, 21, 22, 36, 43}
+
+def _optional_int(value: Any) -> Optional[int]:
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+def _title_text(value: Any) -> str:
+    if isinstance(value, dict):
+        message = str(value.get('message', '') or '')
+        data = value.get('data', [])
+        if not message:
+            return ''
+        if isinstance(data, list):
+            rendered = message
+            for idx, token in enumerate(data):
+                if isinstance(token, dict):
+                    replacement = str(token.get('value', '') or '')
+                else:
+                    replacement = str(token or '')
+                rendered = rendered.replace(f"${{{idx}}}", replacement)
+            return rendered
+        return message
+    if isinstance(value, str):
+        return value
+    return ''
+
+def _space_id(space: Any) -> str:
+    if isinstance(space, dict):
+        return str(space.get('id') or space.get('spaceId') or '').strip()
+    return str(space or '').strip()
+
+def _space_owner_color(space: Dict[str, Any]) -> str:
+    return str(space.get('color', '') or '').strip().lower()
+
+def _space_type_lower(value: Any) -> str:
+    return str(value or '').strip().lower()
+
+def _space_tile_flags(space: Dict[str, Any]) -> tuple[bool, bool, bool]:
+    tile_raw = space.get('tileType')
+    tile_num = _optional_int(tile_raw)
+    tile_name = str(tile_raw or '').strip().lower().replace('-', '_').replace(' ', '_')
+
+    is_city = False
+    is_greenery = False
+    is_ocean = False
+
+    if tile_num is not None:
+        is_city = tile_num in _CITY_TILE_TYPES
+        is_greenery = tile_num in _GREENERY_TILE_TYPES
+        is_ocean = tile_num in _OCEAN_TILE_TYPES
+
+    if tile_name:
+        if 'city' in tile_name or tile_name in ('capital', 'new_holland'):
+            is_city = True
+        if 'greenery' in tile_name or 'wetland' in tile_name:
+            is_greenery = True
+        if 'ocean' in tile_name or 'wetland' in tile_name:
+            is_ocean = True
+
+    return is_city, is_greenery, is_ocean
+
+def _build_board_adjacency_index(spaces: List[Dict[str, Any]]) -> Dict[str, set]:
+    coord_to_id: Dict[tuple[int, int], str] = {}
+    mars_spaces: List[tuple[str, int, int]] = []
+    max_y = 0
+
+    for space in spaces:
+        if not isinstance(space, dict):
+            continue
+        sid = _space_id(space)
+        if not sid:
+            continue
+        if _space_type_lower(space.get('spaceType')) == 'colony':
+            continue
+        x = _optional_int(space.get('x'))
+        y = _optional_int(space.get('y'))
+        if x is None or y is None or x < 0 or y < 0:
+            continue
+        coord_to_id[(x, y)] = sid
+        mars_spaces.append((sid, x, y))
+        if y > max_y:
+            max_y = y
+
+    if not mars_spaces:
+        return {}
+
+    middle_row = max_y / 2.0
+    adjacency: Dict[str, set] = {}
+    for sid, x, y in mars_spaces:
+        left_space = (x - 1, y)
+        right_space = (x + 1, y)
+        top_left_space = [x, y - 1]
+        top_right_space = [x, y - 1]
+        bottom_left_space = [x, y + 1]
+        bottom_right_space = [x, y + 1]
+
+        if y < middle_row:
+            bottom_left_space[0] -= 1
+            top_right_space[0] += 1
+        elif y == middle_row:
+            bottom_right_space[0] += 1
+            top_right_space[0] += 1
+        else:
+            bottom_right_space[0] += 1
+            top_left_space[0] -= 1
+
+        neighbor_coords = [
+            tuple(top_left_space),
+            tuple(top_right_space),
+            right_space,
+            tuple(bottom_right_space),
+            tuple(bottom_left_space),
+            left_space,
+        ]
+        neighbors = set()
+        for coord in neighbor_coords:
+            neighbor_id = coord_to_id.get(coord)
+            if neighbor_id and neighbor_id != sid:
+                neighbors.add(neighbor_id)
+        adjacency[sid] = neighbors
+
+    return adjacency
+
+def _extract_space_action_payload(action_input: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(action_input, dict):
+        return None
+    stack: List[Dict[str, Any]] = [action_input]
+    while stack:
+        payload = stack.pop()
+        if not isinstance(payload, dict):
+            continue
+        if _normalize_token(payload.get('type')) == 'space':
+            if payload.get('spaceId') is not None:
+                return payload
+        nested_response = payload.get('response')
+        if isinstance(nested_response, dict):
+            stack.append(nested_response)
+        nested_responses = payload.get('responses')
+        if isinstance(nested_responses, list):
+            for item in nested_responses:
+                if isinstance(item, dict):
+                    stack.append(item)
+    return None
+
+def _infer_space_prompt_tile_intent(waiting_for: Dict[str, Any]) -> str:
+    title = _title_text(waiting_for.get('title', '')).lower()
+    button = str(waiting_for.get('buttonLabel', '') or '').lower()
+    context = f"{title} {button}".strip()
+
+    if 'greenery' in context:
+        return 'greenery'
+    if 'ocean' in context or 'aquifer' in context:
+        return 'ocean'
+    if 'for city tile' in context or 'place a city tile' in context or 'place city tile' in context:
+        return 'city'
+    if 'select space for city tile' in context:
+        return 'city'
+    if 'special tile' in context or 'hazard tile' in context:
+        return 'special'
+    if ' for ' in context and ' tile' in context:
+        return 'special'
+    if 'adjacent to a city tile' in context or 'adjacent to city tile' in context:
+        return 'special'
+    return 'unknown'
+
+def _space_waiting_prompt(before_waiting: Dict[str, Any], action_input: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    waiting_type = _normalize_token(before_waiting.get('type'))
+    if waiting_type in ('space', 'selectspace'):
+        return before_waiting
+    if waiting_type == 'or':
+        options = before_waiting.get('options', []) or []
+        selected_idx = _optional_int(action_input.get('index'))
+        if selected_idx is not None and 0 <= selected_idx < len(options):
+            selected = options[selected_idx]
+            if isinstance(selected, dict) and _normalize_token(selected.get('type')) in ('space', 'selectspace'):
+                return selected
+        for option in options:
+            if isinstance(option, dict) and _normalize_token(option.get('type')) in ('space', 'selectspace'):
+                return option
+    return None
+
+def _waiting_space_ids(waiting_prompt: Optional[Dict[str, Any]]) -> List[str]:
+    if not isinstance(waiting_prompt, dict):
+        return []
+    raw_spaces = waiting_prompt.get('availableSpaces', waiting_prompt.get('spaces', []))
+    if not isinstance(raw_spaces, list):
+        return []
+    out: List[str] = []
+    for space in raw_spaces:
+        sid = _space_id(space)
+        if sid:
+            out.append(sid)
+    return out
+
+def _newly_placed_space(before_game: Dict[str, Any], after_game: Dict[str, Any], own_color: str) -> Optional[Dict[str, Any]]:
+    before_spaces = [space for space in (before_game.get('spaces', []) or []) if isinstance(space, dict)]
+    after_spaces = [space for space in (after_game.get('spaces', []) or []) if isinstance(space, dict)]
+    before_by_id = {_space_id(space): space for space in before_spaces if _space_id(space)}
+    candidates: List[Dict[str, Any]] = []
+
+    for space in after_spaces:
+        sid = _space_id(space)
+        if not sid:
+            continue
+        before_space = before_by_id.get(sid, {})
+        before_has_tile = before_space.get('tileType') is not None
+        after_has_tile = space.get('tileType') is not None
+        if not before_has_tile and after_has_tile:
+            candidates.append(space)
+
+    if not candidates:
+        return None
+    for space in candidates:
+        if _space_owner_color(space) == own_color:
+            return space
+    return candidates[0]
+
+def _space_placement_adjustment(
+    before_state: Dict[str, Any],
+    after_state: Dict[str, Any],
+    action_input: Dict[str, Any],
+) -> float:
+    space_action = _extract_space_action_payload(action_input)
+    if not isinstance(space_action, dict):
+        return 0.0
+
+    before_player = _extract_player(before_state)
+    own_color = _normalize_token(before_player.get('color'))
+    if not own_color:
+        return 0.0
+
+    before_game = _extract_game(before_state)
+    after_game = _extract_game(after_state)
+    if not before_game or not after_game:
+        return 0.0
+
+    placed_space = _newly_placed_space(before_game, after_game, own_color)
+    if not isinstance(placed_space, dict):
+        return 0.0
+    placed_space_id = _space_id(placed_space)
+    if not placed_space_id:
+        return 0.0
+
+    board_spaces = [space for space in (before_game.get('spaces', []) or []) if isinstance(space, dict)]
+    adjacency = _build_board_adjacency_index(board_spaces)
+    neighbors = adjacency.get(placed_space_id, set())
+
+    enemy_city_ids = set()
+    own_city_ids = set()
+    for space in board_spaces:
+        sid = _space_id(space)
+        if not sid:
+            continue
+        is_city, _, _ = _space_tile_flags(space)
+        owner = _space_owner_color(space)
+        if not is_city or not owner:
+            continue
+        if owner == own_color:
+            own_city_ids.add(sid)
+        else:
+            enemy_city_ids.add(sid)
+
+    enemy_city_adj = sum(1 for sid in neighbors if sid in enemy_city_ids)
+    own_city_adj = sum(1 for sid in neighbors if sid in own_city_ids)
+
+    before_waiting = before_state.get('waitingFor', {}) if isinstance(before_state, dict) else {}
+    waiting_prompt = _space_waiting_prompt(before_waiting, action_input)
+    intent = _infer_space_prompt_tile_intent(waiting_prompt or before_waiting or {})
+
+    adjustment = 0.0
+    if intent == 'greenery':
+        waiting_ids = _waiting_space_ids(waiting_prompt)
+        risky_total = 0
+        if waiting_ids:
+            for sid in waiting_ids:
+                option_neighbors = adjacency.get(sid, set())
+                if any(nid in enemy_city_ids for nid in option_neighbors):
+                    risky_total += 1
+        all_options_risky = bool(waiting_ids) and risky_total >= len(waiting_ids)
+
+        if enemy_city_adj > 0:
+            base_penalty = min(0.16, 0.08 * float(enemy_city_adj))
+            adjustment -= base_penalty * (0.25 if all_options_risky else 1.0)
+        elif own_city_adj > 0:
+            adjustment += min(0.06, 0.03 * float(own_city_adj))
+    elif intent == 'special' and enemy_city_adj > 0:
+        # Strategic blocking around enemy cities is a valid positive tactic.
+        adjustment += min(0.05, 0.02 * float(enemy_city_adj))
+
+    return float(adjustment)
+
 
 REWARD_NON_ACTION = -0.01  # Small penalty for doing nothing
 
@@ -451,6 +748,11 @@ def calculate_step_reward_decomposition(
     # Light penalty for pass to discourage low-value inactivity.
     if action_type == 'pass':
         other_component -= 0.02
+
+    # Tile-placement tactical shaping:
+    # - discourage greenery placements adjacent to enemy cities (unless forced)
+    # - allow/encourage special-tile blocking around enemy cities
+    other_component += _space_placement_adjustment(before_state, after_state, action_input)
 
     # Penalize routine sell-patents behavior, especially when playable cards were already affordable.
     before_waiting = before_state.get('waitingFor', {}) if isinstance(before_state, dict) else {}

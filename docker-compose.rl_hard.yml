@@ -1,5 +1,5 @@
 services:
-  # Game Server Cluster (10 instances for parallel training)
+  # Game Server Cluster (8 instances for parallel training)
   tfm-server-1:
     build:
       context: ./terraforming-mars
@@ -12,6 +12,16 @@ services:
       - SERVER_ID=tfm-server-1
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    labels:
+      - autoheal=true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     restart: unless-stopped
 
   tfm-server-2:
@@ -26,6 +36,16 @@ services:
       - SERVER_ID=tfm-server-2
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    labels:
+      - autoheal=true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     restart: unless-stopped
 
   tfm-server-3:
@@ -40,6 +60,16 @@ services:
       - SERVER_ID=tfm-server-3
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    labels:
+      - autoheal=true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     restart: unless-stopped
     
   tfm-server-4:
@@ -54,6 +84,16 @@ services:
       - SERVER_ID=tfm-server-4
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    labels:
+      - autoheal=true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     restart: unless-stopped
     
   tfm-server-5:
@@ -68,6 +108,16 @@ services:
       - SERVER_ID=tfm-server-5
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    labels:
+      - autoheal=true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     restart: unless-stopped
     
   tfm-server-6:
@@ -82,6 +132,16 @@ services:
       - SERVER_ID=tfm-server-6
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    labels:
+      - autoheal=true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     restart: unless-stopped
 
   tfm-server-7:
@@ -96,6 +156,16 @@ services:
       - SERVER_ID=tfm-server-7
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    labels:
+      - autoheal=true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     restart: unless-stopped
 
   tfm-server-8:
@@ -110,35 +180,38 @@ services:
       - SERVER_ID=tfm-server-8
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    labels:
+      - autoheal=true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     restart: unless-stopped
 
-  tfm-server-9:
-    build:
-      context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
-    ports:
-      - "8089:8080"
+  # Automatically restart unhealthy tfm-server containers
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
     environment:
-      - NODE_ENV=production
-      - COMPRESS_COMPLETED_GAMES_DAYS=0
-      - SERVER_ID=tfm-server-9
-    tmpfs:
-      - /usr/src/app/db:uid=100,gid=65533,mode=0775
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=15
+      - AUTOHEAL_START_PERIOD=120
+      - AUTOHEAL_DEFAULT_STOP_TIMEOUT=20
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
-
-  tfm-server-10:
-    build:
-      context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
-    ports:
-      - "8090:8080"
-    environment:
-      - NODE_ENV=production
-      - COMPRESS_COMPLETED_GAMES_DAYS=0
-      - SERVER_ID=tfm-server-10
-    tmpfs:
-      - /usr/src/app/db:uid=100,gid=65533,mode=0775
-    restart: unless-stopped
+    depends_on:
+      - tfm-server-1
+      - tfm-server-2
+      - tfm-server-3
+      - tfm-server-4
+      - tfm-server-5
+      - tfm-server-6
+      - tfm-server-7
+      - tfm-server-8
 
   # Redis for job queue and caching
   redis:
@@ -165,6 +238,7 @@ services:
     build:
       context: ./rl-environment
       dockerfile: Dockerfile.training
+    restart: unless-stopped
     volumes:
       - ./rl-environment:/app
       - ./rl-models:/app/rl-models
@@ -173,24 +247,24 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - POSTGRES_URL=postgresql://tfm:tfm_password@postgres:5432/tfm_rl
-      - GAME_SERVERS=tfm-server-1:8080,tfm-server-2:8080,tfm-server-3:8080,tfm-server-4:8080,tfm-server-5:8080,tfm-server-6:8080,tfm-server-7:8080,tfm-server-8:8080,tfm-server-9:8080,tfm-server-10:8080
-      - PUBLIC_TM_MAP=tfm-server-1:8080=http://localhost:8081,tfm-server-2:8080=http://localhost:8082,tfm-server-3:8080=http://localhost:8083,tfm-server-4:8080=http://localhost:8084,tfm-server-5:8080=http://localhost:8085,tfm-server-6:8080=http://localhost:8086,tfm-server-7:8080=http://localhost:8087,tfm-server-8:8080=http://localhost:8088,tfm-server-9:8080=http://localhost:8089,tfm-server-10:8080=http://localhost:8090
-      - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4,tfm-server-5:8080=tfm-server-5,tfm-server-6:8080=tfm-server-6,tfm-server-7:8080=tfm-server-7,tfm-server-8:8080=tfm-server-8,tfm-server-9:8080=tfm-server-9,tfm-server-10:8080=tfm-server-10
-      - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084,http://localhost:8085,http://localhost:8086,http://localhost:8087,http://localhost:8088,http://localhost:8089,http://localhost:8090
-      - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080,http://tfm-server-7:8080,http://tfm-server-8:8080,http://tfm-server-9:8080,http://tfm-server-10:8080
+      - GAME_SERVERS=tfm-server-1:8080,tfm-server-2:8080,tfm-server-3:8080,tfm-server-4:8080,tfm-server-5:8080,tfm-server-6:8080,tfm-server-7:8080,tfm-server-8:8080
+      - PUBLIC_TM_MAP=tfm-server-1:8080=http://localhost:8081,tfm-server-2:8080=http://localhost:8082,tfm-server-3:8080=http://localhost:8083,tfm-server-4:8080=http://localhost:8084,tfm-server-5:8080=http://localhost:8085,tfm-server-6:8080=http://localhost:8086,tfm-server-7:8080=http://localhost:8087,tfm-server-8:8080=http://localhost:8088
+      - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4,tfm-server-5:8080=tfm-server-5,tfm-server-6:8080=tfm-server-6,tfm-server-7:8080=tfm-server-7,tfm-server-8:8080=tfm-server-8
+      - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084,http://localhost:8085,http://localhost:8086,http://localhost:8087,http://localhost:8088
+      - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080,http://tfm-server-7:8080,http://tfm-server-8:8080
       - POPULATION_SIZE=30
       - GENERATIONS=5000
       - GAMES_PER_EVAL=6
       - TOURNAMENT_CONCURRENCY=8
-      - GLOBAL_GAME_CONCURRENCY=50
+      - GLOBAL_GAME_CONCURRENCY=40
       - MAX_ACTIVE_GAMES_PER_SERVER=5
       - TM_GAME_TIMEOUT_SEC=360
       - TM_HTTP_CONNECTOR_LIMIT=800
-      - TM_HTTP_CONNECTOR_LIMIT_PER_HOST=120
+      - TM_HTTP_CONNECTOR_LIMIT_PER_HOST=32
       - TM_CREATE_GAME_RETRY_ATTEMPTS=4
       - TM_CREATE_GAME_RETRY_BACKOFF_SEC=0.25
       - TM_SERVER_FAILURE_COOLDOWN_SEC=12
-      - TM_HEALTH_CHECK_INTERVAL_SEC=10
+      - TM_HEALTH_CHECK_INTERVAL_SEC=30
       - TM_SERVER_HEALTH_TIMEOUT_SEC=3
       - TM_FAST_MODE_OPTION=1
       - RL_MODELS_DIR=/app/rl-models
@@ -212,11 +286,23 @@ services:
       - PPO_ENABLE=true
       - PPO_ROLLOUT_STEPS=8192
       - PPO_EPOCHS=4
-      - PPO_MINIBATCH_SIZE=2048
-      - PPO_ENTROPY_COEF=0.02
-      - PPO_LEARNING_RATE=0.0003
+      - PPO_MINIBATCH_SIZE=1024
+      - PPO_ENTROPY_COEF=0.012
+      - PPO_VALUE_COEF=0.7
+      - PPO_TARGET_KL=0.015
+      - PPO_LEARNING_RATE=0.00025
       - PPO_CLIP_EPS=0.2
       - PPO_BUFFER_MAX_STEPS=200000
+
+      # Promotion Gates (stricter than defaults)
+      - PROMOTION_GATE_ENABLED=true
+      - GATE_MIN_CARD_PLAYS_PER_GAME=10.0
+      - GATE_MAX_STANDARD_PROJECT_RATIO=0.25
+      - GATE_MIN_STEEL_SPENT_PER_GAME=4.0
+      - GATE_MIN_TITANIUM_SPENT_PER_GAME=2.0
+      - GATE_MIN_STEEL_CONVERSION_EFFICIENCY=0.08
+      - GATE_MIN_TITANIUM_CONVERSION_EFFICIENCY=0.10
+      - GATE_MAX_PAYMENT_REJECT_COUNT=0
       
       # Evolution
       - EVOLUTION_ELITE_PERCENTAGE=0.1
@@ -228,7 +314,7 @@ services:
       - TRAINING_POOL_GENERATION_WINDOW=20
       
       # System
-      - AGENT_POLL_INTERVAL_SEC=0.15
+      - AGENT_POLL_INTERVAL_SEC=0.25
       - AGENT_POST_MOVE_SLEEP_SEC=0.0
       - AGENT_FAILURE_PAUSE_SEC=0.1
 
@@ -241,8 +327,6 @@ services:
       - tfm-server-6
       - tfm-server-7
       - tfm-server-8
-      - tfm-server-9
-      - tfm-server-10
       - redis
       - postgres
       

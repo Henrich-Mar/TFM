@@ -6,3 +6,4 @@ __pycache__
 /rl-logs/rl-coordinator.log.3
 *venv*
 ./venv/
+rl-environment/rl-models/.*

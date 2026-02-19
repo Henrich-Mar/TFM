@@ -133,8 +133,15 @@ class StateEncoder:
             'PhysicsComplex', 'ResearchCoordination', 'TechnologyDemonstration'
         ] + [f"Card_{i}" for i in range(200)]  # Fallback when card_metadata not loaded
     
-    def encode(self, player_state: Dict[str, Any]) -> np.ndarray:
-        """Encode complete game state into feature vector"""
+    def encode(self, player_state: Dict[str, Any], turn_action_count: int = 0) -> np.ndarray:
+        """Encode complete game state into feature vector.
+
+        Args:
+            player_state: Full player-state dict from the game server.
+            turn_action_count: Number of actions already taken this turn by this
+                player (0 = first action slot, 1 = second action slot, …).
+                Supplied by the agent so the network can plan sequences.
+        """
         features = []
         try:
             # Extract main sections
@@ -159,8 +166,8 @@ class StateEncoder:
             # Board state (100 features)
             features.extend(self._encode_board_state(game_state, player))
             
-            # Game phase and generation (10 features)
-            features.extend(self._encode_game_phase(game_state))
+            # Game phase and generation (10 features, slots 7-9 now carry turn progress)
+            features.extend(self._encode_game_phase(game_state, turn_action_count))
             
             # Opponents state (simplified, 100 features)
             features.extend(self._encode_opponents_state(player_state.get('players', []), player))
@@ -1033,8 +1040,21 @@ class StateEncoder:
         # more sophisticated ocean placement analysis
         return min(1.0, len(ocean_positions) / 9.0)
     
-    def _encode_game_phase(self, game_state: Dict[str, Any]) -> List[float]:
-        """Encode current game phase and timing"""
+    def _encode_game_phase(self, game_state: Dict[str, Any], turn_action_count: int = 0) -> List[float]:
+        """Encode current game phase and timing.
+
+        Slot layout (10 values total):
+          [0-4]  Phase one-hot: research / drafting / action / production / solar
+          [5]    Generation progress (0→1 over 14 generations)
+          [6]    Is-active-player flag
+          [7]    First-action slot indicator  (1.0 if turn_action_count == 0)
+          [8]    Second-action slot indicator (1.0 if turn_action_count == 1)
+          [9]    Further-action indicator     (clamped count / 4 for 3+)
+
+        Slots 7-9 let the policy network distinguish "I still have both actions"
+        from "I only have my second action left", enabling it to plan sequences
+        such as: play engine card first → claim milestone second.
+        """
         encoding = [0.0] * 10
         
         phase = game_state.get('phase', '')
@@ -1051,6 +1071,12 @@ class StateEncoder:
         # Turn/round info
         active_player = game_state.get('activePlayer', '')
         encoding[6] = 1.0 if active_player else 0.0
+
+        # Turn-action slots (only meaningful during action phase)
+        count = max(0, int(turn_action_count))
+        encoding[7] = 1.0 if count == 0 else 0.0   # first action
+        encoding[8] = 1.0 if count == 1 else 0.0   # second action
+        encoding[9] = min(float(max(0, count - 1)) / 4.0, 1.0)  # overflow (blue cards etc.)
         
         return encoding
     

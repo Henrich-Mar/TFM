@@ -276,6 +276,55 @@ class TerraformingMarsNetwork(nn.Module):
             nn.Tanh()
         )
 
+        # ---------------------------------------------------------------------------
+        # Learnable action-type bias (replaces hard-coded probability multipliers).
+        #
+        # Each action index is mapped to one of 10 semantic categories.  A small
+        # per-category logit adjustment is added to the policy head output BEFORE
+        # softmax.  Initialised to the log of the old hard-coded multipliers so
+        # initial behaviour is identical, but gradient can move values freely.
+        #
+        # Category index → action ranges:
+        #   0  play_card           (0  – 99)   init: ln(1.55) ≈  0.44
+        #   1  standard_project    (100–199)   init: ln(0.75) ≈ -0.29
+        #   2  select_option       (200–299)   init:  0.0
+        #   3  payment_action      (400–499)   init:  0.0
+        #   4  card_selection_mask (520–599)   init:  0.0
+        #   5  convert_plants      (700)       init: ln(1.30) ≈  0.26
+        #   6  convert_heat        (701)       init: ln(1.30) ≈  0.26
+        #   7  sell_patents        (702)       init: ln(0.08) ≈ -2.53
+        #   8  pass                (900+)      init: ln(0.30) ≈ -1.20
+        #   9  other               (rest)      init:  0.0
+        # ---------------------------------------------------------------------------
+        import math as _math
+        _bias_init = torch.zeros(10, dtype=torch.float32)
+        _bias_init[0] = _math.log(1.55)   # play_card
+        _bias_init[1] = _math.log(0.75)   # standard_project
+        _bias_init[2] = 0.0               # select_option
+        _bias_init[3] = 0.0               # payment_action
+        _bias_init[4] = 0.0               # card_selection_mask
+        _bias_init[5] = _math.log(1.30)   # convert_plants
+        _bias_init[6] = _math.log(1.30)   # convert_heat
+        _bias_init[7] = _math.log(0.08)   # sell_patents
+        _bias_init[8] = _math.log(0.30)   # pass
+        _bias_init[9] = 0.0               # other
+        self.action_type_bias = nn.Parameter(_bias_init)
+
+        # Fixed mapping: action_index → category (registered as buffer, not trained)
+        _amap = torch.zeros(self.action_dim, dtype=torch.long)
+        _amap[0:100] = 0    # play_card
+        _amap[100:200] = 1  # standard_project
+        _amap[200:300] = 2  # select_option
+        _amap[400:500] = 3  # payment_action
+        _amap[520:600] = 4  # card_selection_mask
+        _amap[700] = 5      # convert_plants
+        _amap[701] = 6      # convert_heat
+        _amap[702] = 7      # sell_patents
+        for _i in range(900, self.action_dim):
+            _amap[_i] = 8   # pass
+        # everything else stays 9 (other)
+        self.register_buffer("action_type_map", _amap)
+
         # Auxiliary targets:
         # [milestone_claimability (70), award_ev, playable_cards, steel_target, titanium_target]
         # Total: 70 milestones + 4 other = 74 outputs
@@ -383,6 +432,12 @@ class TerraformingMarsNetwork(nn.Module):
         all_phase_logits = torch.stack([head(policy_input) for head in self.policy_heads], dim=1)
         gather_idx = phase_indices.view(batch_size, 1, 1).expand(-1, 1, self.action_dim)
         policy_logits = all_phase_logits.gather(1, gather_idx).squeeze(1)
+
+        # Add learnable per-category bias to logits (before softmax in the caller).
+        # action_type_map maps each action index to a category; action_type_bias
+        # holds one offset per category.  This replaces the hard-coded probability
+        # multipliers in _sample_action so the network can learn its own preferences.
+        policy_logits = policy_logits + self.action_type_bias[self.action_type_map]
 
         value = self.value_head(fused)
         aux_raw = self.aux_head(fused)
@@ -534,6 +589,12 @@ class RLAgent:
         self._rejected_actions_by_prompt: Dict[str, set[int]] = {}
         self._rejected_action_prompt_order: deque[str] = deque()
         self._recurrent_hidden_by_player: Dict[str, torch.Tensor] = {}
+        # Track how many actions each player has taken in the current action-phase
+        # turn.  Reset when phase transitions away from 'action'.
+        # This counter is passed to the state encoder so the network can
+        # differentiate first-action from second-action decisions.
+        self._turn_action_count_by_player: Dict[str, int] = {}
+        self._last_phase_by_player: Dict[str, str] = {}
         
         # Performance tracking
         self.games_played = 0
@@ -629,6 +690,45 @@ class RLAgent:
     def _clear_recurrent_state_for_player(self, player_id: Optional[str]) -> None:
         if player_id:
             self._recurrent_hidden_by_player.pop(str(player_id), None)
+
+    # ------------------------------------------------------------------
+    # Turn-action count helpers
+    # ------------------------------------------------------------------
+
+    def _get_turn_action_count(self, player_id: Optional[str]) -> int:
+        """Return the number of actions taken so far this turn (0 = first action)."""
+        if not player_id:
+            return 0
+        return int(self._turn_action_count_by_player.get(str(player_id), 0))
+
+    def _increment_turn_action_count(self, player_id: Optional[str]) -> None:
+        """Increment the per-player action counter for the current turn."""
+        if not player_id:
+            return
+        key = str(player_id)
+        self._turn_action_count_by_player[key] = int(self._turn_action_count_by_player.get(key, 0)) + 1
+
+    def _maybe_reset_turn_action_count(self, player_id: Optional[str], player_state: Optional[Dict[str, Any]]) -> None:
+        """Reset the turn action counter when the phase transitions to/from 'action'.
+
+        TM gives each player exactly 2 actions per generation-round during the
+        action phase.  We detect a new round by watching for a phase change or
+        by seeing the game move into a non-action phase and back.
+        """
+        if not player_id:
+            return
+        key = str(player_id)
+        phase = ""
+        if isinstance(player_state, dict):
+            game = player_state.get("game", {}) or {}
+            phase = str(game.get("phase", "") or "").strip().lower()
+
+        last_phase = self._last_phase_by_player.get(key, "")
+        if phase != last_phase:
+            # Phase changed: if we're entering action phase (fresh round) reset counter
+            if phase == "action":
+                self._turn_action_count_by_player[key] = 0
+            self._last_phase_by_player[key] = phase
 
     def _extract_phase_index(self, player_state: Optional[Dict[str, Any]]) -> int:
         phase = ""
@@ -1083,7 +1183,11 @@ class RLAgent:
     ):
         """Make a single move in the game, with robust fallbacks."""
         try:
-            state_vector = self.state_encoder.encode(player_state)
+            # Update turn-action counter (resets automatically on phase change)
+            self._maybe_reset_turn_action_count(player_id, player_state)
+            turn_action_count = self._get_turn_action_count(player_id)
+
+            state_vector = self.state_encoder.encode(player_state, turn_action_count=turn_action_count)
             self._bump_decision_stat('total_decisions')
             
             # Log what we're waiting for
@@ -1124,6 +1228,9 @@ class RLAgent:
                 logger.info(f"Agent {self.id[:8]} attempting policy action: {policy_action}")
                 if await game_instance.send_player_input(player_id, policy_action):
                     self._bump_decision_stat('policy_successes')
+                    # Track how many actions this player has taken this turn so the
+                    # state encoder can expose first-vs-second-action information.
+                    self._increment_turn_action_count(player_id)
                     if policy_action_idx is not None:
                         self._record_action_choice(int(policy_action_idx), policy_action, player_state)
                         self._clear_rejected_action(player_id, player_state, int(policy_action_idx))
@@ -1889,7 +1996,20 @@ class RLAgent:
         action_weight_adjustments: Optional[Dict[int, float]] = None,
         prefer_project_cards: bool = False,
     ) -> Tuple[int, bool, Optional[torch.Tensor]]:
-        """Sample action from policy, restricted to available actions"""
+        """Sample action from policy, restricted to available actions.
+
+        Hard-coded probability multipliers have been removed from this method.
+        Per-category biases are now applied as learnable logit offsets in
+        TerraformingMarsNetwork.forward() (self.action_type_bias), initialised
+        to the log of the old multipliers so initial behaviour is unchanged but
+        gradients can adjust the values over time.
+
+        What remains here:
+          1. ε-greedy random exploration.
+          2. Legal-action masking (zero out unavailable actions).
+          3. Contextual OR-menu title adjustments (action_weight_adjustments).
+          4. Mild prefer_project_cards boost (kept small; network learns the rest).
+        """
         effective_epsilon = self._effective_policy_epsilon(force_random=force_random)
         if np.random.random() < float(effective_epsilon):
             return np.random.choice(available_actions), False, None
@@ -1905,76 +2025,45 @@ class RLAgent:
             return np.random.choice(available_actions), False, None
         for action_idx in valid_actions:
             masked_probs[action_idx] = torch.clamp(policy_probs[action_idx], min=0.0)
-        
-        # Renormalize
-        if masked_probs.sum() > 0:
-            masked_probs = masked_probs / masked_probs.sum()
+
+        # Renormalize after masking
+        total = float(masked_probs.sum().item())
+        if total > 0:
+            masked_probs = masked_probs / total
         else:
-            # Fallback to uniform if all probabilities are zero
             for action_idx in valid_actions:
-                if action_idx < len(masked_probs):
-                    masked_probs[action_idx] = 1.0
-            masked_probs /= masked_probs.sum()
+                masked_probs[action_idx] = 1.0
+            masked_probs = masked_probs / masked_probs.sum()
 
-        # Prefer productive engine-building decisions over repetitive low-ceiling lines.
-        pass_action_base = 900  # From action_types['PASS']
-        sell_patents_action = 702  # Sell patents action
-        select_option_base = 200  # From action_types['SELECT_OPTION']
-        has_play_card_action = any(0 <= int(a) < 100 for a in valid_actions)
-        has_standard_project_action = any(100 <= int(a) < 200 for a in valid_actions)
-        play_card_actions = [int(a) for a in valid_actions if 0 <= int(a) < 100]
-        standard_project_actions = [int(a) for a in valid_actions if 100 <= int(a) < 200]
-
-        for i, action_idx in enumerate(valid_actions):
-            if action_idx >= pass_action_base:
-                masked_probs[action_idx] *= 0.3  # Reduce pass action probability
-            elif action_idx == sell_patents_action:
-                masked_probs[action_idx] *= 0.08  # Strongly discourage routine sell-patents usage
-            elif action_idx < 100:  # Play project card
-                masked_probs[action_idx] *= 1.55
-            elif action_idx >= 100 and action_idx < 200:  # Standard projects
-                masked_probs[action_idx] *= 0.75
-            elif action_idx == 700:  # Convert plants
-                masked_probs[action_idx] *= 1.3  # Increase convert plants probability
-            elif action_idx == 701:  # Convert heat
-                masked_probs[action_idx] *= 1.3  # Increase convert heat probability
-            elif action_idx >= select_option_base and action_idx < select_option_base + 100:  # SELECT_OPTION range
-                # Keep option actions near-neutral; contextual boosts are applied via titles.
-                masked_probs[action_idx] *= 1.0
-
-        # When both lines are available, nudge policy toward card execution.
-        if has_play_card_action and has_standard_project_action:
-            for action_idx in valid_actions:
-                if action_idx < 100:
-                    masked_probs[action_idx] *= 1.35
-                elif 100 <= action_idx < 200:
-                    masked_probs[action_idx] *= 0.45
-        if prefer_project_cards and play_card_actions and standard_project_actions:
-            for action_idx in valid_actions:
-                if action_idx < 100:
+        # Small residual boost when the prompt is explicitly a project-card play
+        # (prefer_project_cards=True means the server is asking to pick a card).
+        # The network's action_type_bias handles the general preference; this is
+        # a context-specific nudge based on waiting-for type, not a hand-tuned value.
+        if prefer_project_cards:
+            play_card_actions = [a for a in valid_actions if 0 <= a < 100]
+            if play_card_actions:
+                for action_idx in play_card_actions:
                     masked_probs[action_idx] *= float(self.project_card_priority_weight)
-        
-        # Apply contextual adjustments (e.g., OR menu titles)
+
+        # Apply OR-menu title adjustments (e.g. downweight pass/sell options).
         if action_weight_adjustments:
             for action_idx, mult in action_weight_adjustments.items():
                 if action_idx in valid_actions and action_idx < len(masked_probs):
                     masked_probs[action_idx] *= float(mult)
 
-        # Keep numerical stability only on valid actions.
+        # Numerical stability
         for action_idx in valid_actions:
             masked_probs[action_idx] += 1e-8
 
-        # Renormalize after adjustment
         total_prob = float(masked_probs.sum().item())
         if total_prob <= 0:
             return np.random.choice(valid_actions), False, None
         masked_probs = masked_probs / total_prob
 
-        # Sample from policy
         try:
             return torch.multinomial(masked_probs, 1).item(), True, masked_probs
         except RuntimeError:
-            # Fallback to non-pass action if possible
+            pass_action_base = int(self.action_decoder.action_types.get('PASS', 900))
             non_pass_actions = [a for a in available_actions if a < pass_action_base]
             if non_pass_actions:
                 return np.random.choice(non_pass_actions), False, None
@@ -2598,19 +2687,24 @@ class RLAgent:
         missing = list(getattr(load_result, "missing_keys", []) or [])
         unexpected = list(getattr(load_result, "unexpected_keys", []) or [])
         if missing or unexpected:
+            # Keys that are legitimately absent from older checkpoints and will
+            # fall back to their default initialisation values safely.
+            expected_missing_keys = {"action_type_bias"}
             expected_missing_prefixes = (
                 "card_attention_module.",
                 "transformer_fusion.",
             )
             expected_missing = [
                 key for key in missing
-                if any(key.startswith(prefix) for prefix in expected_missing_prefixes)
+                if key in expected_missing_keys
+                or any(key.startswith(prefix) for prefix in expected_missing_prefixes)
             ]
             if not unexpected and expected_missing and len(expected_missing) == len(missing):
                 logger.info(
-                    "Loaded pre-transformer checkpoint %s (missing transformer params=%d).",
+                    "Loaded checkpoint %s; %d param(s) initialised from defaults: %s",
                     path,
                     len(missing),
+                    missing,
                 )
             else:
                 logger.warning(

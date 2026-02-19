@@ -187,6 +187,58 @@ def _matches_player_payload(payload: Dict[str, Any], player: Dict[str, Any]) -> 
     return False
 
 
+def _get_claimable_milestone_names(game_state: Dict[str, Any], player: Dict[str, Any]) -> List[str]:
+    """
+    Return names of milestones that are currently reachable (progress >= 1.0)
+    by *this* player but not yet claimed by anyone.
+
+    A milestone is considered claimable when the player's own score entry in the
+    milestone's scores list is >= the published minimum threshold.  Because the
+    server does not always expose the hard threshold we rely on the convention
+    that progress >= 1.0 in the normalised representation (own_score /
+    max(threshold, max_score) >= 1.0) means the player already qualifies.
+    """
+    claimable: List[str] = []
+    own_color = _normalize_token(player.get('color'))
+    own_name = _normalize_token(player.get('name'))
+    if not own_color and not own_name:
+        return claimable
+
+    milestones = game_state.get('milestones', []) or []
+    for milestone in milestones:
+        if not isinstance(milestone, dict):
+            continue
+        # Skip already-claimed milestones
+        if milestone.get('playerName') or milestone.get('playerColor'):
+            continue
+        scores = [row for row in (milestone.get('scores', []) or []) if isinstance(row, dict)]
+        if not scores:
+            continue
+
+        own_score = 0.0
+        max_score = 0.0
+        for row in scores:
+            try:
+                score = float(row.get('playerScore', 0) or 0)
+            except Exception:
+                score = 0.0
+            max_score = max(max_score, score)
+            row_color = _normalize_token(row.get('playerColor'))
+            row_name = _normalize_token(row.get('playerName'))
+            if (own_color and row_color == own_color) or (own_name and row_name == own_name):
+                own_score = score
+
+        # Normalised progress >= 1.0 means player already meets the threshold
+        threshold = 3.0
+        denominator = max(threshold, max_score, 1.0)
+        if (own_score / denominator) >= 1.0:
+            name = str(milestone.get('name', '') or '').strip()
+            if name:
+                claimable.append(name)
+
+    return claimable
+
+
 def _owned_milestone_count(game_state: Dict[str, Any], player: Dict[str, Any]) -> int:
     count = 0
     milestones = game_state.get('milestones', []) or []
@@ -778,15 +830,45 @@ def calculate_step_reward_decomposition(
     endgame_pressure = max(0.0, min((generation_progress - 0.60) / 0.40, 1.0))
 
     # Milestone closing pressure: reward milestone claims more when they happen earlier.
+    # Base reward raised from 0.09 → 0.20 so a claim clearly outweighs a card-play bonus.
     before_owned_milestones = _owned_milestone_count(before_game, before_player)
     after_owned_milestones = _owned_milestone_count(after_game, after_player)
     milestone_claim_delta = max(0, after_owned_milestones - before_owned_milestones)
     if milestone_claim_delta > 0:
         early_factor = max(0.10, 1.0 - generation_progress)
-        milestone_claim_reward = 0.09 * float(milestone_claim_delta) * early_factor
+        milestone_claim_reward = 0.20 * float(milestone_claim_delta) * early_factor
         if before_mc >= 8.0:
+            # Small extra bonus for claiming with comfortable cash (shows timing awareness)
             milestone_claim_reward += 0.04 * float(milestone_claim_delta) * early_factor
-        milestones_awards_component += min(0.18, milestone_claim_reward)
+        milestones_awards_component += min(0.30, milestone_claim_reward)
+
+    # Milestone Regret Penalty: if this player could have claimed a milestone
+    # before this action (progress >= 1.0, unclaimed) but an opponent claimed it
+    # in the after_state, apply a regret penalty to train the agent to prioritise
+    # such opportunities.
+    claimable_before = set(_get_claimable_milestone_names(before_game, before_player))
+    if claimable_before:
+        after_milestones = after_game.get('milestones', []) or []
+        after_player_color = _normalize_token(after_player.get('color'))
+        after_player_name = _normalize_token(after_player.get('name'))
+        for milestone in after_milestones:
+            if not isinstance(milestone, dict):
+                continue
+            name = str(milestone.get('name', '') or '').strip()
+            if name not in claimable_before:
+                continue
+            # Check if someone else claimed it now
+            claimer_color = _normalize_token(milestone.get('playerColor'))
+            claimer_name = _normalize_token(milestone.get('playerName'))
+            if not claimer_color and not claimer_name:
+                continue  # Still unclaimed
+            own_claimed = (
+                (after_player_color and claimer_color == after_player_color)
+                or (after_player_name and claimer_name == after_player_name)
+            )
+            if not own_claimed:
+                # An opponent stole a milestone we could have claimed → regret penalty
+                milestones_awards_component -= 0.20
 
     # Awards closing pressure: reinforce positive EV funding and discourage poor-value funding.
     before_owned_awards = _owned_funded_awards(before_game, before_player)

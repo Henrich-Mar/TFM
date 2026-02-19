@@ -1166,6 +1166,9 @@ class RLCoordinator:
                 "rare_milestone_timing": int(behavior_snapshot.get("rare_milestone_timing", 0) or 0),
                 "rare_draft_keep_buy": int(behavior_snapshot.get("rare_draft_keep_buy", 0) or 0),
                 "rare_high_cost_payment": int(behavior_snapshot.get("rare_high_cost_payment", 0) or 0),
+                "hate_draft_picks": int(behavior_snapshot.get("hate_draft_picks", 0) or 0),
+                "milestone_snipes": int(behavior_snapshot.get("milestone_snipes", 0) or 0),
+                "award_snipes": int(behavior_snapshot.get("award_snipes", 0) or 0),
             }
             cfg['training_diagnostics'] = {
                 "ppo": ppo_metrics,

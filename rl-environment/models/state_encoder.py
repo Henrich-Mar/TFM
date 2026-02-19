@@ -56,7 +56,7 @@ class StateEncoder:
     _DEFAULT_CARD_TOKEN_DIM = 8
     _DEFAULT_TABLEAU_TOKEN_COUNT = 8
     _DEFAULT_HAND_TOKEN_COUNT = 4
-    _DEFAULT_OPPONENT_TOKEN_COUNT = 4
+    _DEFAULT_OPPONENT_TOKEN_COUNT = 6
 
     def __init__(
         self,

@@ -338,6 +338,11 @@
         <h3>Resource and Card Utilization</h3>
         <div id="utilization"></div>
       </div>
+      <div class="card">
+        <h3>Moon Tiles</h3>
+        <div class="muted">Lunar Mine, Road Infrastructure, Lunar Habitat standard projects (this gen + cumulative).</div>
+        <div id="moonTiles"></div>
+      </div>
     </div>
 
     <div class="row">
@@ -376,6 +381,14 @@
 
     function summaryMean(summary) {
       return n(summary?.mean, 0);
+    }
+
+    function sumMoonType(counts, pattern) {
+      if (!counts || typeof counts !== "object") return 0;
+      return Object.entries(counts).reduce(
+        (acc, [k, v]) => acc + (k.indexOf(pattern) >= 0 ? n(v, 0) : 0),
+        0
+      );
     }
 
     function pushTransformerHistory(transformerLive) {
@@ -781,6 +794,22 @@
           ["Titanium spent (gen)", fmt(gm["titanium_spent"])],
         ]);
 
+        const spCounts = stats.behavior?.standard_project_counts || {};
+        const cumMines = sumMoonType(spCounts, "Lunar Mine");
+        const cumRoads = sumMoonType(spCounts, "Road Infrastructure");
+        const cumHabitats = sumMoonType(spCounts, "Lunar Habitat");
+        renderKV(document.getElementById("moonTiles"), [
+          ["Mines (this gen)", fmt(gm["moon_mines"])],
+          ["Roads (this gen)", fmt(gm["moon_roads"])],
+          ["Habitats (this gen)", fmt(gm["moon_habitats"])],
+          ["Mines / game", f2(gm["moon_mines_per_game"])],
+          ["Roads / game", f2(gm["moon_roads_per_game"])],
+          ["Habitats / game", f2(gm["moon_habitats_per_game"])],
+          ["Mines (cumulative)", fmt(cumMines)],
+          ["Roads (cumulative)", fmt(cumRoads)],
+          ["Habitats (cumulative)", fmt(cumHabitats)],
+        ]);
+
         renderKV(document.getElementById("vpBreakdown"), [
           ["Terraforming VP / game", f2(gm["vp_terraforming_per_game"])],
           ["Milestones VP / game", f2(gm["vp_milestones_per_game"])],
@@ -820,6 +849,9 @@
         <td>${f2(gateBehavior.vp_cards_per_game)}</td>
         <td>${f2(gateBehavior.town_placements_per_game)}</td>
         <td>${f2(gateBehavior.greenery_placements_per_game)}</td>
+        <td>${f2(gateBehavior.moon_mines_per_game)}</td>
+        <td>${f2(gateBehavior.moon_roads_per_game)}</td>
+        <td>${f2(gateBehavior.moon_habitats_per_game)}</td>
         <td>${n(a.total_decisions)}</td>
         <td>${gateCell}</td>
       </tr>`;
@@ -844,11 +876,14 @@
           <th>CardVP/g</th>
           <th>Town/g</th>
           <th>Greenery/g</th>
+          <th>Mine/g</th>
+          <th>Road/g</th>
+          <th>Habit/g</th>
           <th>Decisions</th>
           <th>Gate</th>
         </tr>
       </thead>
-      <tbody>${rows || `<tr><td colspan="17">No data</td></tr>`}</tbody>
+      <tbody>${rows || `<tr><td colspan="20">No data</td></tr>`}</tbody>
     </table>`;
       } catch (err) {
         document.getElementById("status").innerHTML =

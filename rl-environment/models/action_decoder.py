@@ -1423,10 +1423,11 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         units = {k: 0 for k in ['megaCreditProduction', 'steelProduction', 'titaniumProduction', 'plantProduction', 'energyProduction', 'heatProduction']}
         return {'type': 'productionToLose', 'units': units}
     elif input_type == 'projectCard':
+        # Terraforming Mars SelectProjectCardToPlayResponse does NOT accept {"type":"pass"}
+        # - it always requires {type: 'projectCard', card, payment}. Never return pass.
         cards = waiting_for.get('cards', [])
-        can_pass = bool(waiting_for.get('canPass', False))
         if not cards:
-            return {'type': 'pass'}
+            return {'type': 'option'}
 
         # For projectCard, action_index should be the card index directly
         card_idx = normalize_index(action_index, 0) if action_index is not None else 0
@@ -1451,8 +1452,6 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             else:
                 chosen_idx = affordable_indices[0]
             card = cards[chosen_idx]
-        elif can_pass:
-            return {'type': 'pass'}
         elif 0 <= card_idx < len(cards):
             card = cards[card_idx]
         else:
@@ -1466,7 +1465,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             reserve_units=_merge_reserve_units(waiting_for, card),
         )
         if payment is None:
-            return {'type': 'pass'}
+            payment = _payment_empty()
         return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
     elif input_type in ['space', 'selectSpace']:
         # Prefer explicit availableSpaces with IDs; fallback to 'spaces'
@@ -1513,11 +1512,12 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         selected = [tokens[idx]] if tokens and 0 <= idx < len(tokens) else ([tokens[0]] if tokens else [])
         return {'type': 'claimedUndergroundToken', 'selected': selected}
     elif input_type == 'selectProjectCardToPlay':
-        # Handle project card selection for playing
+        # Handle project card selection for playing.
+        # Terraforming Mars SelectProjectCardToPlayResponse does NOT accept {"type":"pass"}
+        # - it always requires {type: 'projectCard', card, payment}. Never return pass.
         cards = waiting_for.get('cards', [])
-        can_pass = bool(waiting_for.get('canPass', False))
         if not cards:
-            return {'type': 'pass'}
+            return {'type': 'option'}  # No cards - cannot produce valid response
              
         card_idx = normalize_index(action_index, 0) if action_index is not None else 0
         affordable_indices: List[int] = []
@@ -1546,23 +1546,23 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 payment_options,
                 reserve_units=_merge_reserve_units(waiting_for, card),
             )
-            if payment is None:
-                return {'type': 'pass'}
-            return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
-        if can_pass:
-            return {'type': 'pass'}
-        if 0 <= card_idx < len(cards):
-            card = cards[card_idx]
-            payment = _build_payment_with_options(
-                player_state,
-                card,
-                payment_options,
-                reserve_units=_merge_reserve_units(waiting_for, card),
-            )
-            if payment is None:
-                return {'type': 'pass'}
-            return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
-        return {'type': 'pass'}
+            if payment is not None:
+                return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
+            # Payment build failed - try default/zero payment
+            payment = _payment_empty()
+        # No affordable cards or payment failed: try first card with best-effort payment
+        idx = affordable_indices[0] if affordable_indices else (card_idx if 0 <= card_idx < len(cards) else 0)
+        idx = min(idx, len(cards) - 1)
+        card = cards[idx]
+        payment = _build_payment_with_options(
+            player_state,
+            card,
+            payment_options,
+            reserve_units=_merge_reserve_units(waiting_for, card),
+        )
+        if payment is None:
+            payment = _payment_empty()
+        return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
     elif input_type == 'selectCard' and 'standard project' in _title_text(waiting_for.get('title', '')).lower():
         # Handle standard project selection
         cards = waiting_for.get('cards', [])
@@ -2288,7 +2288,8 @@ class ActionDecoder:
                     available_actions.append(self.action_types['PASS'])
             elif input_type in ['projectCard', 'selectProjectCardToPlay']:
                 cards = waiting_for.get('cards', [])
-                can_pass = waiting_for.get('canPass', False)
+                # NOTE: Terraforming Mars SelectProjectCardToPlayResponse does NOT accept
+                # {"type":"pass"} - it always requires {type, card, payment}. Never add PASS.
                 payment_options = waiting_for.get('paymentOptions', {})
                 
                 # Filter out unaffordable cards
@@ -2307,17 +2308,14 @@ class ActionDecoder:
                         # If no player state, assume all cards are affordable
                         affordable_cards.append(i)
                 
-                # If we have affordable cards, only include those
+                # Include playable cards; when none are affordable, still include all cards
+                # so the agent can attempt - server will reject with a clearer error if invalid.
                 if affordable_cards:
                     for i in affordable_cards:
                         available_actions.append(self.action_types['PLAY_CARD'] + i)
                 else:
-                    # No affordable cards: avoid guaranteed payment rejection.
-                    if can_pass:
-                        available_actions.append(self.action_types['PASS'])
-                         
-                if can_pass:
-                    available_actions.append(self.action_types['PASS'])
+                    for i in range(len(cards)):
+                        available_actions.append(self.action_types['PLAY_CARD'] + i)
             elif input_type == 'selectSpace' or input_type == 'space':
                 spaces = waiting_for.get('availableSpaces', waiting_for.get('spaces', []))
                 for i, space in enumerate(spaces):
@@ -2391,8 +2389,11 @@ class ActionDecoder:
                 # Deduplicate while preserving order to reduce repeated retries.
                 available_actions = list(dict.fromkeys(available_actions))
             if not available_actions:
-                # Avoid generating guaranteed-invalid pass payloads for mandatory payment prompts.
-                if str(input_type or '') not in ['payment', 'selectPayment']:
+                # Avoid generating guaranteed-invalid pass payloads. SelectProjectCardToPlay
+                # does not accept {"type":"pass"} - it requires {type, card, payment}.
+                if str(input_type or '') not in [
+                    'payment', 'selectPayment', 'projectCard', 'selectProjectCardToPlay'
+                ]:
                     available_actions.append(self.action_types['PASS'])
         except Exception as e:
             # logger.error(f"Error getting available actions: {e}")

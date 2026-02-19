@@ -10,8 +10,15 @@ from typing import Any, Dict, List, Sequence, Tuple
 from scoring import calculate_selection_score
 
 
-def snapshot_population_behavior(population: Sequence[Any]) -> Dict[str, Dict[str, float]]:
-    snapshot: Dict[str, Dict[str, float]] = {}
+def _sum_moon_type(counts: Dict[str, Any], pattern: str) -> int:
+    """Sum counts for standard project keys matching pattern (e.g. 'Lunar Mine', 'Road Infrastructure')."""
+    if not isinstance(counts, dict):
+        return 0
+    return sum(int(v) for k, v in counts.items() if pattern in str(k))
+
+
+def snapshot_population_behavior(population: Sequence[Any]) -> Dict[str, Dict[str, Any]]:
+    snapshot: Dict[str, Dict[str, Any]] = {}
     for agent in population:
         stats = getattr(agent, "decision_stats", {}) or {}
         action_counts = dict(stats.get("action_type_counts", {}) or {})
@@ -26,6 +33,10 @@ def snapshot_population_behavior(population: Sequence[Any]) -> Dict[str, Dict[st
             "metal_payment_value_total": float(stats.get("metal_payment_value_total", 0.0) or 0.0),
             "steel_payment_value_total": float(stats.get("steel_payment_value_total", 0.0) or 0.0),
             "titanium_payment_value_total": float(stats.get("titanium_payment_value_total", 0.0) or 0.0),
+            "hate_draft_picks": float(stats.get("hate_draft_picks", 0) or 0),
+            "milestone_snipes": float(stats.get("milestone_snipes", 0) or 0),
+            "award_snipes": float(stats.get("award_snipes", 0) or 0),
+            "standard_project_counts": dict(stats.get("standard_project_counts", {}) or {}),
         }
     return snapshot
 
@@ -61,6 +72,12 @@ def compute_generation_behavior_metrics(
         "vp_total": 0.0,
         "town_placements": 0.0,
         "greenery_placements": 0.0,
+        "hate_draft_picks": 0.0,
+        "milestone_snipes": 0.0,
+        "award_snipes": 0.0,
+        "moon_mines": 0.0,
+        "moon_roads": 0.0,
+        "moon_habitats": 0.0,
     }
 
     per_agent_endscreen: Dict[str, Dict[str, float]] = {}
@@ -117,6 +134,9 @@ def compute_generation_behavior_metrics(
         metal_payment_value_delta = max(0.0, float(curr.get("metal_payment_value_total", 0.0)) - float(prev.get("metal_payment_value_total", 0.0)))
         steel_payment_value_delta = max(0.0, float(curr.get("steel_payment_value_total", 0.0)) - float(prev.get("steel_payment_value_total", 0.0)))
         titanium_payment_value_delta = max(0.0, float(curr.get("titanium_payment_value_total", 0.0)) - float(prev.get("titanium_payment_value_total", 0.0)))
+        hate_draft_delta = max(0.0, float(curr.get("hate_draft_picks", 0.0)) - float(prev.get("hate_draft_picks", 0.0)))
+        milestone_snipes_delta = max(0.0, float(curr.get("milestone_snipes", 0.0)) - float(prev.get("milestone_snipes", 0.0)))
+        award_snipes_delta = max(0.0, float(curr.get("award_snipes", 0.0)) - float(prev.get("award_snipes", 0.0)))
         endscreen_games = max(0.0, float(endscreen.get("games", 0.0)))
         vp_terraforming = max(0.0, float(endscreen.get("vp_terraforming", 0.0)))
         vp_milestones = max(0.0, float(endscreen.get("vp_milestones", 0.0)))
@@ -148,6 +168,18 @@ def compute_generation_behavior_metrics(
         totals["vp_total"] += vp_total
         totals["town_placements"] += town_placements
         totals["greenery_placements"] += greenery_placements
+        totals["hate_draft_picks"] += hate_draft_delta
+        totals["milestone_snipes"] += milestone_snipes_delta
+        totals["award_snipes"] += award_snipes_delta
+
+        prev_sp = prev.get("standard_project_counts") or {}
+        curr_sp = curr.get("standard_project_counts") or {}
+        moon_mines_delta = max(0, _sum_moon_type(curr_sp, "Lunar Mine") - _sum_moon_type(prev_sp, "Lunar Mine"))
+        moon_roads_delta = max(0, _sum_moon_type(curr_sp, "Road Infrastructure") - _sum_moon_type(prev_sp, "Road Infrastructure"))
+        moon_habitats_delta = max(0, _sum_moon_type(curr_sp, "Lunar Habitat") - _sum_moon_type(prev_sp, "Lunar Habitat"))
+        totals["moon_mines"] += float(moon_mines_delta)
+        totals["moon_roads"] += float(moon_roads_delta)
+        totals["moon_habitats"] += float(moon_habitats_delta)
 
         action_denom = card_plays_delta + standard_projects_delta
         per_agent[agent_id] = {
@@ -171,6 +203,9 @@ def compute_generation_behavior_metrics(
             "vp_total": vp_total,
             "town_placements": town_placements,
             "greenery_placements": greenery_placements,
+            "hate_draft_picks": hate_draft_delta,
+            "milestone_snipes": milestone_snipes_delta,
+            "award_snipes": award_snipes_delta,
             "card_plays_per_game": (card_plays_delta / games_delta) if games_delta > 0 else 0.0,
             "standard_project_ratio": (standard_projects_delta / action_denom) if action_denom > 0 else 0.0,
             "sell_patents_per_game": (sell_patents_delta / games_delta) if games_delta > 0 else 0.0,
@@ -198,6 +233,13 @@ def compute_generation_behavior_metrics(
             "efficiency_ratio": (vp_total / max(1.0, action_denom)),
             # Synergy: Card VP per Card Play (High value implies strong engine/tag synergy)
             "synergy_score": (vp_cards / max(1.0, card_plays_delta)),
+            # Moon tile placements (this generation)
+            "moon_mines": float(moon_mines_delta),
+            "moon_roads": float(moon_roads_delta),
+            "moon_habitats": float(moon_habitats_delta),
+            "moon_mines_per_game": (moon_mines_delta / games_delta) if games_delta > 0 else 0.0,
+            "moon_roads_per_game": (moon_roads_delta / games_delta) if games_delta > 0 else 0.0,
+            "moon_habitats_per_game": (moon_habitats_delta / games_delta) if games_delta > 0 else 0.0,
         }
 
     card_actions_total = totals["card_play_actions"] + totals["standard_project_actions"]
@@ -251,12 +293,22 @@ def compute_generation_behavior_metrics(
         "vp_total_per_game": (float(totals["vp_total"]) / games_total) if games_total > 0 else 0.0,
         "town_placements_per_game": (float(totals["town_placements"]) / games_total) if games_total > 0 else 0.0,
         "greenery_placements_per_game": (float(totals["greenery_placements"]) / games_total) if games_total > 0 else 0.0,
+        "hate_draft_picks": float(totals["hate_draft_picks"]),
+        "milestone_snipes": float(totals["milestone_snipes"]),
+        "award_snipes": float(totals["award_snipes"]),
         "payment_reject_count": int(payment_reject_delta),
         "input_reject_count_total": int(getattr(game_cluster, "input_reject_count", 0)),
         "payment_reject_count_total": int(getattr(game_cluster, "payment_reject_count", 0)),
         # Aggregated Advanced Metrics
         "efficiency_ratio": (float(totals["vp_total"]) / max(1.0, float(card_actions_total))),
         "synergy_score": (float(totals["vp_cards"]) / max(1.0, float(totals["card_play_actions"]))),
+        # Moon tile tracking (standard projects)
+        "moon_mines": int(totals["moon_mines"]),
+        "moon_roads": int(totals["moon_roads"]),
+        "moon_habitats": int(totals["moon_habitats"]),
+        "moon_mines_per_game": (float(totals["moon_mines"]) / games_total) if games_total > 0 else 0.0,
+        "moon_roads_per_game": (float(totals["moon_roads"]) / games_total) if games_total > 0 else 0.0,
+        "moon_habitats_per_game": (float(totals["moon_habitats"]) / games_total) if games_total > 0 else 0.0,
     }
     return generation_metrics, per_agent
 
@@ -438,6 +490,7 @@ def calculate_selection_fitness(population: Sequence[Any], tournament_results: L
                 continue
             if (not include_incomplete) and (not bool(game_result.get("completed", False))):
                 continue
+            game_generation = game_result.get("game_generation")
             for player_result in game_result.get("players", []):
                 agent_id = player_result.get("agent_id")
                 if agent_id not in agent_scores:
@@ -446,6 +499,7 @@ def calculate_selection_fitness(population: Sequence[Any], tournament_results: L
                     rank=player_result.get("rank", 4),
                     victory_points=player_result.get("victory_points", 0),
                     completed=player_result.get("completed", False),
+                    game_generation=game_generation,
                 )
                 agent_scores[agent_id] += total_score
                 agent_games[agent_id] += 1

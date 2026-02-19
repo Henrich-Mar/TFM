@@ -48,7 +48,7 @@ class AgentConfig:
     card_token_dim: int = 8
     tableau_token_count: int = 8
     hand_token_count: int = 4
-    opponent_token_count: int = 4
+    opponent_token_count: int = 6
     transformer_embed_dim: int = 64
     transformer_heads: int = 4
     transformer_layers: int = 2
@@ -502,7 +502,7 @@ class RLAgent:
                 card_token_dim=RLAgent._safe_env_int("AGENT_CARD_TOKEN_DIM", 8),
                 tableau_token_count=RLAgent._safe_env_int("AGENT_TABLEAU_TOKEN_COUNT", 8),
                 hand_token_count=RLAgent._safe_env_int("AGENT_HAND_TOKEN_COUNT", 4),
-                opponent_token_count=RLAgent._safe_env_int("AGENT_OPPONENT_TOKEN_COUNT", 4),
+                opponent_token_count=RLAgent._safe_env_int("AGENT_OPPONENT_TOKEN_COUNT", 6),
                 transformer_embed_dim=RLAgent._safe_env_int("AGENT_TRANSFORMER_EMBED_DIM", 64),
                 transformer_heads=RLAgent._safe_env_int("AGENT_TRANSFORMER_HEADS", 4),
                 transformer_layers=RLAgent._safe_env_int("AGENT_TRANSFORMER_LAYERS", 2),
@@ -632,6 +632,9 @@ class RLAgent:
             'rare_milestone_timing': 0,
             'rare_draft_keep_buy': 0,
             'rare_high_cost_payment': 0,
+            'hate_draft_picks': 0,
+            'milestone_snipes': 0,
+            'award_snipes': 0,
         }
 
     @staticmethod
@@ -1294,6 +1297,12 @@ class RLAgent:
                                 reward_city_greenery_component = float(weighted_city_greenery * step_reward_scale)
                                 reward_milestones_awards_component = float(weighted_milestones_awards * step_reward_scale)
                                 reward_other_component = float(weighted_other * step_reward_scale)
+                                if reward_breakdown.get("hate_draft_bonus_applied"):
+                                    self._bump_decision_stat("hate_draft_picks")
+                                if reward_breakdown.get("sniping_milestone_applied"):
+                                    self._bump_decision_stat("milestone_snipes")
+                                if reward_breakdown.get("sniping_award_applied"):
+                                    self._bump_decision_stat("award_snipes")
                             if action_meta is not None:
                                 episode_steps.append(
                                     {
@@ -2459,6 +2468,9 @@ class RLAgent:
         rare_milestone_timing = int(self.decision_stats.get('rare_milestone_timing', 0))
         rare_draft_keep_buy = int(self.decision_stats.get('rare_draft_keep_buy', 0))
         rare_high_cost_payment = int(self.decision_stats.get('rare_high_cost_payment', 0))
+        hate_draft_picks = int(self.decision_stats.get('hate_draft_picks', 0))
+        milestone_snipes = int(self.decision_stats.get('milestone_snipes', 0))
+        award_snipes = int(self.decision_stats.get('award_snipes', 0))
         action_mask_observations = int(self.decision_stats.get('action_mask_observations', 0))
         action_legal_count_total = int(self.decision_stats.get('action_legal_count_total', 0))
         action_rejected_by_server = int(self.decision_stats.get('action_rejected_by_server', 0))
@@ -2518,6 +2530,9 @@ class RLAgent:
             'rare_milestone_timing': rare_milestone_timing,
             'rare_draft_keep_buy': rare_draft_keep_buy,
             'rare_high_cost_payment': rare_high_cost_payment,
+            'hate_draft_picks': hate_draft_picks,
+            'milestone_snipes': milestone_snipes,
+            'award_snipes': award_snipes,
             'action_legal_count_mean': _ratio(action_legal_count_total, action_mask_observations),
             'action_mask_coverage_rate': _ratio(action_mask_observations, total_decisions),
             'action_rejected_by_server': action_rejected_by_server,

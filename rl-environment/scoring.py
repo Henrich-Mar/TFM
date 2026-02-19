@@ -1,7 +1,7 @@
 """
 Shared scoring utilities used by both tournament fitness and policy training.
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import os
 
 
@@ -21,10 +21,20 @@ SELECTION_RANK_POINTS = {
 SELECTION_VP_WEIGHT = _env_float("SELECTION_VP_WEIGHT", 0.5)
 SELECTION_COMPLETION_BONUS = _env_float("SELECTION_COMPLETION_BONUS", 10.0)
 SELECTION_INCOMPLETE_PENALTY = _env_float("SELECTION_INCOMPLETE_PENALTY", -50.0)
+# Bonus per generation under 14 when winning; e.g. 3.0 means gen 11 wins get +9 vs gen 14
+SELECTION_FAST_WIN_BONUS_PER_GEN = _env_float("SELECTION_FAST_WIN_BONUS_PER_GEN", 3.0)
+SELECTION_FAST_WIN_MAX_BONUS = _env_float("SELECTION_FAST_WIN_MAX_BONUS", 15.0)
 
 
-def calculate_selection_score(rank: Any, victory_points: Any, completed: Any) -> float:
-    """Raw game score used for evolutionary selection."""
+def calculate_selection_score(
+    rank: Any,
+    victory_points: Any,
+    completed: Any,
+    game_generation: Optional[int] = None,
+) -> float:
+    """Raw game score used for evolutionary selection.
+    Favors agents who win in fewer generations when game_generation is provided.
+    """
     try:
         rank_int = int(rank)
     except Exception:
@@ -39,7 +49,29 @@ def calculate_selection_score(rank: Any, victory_points: Any, completed: Any) ->
 
     vp_bonus = vp * SELECTION_VP_WEIGHT
     completion_bonus = SELECTION_COMPLETION_BONUS if bool(completed) else SELECTION_INCOMPLETE_PENALTY
-    return ranking_points + vp_bonus + completion_bonus
+    base_score = ranking_points + vp_bonus + completion_bonus
+
+    # Fast-win bonus: lower generation = faster terraforming = higher score
+    fast_win_bonus = 0.0
+    if game_generation is not None and bool(completed) and 1 <= int(game_generation) <= 14:
+        gens_early = max(0, 14 - int(game_generation))
+        if rank_int == 1:
+            fast_win_bonus = min(
+                float(SELECTION_FAST_WIN_MAX_BONUS),
+                float(gens_early) * float(SELECTION_FAST_WIN_BONUS_PER_GEN),
+            )
+        elif rank_int == 2:
+            fast_win_bonus = 0.5 * min(
+                float(SELECTION_FAST_WIN_MAX_BONUS),
+                float(gens_early) * float(SELECTION_FAST_WIN_BONUS_PER_GEN),
+            )
+        elif rank_int == 3:
+            fast_win_bonus = 0.25 * min(
+                float(SELECTION_FAST_WIN_MAX_BONUS),
+                float(gens_early) * float(SELECTION_FAST_WIN_BONUS_PER_GEN),
+            )
+
+    return base_score + fast_win_bonus
 
 
 def calculate_terminal_reward(rank: Any, victory_points: Any, completed: Any) -> float:
@@ -97,6 +129,109 @@ def _extract_tags(card: Dict[str, Any]) -> Dict[str, int]:
         for item in tags:
             out[str(item)] = 1
     return out
+
+
+def _build_tag_profile_from_cards(cards: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Aggregate tag counts across cards for hate-draft overlap computation."""
+    profile: Dict[str, int] = {}
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        for tag_name, count in _extract_tags(card).items():
+            if count:
+                profile[tag_name] = profile.get(tag_name, 0) + count
+    return profile
+
+
+def _tag_overlap_for_card(card: Dict[str, Any], profile: Dict[str, int]) -> float:
+    """Sum profile counts for tags present on the card. Normalize by max 8."""
+    tags = _extract_tags(card)
+    overlap = sum(float(profile.get(tag_name, 0)) for tag_name in tags)
+    return min(overlap / 8.0, 1.0)
+
+
+def _hate_draft_adjustment(
+    before_state: Dict[str, Any],
+    action_input: Dict[str, Any],
+) -> Tuple[float, bool]:
+    """
+    Bonus when the agent drafts/keeps cards that hurt opponents (high opp overlap, low own overlap).
+    Returns (adjustment, applied).
+    """
+    if not isinstance(action_input, dict):
+        return 0.0, False
+    action_type = str(action_input.get('type', '') or '').lower()
+    before_player = _extract_player(before_state)
+    own_color = _normalize_token(before_player.get('color'))
+    own_id = str(before_player.get('id', '') or '')
+    players = before_state.get('players', []) or []
+    if not isinstance(players, list):
+        return 0.0, False
+
+    opponent_tableau: List[Dict[str, Any]] = []
+    for p in players:
+        if not isinstance(p, dict):
+            continue
+        if str(p.get('id', '')) == own_id or _normalize_token(p.get('color')) == own_color:
+            continue
+        opponent_tableau.extend([c for c in (p.get('tableau', []) or []) if isinstance(c, dict)])
+    own_tableau = [c for c in (before_player.get('tableau', []) or []) if isinstance(c, dict)]
+    opponent_profile = _build_tag_profile_from_cards(opponent_tableau)
+    own_profile = _build_tag_profile_from_cards(own_tableau)
+
+    selected_cards: List[Dict[str, Any]] = []
+    if action_type == 'initialcards':
+        for resp in (action_input.get('responses', []) or []):
+            if not isinstance(resp, dict):
+                continue
+            cards_raw = resp.get('cards', [])
+            if isinstance(cards_raw, list):
+                for c in cards_raw:
+                    if isinstance(c, dict):
+                        selected_cards.append(c)
+                    elif isinstance(c, str):
+                        selected_cards.append({'name': c})
+            elif isinstance(cards_raw, str):
+                selected_cards.append({'name': cards_raw})
+    elif action_type == 'card':
+        card_names = action_input.get('cards', []) or []
+        if not isinstance(card_names, list):
+            card_names = [card_names] if card_names else []
+        waiting = (before_state.get('waitingFor', {}) or {})
+        if not isinstance(waiting, dict):
+            waiting = {}
+        wait_type = _normalize_token(waiting.get('type'))
+        prompt_cards = waiting.get('cards', []) or []
+        title = _title_text(waiting.get('title', '')).lower()
+        is_draft = (
+            wait_type in ('card', 'selectcard', 'draft', 'draftcards')
+            or 'draft' in title
+            or ('keep' in title and 'card' in title)
+        )
+        if is_draft and prompt_cards and card_names:
+            for name in card_names:
+                n = str(name).strip()
+                for pc in prompt_cards:
+                    if isinstance(pc, dict) and str(pc.get('name', '')).strip() == n:
+                        selected_cards.append(pc)
+                        break
+                else:
+                    selected_cards.append({'name': n})
+
+    if not selected_cards:
+        return 0.0, False
+
+    hate_signals: List[float] = []
+    for card in selected_cards:
+        opp_overlap = _tag_overlap_for_card(card, opponent_profile)
+        own_overlap = _tag_overlap_for_card(card, own_profile)
+        hate_signals.append(max(0.0, opp_overlap - own_overlap))
+
+    avg_hate = sum(hate_signals) / len(hate_signals) if hate_signals else 0.0
+    if avg_hate < 0.2:
+        return 0.0, False
+    bonus = min(0.08, 0.03 * avg_hate + 0.02)
+    return float(bonus), True
 
 
 def _card_quality(card: Dict[str, Any], player: Dict[str, Any]) -> float:
@@ -675,6 +810,9 @@ def _space_placement_adjustment(
     elif intent == 'special' and enemy_city_adj > 0:
         # Strategic blocking around enemy cities is a valid positive tactic.
         adjustment += min(0.05, 0.02 * float(enemy_city_adj))
+    elif intent == 'city' and enemy_city_adj > 0:
+        # Placing a city adjacent to enemy cities blocks their greenery expansion.
+        adjustment += min(0.05, 0.02 * float(enemy_city_adj))
 
     return float(adjustment)
 
@@ -706,6 +844,9 @@ def calculate_step_reward_decomposition(
             "other_component": 0.0,
             "raw_total": 0.0,
             "scaled_total": 0.0,
+            "hate_draft_bonus_applied": False,
+            "sniping_milestone_applied": False,
+            "sniping_award_applied": False,
         }
 
     before_player = _extract_player(before_state)
@@ -721,6 +862,9 @@ def calculate_step_reward_decomposition(
             "other_component": 0.0,
             "raw_total": 0.0,
             "scaled_total": 0.0,
+            "hate_draft_bonus_applied": False,
+            "sniping_milestone_applied": False,
+            "sniping_award_applied": False,
         }
 
     tr_component = 0.0
@@ -728,6 +872,9 @@ def calculate_step_reward_decomposition(
     city_greenery_component = 0.0
     milestones_awards_component = 0.0
     other_component = 0.0
+    hate_draft_bonus_applied = False
+    sniping_milestone_applied = False
+    sniping_award_applied = False
 
     # Reward tangible engine growth.
     before_tableau = before_player.get('tableau', []) or []
@@ -804,7 +951,12 @@ def calculate_step_reward_decomposition(
     # Tile-placement tactical shaping:
     # - discourage greenery placements adjacent to enemy cities (unless forced)
     # - allow/encourage special-tile blocking around enemy cities
+    # - reward city placement adjacent to enemy cities (blocking)
     other_component += _space_placement_adjustment(before_state, after_state, action_input)
+
+    # Hate-draft bonus: reward keeping/drafting cards that hurt opponents (high opp tag overlap, low own).
+    hate_draft_adj, hate_draft_bonus_applied = _hate_draft_adjustment(before_state, action_input)
+    other_component += hate_draft_adj
 
     # Penalize routine sell-patents behavior, especially when playable cards were already affordable.
     before_waiting = before_state.get('waitingFor', {}) if isinstance(before_state, dict) else {}
@@ -841,6 +993,10 @@ def calculate_step_reward_decomposition(
             # Small extra bonus for claiming with comfortable cash (shows timing awareness)
             milestone_claim_reward += 0.04 * float(milestone_claim_delta) * early_factor
         milestones_awards_component += min(0.30, milestone_claim_reward)
+        # Sniping bonus: reward claiming in late game (denying opponents).
+        if generation_progress > 0.6:
+            milestones_awards_component += min(0.05, 0.025 * float(milestone_claim_delta))
+            sniping_milestone_applied = True
 
     # Milestone Regret Penalty: if this player could have claimed a milestone
     # before this action (progress >= 1.0, unclaimed) but an opponent claimed it
@@ -890,6 +1046,10 @@ def calculate_step_reward_decomposition(
             timing_factor = 0.5 + (0.5 * generation_progress)
             if expected_net_vp > 0.0:
                 milestones_awards_component += min(0.18, (0.04 + (0.035 * expected_net_vp)) * timing_factor)
+                # Sniping bonus: late-game award funding when we're ahead (positive EV).
+                if generation_progress > 0.6:
+                    milestones_awards_component += min(0.04, 0.02 * expected_net_vp)
+                    sniping_award_applied = True
             else:
                 milestones_awards_component -= min(0.14, (0.03 + (0.04 * abs(expected_net_vp))) * timing_factor)
 
@@ -929,6 +1089,9 @@ def calculate_step_reward_decomposition(
         "clamped_total": float(clamped_total),
         "step_reward_scale": float(STEP_REWARD_SCALE),
         "scaled_total": float(scaled_total),
+        "hate_draft_bonus_applied": bool(hate_draft_bonus_applied),
+        "sniping_milestone_applied": bool(sniping_milestone_applied),
+        "sniping_award_applied": bool(sniping_award_applied),
     }
 
 

@@ -32,6 +32,7 @@ class GameResult:
     completed: bool
     error_message: Optional[str] = None
     end_screens: List[str] = None
+    game_generation: Optional[int] = None  # Final generation when game ended (lower = faster win)
 
 class TournamentManager:
     def __init__(self, game_cluster: GameServerCluster):
@@ -431,12 +432,22 @@ class TournamentManager:
                 })
 
             actual_game_id = game_instance.game_id
+            game_generation = None
+            try:
+                gs_game = game_state.get('game') or {}
+                gen_raw = gs_game.get('generation') or game_state.get('generation')
+                if gen_raw is not None:
+                    game_generation = int(gen_raw)
+            except (TypeError, ValueError):
+                pass
+
             result = GameResult(
                 game_id=actual_game_id,
                 players=players,
                 duration_seconds=duration,
                 completed=True,
-                end_screens=end_screens
+                end_screens=end_screens,
+                game_generation=game_generation,
             )
             # Push into coordinator recent lists if available
             try:
@@ -520,7 +531,8 @@ class TournamentManager:
             'duration_seconds': game_result.duration_seconds,
             'completed': game_result.completed,
             'error_message': game_result.error_message,
-            'end_screens': game_result.end_screens or []
+            'end_screens': game_result.end_screens or [],
+            'game_generation': game_result.game_generation,
         }
     
     async def get_tournament_status(self, tournament_id: str) -> Optional[Dict[str, Any]]:

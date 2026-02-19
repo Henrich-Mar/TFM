@@ -2304,6 +2304,13 @@ class RLAgent:
     def get_rollout_buffer_size(self) -> int:
         return int(len(self.rollout_buffer))
 
+    async def clear_rollout_buffer(self) -> int:
+        """Clear queued PPO rollout samples and return the number of discarded steps."""
+        async with self.training_lock:
+            cleared = int(len(self.rollout_buffer))
+            self.rollout_buffer.clear()
+            return cleared
+
     async def _train_from_episode(self, episode_steps: List[Dict[str, Any]], terminal_reward: float):
         """Policy/value update from one self-play episode with terminal reward."""
         if not episode_steps:

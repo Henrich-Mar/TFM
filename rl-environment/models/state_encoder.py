@@ -975,6 +975,84 @@ class StateEncoder:
         )
         encoding[60] = min((own_city_vp + own_greenery_vp) / 30.0, 1.0)
 
+        # Moon board state (slots 10-29): only populated when moon expansion is present
+        moon_enc = self._encode_moon_board_state(game_state, current_player)
+        for i, val in enumerate(moon_enc):
+            if 10 + i < 100:
+                encoding[10 + i] = val
+
+        return encoding
+
+    def _encode_moon_board_state(
+        self,
+        game_state: Dict[str, Any],
+        current_player: Optional[Dict[str, Any]] = None,
+    ) -> List[float]:
+        """Encode Moon board state. Returns 20 values. TileType: 29=mine, 30=habitat, 31=road."""
+        encoding = [0.0] * 20
+        moon = game_state.get('moon', {})
+        spaces_raw = moon.get('spaces', [])
+        if not spaces_raw:
+            return encoding
+
+        spaces = [s for s in spaces_raw if isinstance(s, dict)]
+        own_color = str((current_player or {}).get('color', '') or '').strip().lower()
+        vpb = (current_player or {}).get('victoryPointsBreakdown', {}) or {}
+
+        road_count = 0
+        mine_count = 0
+        habitat_count = 0
+        available_moon_land = 0
+        own_roads = 0
+        own_mines = 0
+        own_habitats = 0
+
+        for space in spaces:
+            st = self._space_type_lower(space.get('spaceType', ''))
+            if st == 'colony':
+                continue
+            tile_raw = space.get('tileType')
+            has_tile = tile_raw is not None
+            tid = self._safe_int(tile_raw)
+            color = str(space.get('color', '') or '').strip().lower()
+
+            if not has_tile:
+                if st in ('land', 'lunar_mine'):
+                    available_moon_land += 1
+                continue
+
+            if tid == 31:
+                road_count += 1
+                if color == own_color:
+                    own_roads += 1
+            elif tid == 29:
+                mine_count += 1
+                if color == own_color:
+                    own_mines += 1
+            elif tid == 30:
+                habitat_count += 1
+                if color == own_color:
+                    own_habitats += 1
+
+        logistics = moon.get('logisticsRate', 0)
+        mining = moon.get('miningRate', 0)
+        habitat = moon.get('habitatRate', 0)
+
+        encoding[0] = float(logistics) / 8.0
+        encoding[1] = float(mining) / 8.0
+        encoding[2] = float(habitat) / 8.0
+        encoding[3] = min(road_count / 24.0, 1.0)
+        encoding[4] = min(mine_count / 24.0, 1.0)
+        encoding[5] = min(habitat_count / 24.0, 1.0)
+        encoding[6] = min(available_moon_land / 35.0, 1.0)
+        encoding[7] = min(own_roads / 12.0, 1.0)
+        encoding[8] = min(own_mines / 12.0, 1.0)
+        encoding[9] = min(own_habitats / 12.0, 1.0)
+        encoding[10] = min(float(vpb.get('moonRoads', 0) or 0) / 12.0, 1.0)
+        encoding[11] = min(float(vpb.get('moonMines', 0) or 0) / 12.0, 1.0)
+        encoding[12] = min(float(vpb.get('moonHabitats', 0) or 0) / 12.0, 1.0)
+        encoding[13] = min((own_roads + own_mines + own_habitats) / 24.0, 1.0)
+
         return encoding
 
     def _get_space_coordinates(self, space: Dict[str, Any]) -> Tuple[int, int]:
@@ -1183,6 +1261,16 @@ class StateEncoder:
             elif input_type in ['selectSpace', 'space']:
                 spaces = waiting_for.get('availableSpaces', waiting_for.get('spaces', []))
                 encoding[37] = min(len(spaces) / 40.0, 1.0)
+                # Flag moon space selection (space ids like m01, m34)
+                if spaces:
+                    first_space = spaces[0]
+                    sid = str(
+                        first_space.get('id', first_space.get('spaceId', first_space))
+                        if isinstance(first_space, dict)
+                        else first_space
+                    ).strip().lower()
+                    if sid.startswith('m') and len(sid) >= 2 and sid[1:].isdigit():
+                        encoding[41] = 1.0
             elif input_type in ['selectAmount', 'amount']:
                 min_amount = float(waiting_for.get('min', 0) or 0)
                 max_amount = float(waiting_for.get('max', 0) or 0)

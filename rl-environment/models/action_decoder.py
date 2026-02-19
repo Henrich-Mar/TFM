@@ -2001,10 +2001,13 @@ class ActionDecoder:
             'END_TURN': 950
         }
         
-        # Standard projects mapping - updated with all available standard projects
+        # Standard projects mapping - use actual game API names (card_metadata)
         self.standard_projects = [
             'Power Plant:SP', 'Asteroid:SP', 'Aquifer', 'Greenery', 'City', 'Colony',
-            'Air Scrapping', 'Buffer Gas', 'Moon Habitat', 'Moon Mine', 'Moon Road'
+            'Air Scrapping', 'Buffer Gas',
+            'Road Infrastructure', 'Lunar Mine', 'Lunar Habitat',  # Moon expansion
+            'Road Infrastructure (var. 1)', 'Lunar Mine (var. 1)', 'Lunar Habitat (var. 1)',
+            'Road Infrastructure (var. 2)', 'Lunar Mine (var. 2)', 'Lunar Habitat (var. 2)',
         ]
         self.card_selection_mask_limit = _CARD_SELECTION_MASK_LIMIT
 
@@ -2032,6 +2035,21 @@ class ActionDecoder:
         if 'venus' in name or 'air scrapping' in name or 'buffer gas' in name:
             venus = game.get('venusScaleLevel', 0)
             if venus >= 30:
+                return True
+
+        # Moon projects: Road Infrastructure / Moon Road (logistics), Lunar Mine (mining), Lunar Habitat (habitat)
+        moon = game.get('moon', {})
+        logistics = moon.get('logisticsRate', 0)
+        mining = moon.get('miningRate', 0)
+        habitat = moon.get('habitatRate', 0)
+        if ('road' in name and 'infrastructure' in name) or 'moon road' in name:
+            if logistics >= 8:
+                return True
+        if ('lunar mine' in name) or ('moon mine' in name):
+            if mining >= 8:
+                return True
+        if ('lunar habitat' in name) or ('moon habitat' in name):
+            if habitat >= 8:
                 return True
                 
         return False
@@ -2173,12 +2191,17 @@ class ActionDecoder:
                 if 'convert plants' in title:
                     available_actions.append(700)
                 elif 'convert heat' in title:
-                    available_actions.append(701)
+                    if not self._is_convert_heat_wasteful(player_state or {}):
+                        available_actions.append(701)
                 elif 'sell patents' in title:
                     if cards:
                         available_actions.append(702)
                 elif 'standard project' in title:
-                    enabled_cards = [(i, card) for i, card in enumerate(cards) if not card.get('isDisabled', False)]
+                    enabled_cards = [
+                        (i, card) for i, card in enumerate(cards)
+                        if not card.get('isDisabled', False)
+                        and not self._is_standard_project_wasteful(card, player_state or {})
+                    ]
                     for i, _ in enabled_cards:
                         available_actions.append(self.action_types['STANDARD_PROJECT'] + i)
                 
@@ -2229,13 +2252,18 @@ class ActionDecoder:
                 min_cards = _safe_int(waiting_for.get('min', 1), 1)
                 max_cards = _safe_int(waiting_for.get('max', len(cards)), len(cards))
                 if 'standard project' in title:
-                    enabled_cards = [(i, card) for i, card in enumerate(cards) if not card.get('isDisabled', False)]
+                    enabled_cards = [
+                        (i, card) for i, card in enumerate(cards)
+                        if not card.get('isDisabled', False)
+                        and not self._is_standard_project_wasteful(card, player_state or {})
+                    ]
                     for i, _ in enabled_cards:
                         available_actions.append(self.action_types['STANDARD_PROJECT'] + i)
                 elif 'convert plants' in title:
                     available_actions.append(700)
                 elif 'convert heat' in title:
-                    available_actions.append(701)
+                    if not self._is_convert_heat_wasteful(player_state or {}):
+                        available_actions.append(701)
                 elif 'sell patents' in title:
                     if cards:
                         available_actions.append(702)

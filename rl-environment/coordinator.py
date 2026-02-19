@@ -31,6 +31,10 @@ from training.fitness import (
 )
 from training.ppo_cycle import optimize_population_with_ppo
 from training.league import LeagueConfig, LeagueManager
+from training.generation_quality import (
+    annotate_generation_validity,
+    expected_games_evaluated_per_generation,
+)
 
 # Configure logging with rotation (env toggles)
 LOG_DIR = os.getenv('RL_LOG_DIR', '/app/rl-logs')
@@ -117,6 +121,12 @@ class RLCoordinator:
         self.gate_global_payment_penalty_points = self._safe_env_float("GATE_GLOBAL_PAYMENT_PENALTY_POINTS", 6.0)
         self.ppo_enable = str(os.getenv("PPO_ENABLE", "1")).strip().lower() not in ("0", "false", "no", "off")
         self.ppo_rollout_steps = self._safe_env_int("PPO_ROLLOUT_STEPS", 8192)
+        self.min_eval_completion_ratio = min(1.0, max(0.0, self._safe_env_float("MIN_EVAL_COMPLETION_RATIO", 0.80)))
+        self.min_frozen_pool_completion_rate = min(1.0, max(0.0, self._safe_env_float("MIN_FROZEN_POOL_COMPLETION_RATE", 0.90)))
+        self.invalid_generation_backoff_sec = max(0.0, self._safe_env_float("INVALID_GENERATION_BACKOFF_SEC", 5.0))
+        self.clear_rollout_buffer_on_invalid_generation = str(
+            os.getenv("CLEAR_ROLLOUT_BUFFER_ON_INVALID_GENERATION", "1")
+        ).strip().lower() not in ("0", "false", "no", "off")
         self.save_top_k = max(1, self._safe_env_int("SAVE_TOP_K", 3))
         self.training_opponent_pool_enabled = str(os.getenv("TRAINING_OPPONENT_POOL_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off")
         self.training_pool_games_per_agent = max(0, self._safe_env_int("TRAINING_POOL_GAMES_PER_AGENT", 1))
@@ -178,6 +188,50 @@ class RLCoordinator:
             per_server = 4
         per_server = max(1, per_server)
         return max(1, len(self.config.game_servers) * per_server)
+
+    def _expected_games_evaluated_per_generation(self) -> int:
+        return expected_games_evaluated_per_generation(
+            population_size=int(self.config.population_size),
+            games_per_evaluation=int(self.config.games_per_evaluation),
+            training_pool_enabled=bool(self.training_opponent_pool_enabled),
+            training_pool_games_per_agent=int(self.training_pool_games_per_agent),
+        )
+
+    def _annotate_generation_validity(self, generation_metrics: Dict[str, Any]) -> Tuple[bool, List[str]]:
+        return annotate_generation_validity(
+            generation_metrics=generation_metrics,
+            population_size=int(self.config.population_size),
+            games_per_evaluation=int(self.config.games_per_evaluation),
+            training_pool_enabled=bool(self.training_opponent_pool_enabled),
+            training_pool_games_per_agent=int(self.training_pool_games_per_agent),
+            min_eval_completion_ratio=float(self.min_eval_completion_ratio),
+            min_frozen_pool_completion_rate=float(self.min_frozen_pool_completion_rate),
+        )
+
+    async def _clear_population_rollout_buffers(self) -> int:
+        cleared_total = 0
+        for agent in self.population:
+            clear_rollout = getattr(agent, "clear_rollout_buffer", None)
+            if callable(clear_rollout):
+                try:
+                    cleared = clear_rollout()
+                    if asyncio.iscoroutine(cleared):
+                        cleared = await cleared
+                    cleared_total += int(cleared or 0)
+                    continue
+                except Exception:
+                    logger.debug("Failed to clear rollout buffer through helper for %s", getattr(agent, "id", "?"), exc_info=True)
+
+            rollout_buffer = getattr(agent, "rollout_buffer", None)
+            if rollout_buffer is None:
+                continue
+            try:
+                size = int(len(rollout_buffer))
+                rollout_buffer.clear()
+                cleared_total += size
+            except Exception:
+                logger.debug("Failed to clear rollout buffer directly for %s", getattr(agent, "id", "?"), exc_info=True)
+        return int(cleared_total)
         
     async def initialize(self):
         """Initialize the RL system"""
@@ -263,6 +317,33 @@ class RLCoordinator:
                     fitness_scores=fitness_scores,
                 )
                 self.last_generation_behavior_metrics.update(benchmark_metrics)
+                generation_valid, invalid_reasons = self._annotate_generation_validity(self.last_generation_behavior_metrics)
+                if not generation_valid:
+                    observed_games = int(self.last_generation_behavior_metrics.get("total_games_evaluated", 0) or 0)
+                    expected_games = int(self.last_generation_behavior_metrics.get("generation/expected_games_evaluated", 0) or 0)
+                    min_required_games = int(self.last_generation_behavior_metrics.get("generation/min_required_games_evaluated", 0) or 0)
+                    frozen_completion = float(
+                        self.last_generation_behavior_metrics.get("frozen_pool/completion_rate", 0.0) or 0.0
+                    )
+                    logger.warning(
+                        "Generation %d marked invalid for selection. reasons=%s expected_games=%d min_required=%d observed=%d frozen_pool_completion=%.3f",
+                        generation + 1,
+                        ",".join(invalid_reasons) if invalid_reasons else "unknown",
+                        expected_games,
+                        min_required_games,
+                        observed_games,
+                        frozen_completion,
+                    )
+                    if self.clear_rollout_buffer_on_invalid_generation:
+                        cleared_steps = await self._clear_population_rollout_buffers()
+                        logger.warning(
+                            "Generation %d invalid: cleared %d rollout step(s) before retry.",
+                            generation + 1,
+                            int(cleared_steps),
+                        )
+                    if float(self.invalid_generation_backoff_sec) > 0.0:
+                        await asyncio.sleep(float(self.invalid_generation_backoff_sec))
+                    continue
 
                 # Record metrics
                 await self.metrics_tracker.record_generation(

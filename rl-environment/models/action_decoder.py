@@ -2008,6 +2008,42 @@ class ActionDecoder:
         ]
         self.card_selection_mask_limit = _CARD_SELECTION_MASK_LIMIT
 
+    def _is_standard_project_wasteful(self, card_payload: Dict[str, Any], player_state: Dict[str, Any]) -> bool:
+        """Check if a standard project is wasteful (maxed out parameter)"""
+        if not player_state or not card_payload:
+            return False
+            
+        name = str(card_payload.get('name', '')).lower()
+        game = player_state.get('game', {})
+        
+        # Asteroid / Temperature
+        if 'asteroid' in name or 'temperature' in name:
+            temp = game.get('temperature', -30)
+            if temp >= 8:
+                return True
+                
+        # Aquifer / Ocean
+        if 'aquifer' in name or 'ocean' in name:
+            oceans = game.get('oceans', 0)
+            if oceans >= 9:
+                return True
+                
+        # Venus projects
+        if 'venus' in name or 'air scrapping' in name or 'buffer gas' in name:
+            venus = game.get('venusScaleLevel', 0)
+            if venus >= 30:
+                return True
+                
+        return False
+
+    def _is_convert_heat_wasteful(self, player_state: Dict[str, Any]) -> bool:
+        """Check if converting heat to temperature is wasteful"""
+        if not player_state:
+            return False
+        game = player_state.get('game', {})
+        temp = game.get('temperature', -30)
+        return temp >= 8
+
     def build_initial_setup_response(self, player_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         waiting_for = player_state.get('waitingFor', {}) if player_state else {}
         input_type = waiting_for.get('type', '')
@@ -2058,7 +2094,10 @@ class ActionDecoder:
                             allow_select_option = False
                     elif option_type in ['selectCard', 'card'] and 'standard project' in option_title_l:
                         cards = option.get('cards', [])
-                        enabled_indices = [j for j, card in enumerate(cards) if not card.get('isDisabled', False)]
+                        enabled_indices = [
+                            j for j, card in enumerate(cards) 
+                            if not card.get('isDisabled', False) and not self._is_standard_project_wasteful(card, player_state)
+                        ]
                         if enabled_indices:
                             for j in enabled_indices:
                                 available_actions.append(self.action_types['STANDARD_PROJECT'] + j)
@@ -2075,8 +2114,11 @@ class ActionDecoder:
                         available_actions.append(700)
                         added_concrete_action = True
                     elif option_type in ['selectCard', 'card'] and 'convert heat' in option_title_l:
-                        available_actions.append(701)
-                        added_concrete_action = True
+                        if not self._is_convert_heat_wasteful(player_state):
+                            available_actions.append(701)
+                            added_concrete_action = True
+                        else:
+                            allow_select_option = False
                     elif option_type in ['selectCard', 'card'] and 'sell patents' in option_title_l:
                         if option.get('cards', []):
                             available_actions.append(702)

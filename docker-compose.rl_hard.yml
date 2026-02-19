@@ -192,6 +192,56 @@ services:
       start_period: 45s
     restart: unless-stopped
 
+  # tfm-server-9
+  tfm-server-9:
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
+    ports:
+      - "8089:8080"
+    environment:
+      - NODE_ENV=production
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tfm-server-9
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    labels:
+      - autoheal=true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    restart: unless-stopped
+
+  # tfm-server-10
+  tfm-server-10:
+    build:
+      context: ./terraforming-mars
+      dockerfile: Dockerfile.rl
+    ports:
+      - "8090:8080"
+    environment:
+      - NODE_ENV=production
+      - COMPRESS_COMPLETED_GAMES_DAYS=0
+      - SERVER_ID=tfm-server-10
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    labels:
+      - autoheal=true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    restart: unless-stopped
+
   # Automatically restart unhealthy tfm-server containers
   autoheal:
     image: willfarrell/autoheal:1.2.0
@@ -212,7 +262,8 @@ services:
       - tfm-server-6
       - tfm-server-7
       - tfm-server-8
-
+      - tfm-server-9
+      - tfm-server-10
   # Redis for job queue and caching
   redis:
     image: redis:alpine
@@ -247,20 +298,20 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - POSTGRES_URL=postgresql://tfm:tfm_password@postgres:5432/tfm_rl
-      - GAME_SERVERS=tfm-server-1:8080,tfm-server-2:8080,tfm-server-3:8080,tfm-server-4:8080,tfm-server-5:8080,tfm-server-6:8080,tfm-server-7:8080,tfm-server-8:8080
-      - PUBLIC_TM_MAP=tfm-server-1:8080=http://localhost:8081,tfm-server-2:8080=http://localhost:8082,tfm-server-3:8080=http://localhost:8083,tfm-server-4:8080=http://localhost:8084,tfm-server-5:8080=http://localhost:8085,tfm-server-6:8080=http://localhost:8086,tfm-server-7:8080=http://localhost:8087,tfm-server-8:8080=http://localhost:8088
-      - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4,tfm-server-5:8080=tfm-server-5,tfm-server-6:8080=tfm-server-6,tfm-server-7:8080=tfm-server-7,tfm-server-8:8080=tfm-server-8
-      - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084,http://localhost:8085,http://localhost:8086,http://localhost:8087,http://localhost:8088
-      - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080,http://tfm-server-7:8080,http://tfm-server-8:8080
-      - POPULATION_SIZE=30
+      - GAME_SERVERS=tfm-server-1:8080,tfm-server-2:8080,tfm-server-3:8080,tfm-server-4:8080,tfm-server-5:8080,tfm-server-6:8080,tfm-server-7:8080,tfm-server-8:8080,tfm-server-9:8080,tfm-server-10:8080
+      - PUBLIC_TM_MAP=tfm-server-1:8080=http://localhost:8081,tfm-server-2:8080=http://localhost:8082,tfm-server-3:8080=http://localhost:8083,tfm-server-4:8080=http://localhost:8084,tfm-server-5:8080=http://localhost:8085,tfm-server-6:8080=http://localhost:8086,tfm-server-7:8080=http://localhost:8087,tfm-server-8:8080=http://localhost:8088,tfm-server-9:8080=http://localhost:8089,tfm-server-10:8080=http://localhost:8090
+      - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4,tfm-server-5:8080=tfm-server-5,tfm-server-6:8080=tfm-server-6,tfm-server-7:8080=tfm-server-7,tfm-server-8:8080=tfm-server-8,tfm-server-9:8080=tfm-server-9,tfm-server-10:8080=tfm-server-10
+      - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084,http://localhost:8085,http://localhost:8086,http://localhost:8087,http://localhost:8088,http://localhost:8089,http://localhost:8090
+      - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080,http://tfm-server-7:8080,http://tfm-server-8:8080,http://tfm-server-9:8080,http://tfm-server-10:8080
+      - POPULATION_SIZE=16
       - GENERATIONS=5000
       - GAMES_PER_EVAL=6
       - TOURNAMENT_CONCURRENCY=8
-      - GLOBAL_GAME_CONCURRENCY=40
+      - GLOBAL_GAME_CONCURRENCY=50    # 50 games per server * 10 servers = 500 games
       - MAX_ACTIVE_GAMES_PER_SERVER=5
       - TM_GAME_TIMEOUT_SEC=360
       - TM_HTTP_CONNECTOR_LIMIT=800
-      - TM_HTTP_CONNECTOR_LIMIT_PER_HOST=32
+      - TM_HTTP_CONNECTOR_LIMIT_PER_HOST=48
       - TM_CREATE_GAME_RETRY_ATTEMPTS=4
       - TM_CREATE_GAME_RETRY_BACKOFF_SEC=0.25
       - TM_SERVER_FAILURE_COOLDOWN_SEC=12
@@ -327,6 +378,8 @@ services:
       - tfm-server-6
       - tfm-server-7
       - tfm-server-8
+      - tfm-server-9
+      - tfm-server-10
       - redis
       - postgres
       

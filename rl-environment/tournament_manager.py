@@ -238,6 +238,8 @@ class TournamentManager:
     async def _run_single_game(self, agents: List[RLAgent], tournament_id: str) -> GameResult:
         """Run a single 4-player game"""
         provisional_id = str(uuid.uuid4())
+        actual_game_id = provisional_id
+        game_instance: Optional[GameInstance] = None
         start_time = datetime.now()
         seat_player_names = self._build_seat_player_names(agents)
         
@@ -257,7 +259,8 @@ class TournamentManager:
                     'undoOption': False
                 }
             )
-            logger.info("Game %s created with fastModeOption=%s", game_instance.game_id, fast_mode_option)
+            actual_game_id = game_instance.game_id
+            logger.info("Game %s created with fastModeOption=%s", actual_game_id, fast_mode_option)
             # Record game URL for dashboard using canonical public URL resolver.
             try:
                 game_url = game_instance.get_public_game_url()
@@ -453,13 +456,26 @@ class TournamentManager:
             except Exception:
                 timeout_sec = 300.0
             timeout_sec = max(60.0, timeout_sec)
+            game_url = ""
+            server_name = ""
+            if game_instance is not None:
+                try:
+                    game_url = game_instance.get_public_game_url()
+                except Exception:
+                    game_url = ""
+                try:
+                    server_name = f"{game_instance.server.host}:{game_instance.server.port}"
+                except Exception:
+                    server_name = ""
             logger.warning(
-                "Game %s timed out after %.0f seconds",
-                provisional_id,
+                "Game %s timed out after %.0f seconds (server=%s url=%s)",
+                actual_game_id,
                 timeout_sec,
+                server_name or "unknown",
+                game_url or "n/a",
             )
             return GameResult(
-                game_id=provisional_id,
+                game_id=actual_game_id,
                 players=[{
                     'agent_id': agent.id,
                     'rank': 4,
@@ -473,9 +489,9 @@ class TournamentManager:
             )
             
         except Exception as e:
-            logger.error(f"Game {provisional_id} failed: {e}")
+            logger.error(f"Game {actual_game_id} failed: {e}")
             return GameResult(
-                game_id=provisional_id,
+                game_id=actual_game_id,
                 players=[{
                     'agent_id': agent.id,
                     'rank': 4,
@@ -491,7 +507,8 @@ class TournamentManager:
         finally:
             # Clean up game instance
             try:
-                await game_instance.cleanup()
+                if game_instance is not None:
+                    await game_instance.cleanup()
             except:
                 pass
     

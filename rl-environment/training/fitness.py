@@ -3,6 +3,7 @@ Shared fitness, behavior metrics, and gating logic.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -424,9 +425,19 @@ def apply_promotion_gates(
 def calculate_selection_fitness(population: Sequence[Any], tournament_results: List[Dict[str, Any]]) -> List[float]:
     agent_scores = {agent.id: 0.0 for agent in population}
     agent_games = {agent.id: 0 for agent in population}
+    include_incomplete = str(os.getenv("SELECTION_INCLUDE_INCOMPLETE_GAMES", "0")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
     for tournament_result in tournament_results:
         for game_result in tournament_result.get("games", []):
+            if not isinstance(game_result, dict):
+                continue
+            if (not include_incomplete) and (not bool(game_result.get("completed", False))):
+                continue
             for player_result in game_result.get("players", []):
                 agent_id = player_result.get("agent_id")
                 if agent_id not in agent_scores:

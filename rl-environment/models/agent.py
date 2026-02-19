@@ -44,6 +44,152 @@ class AgentConfig:
     entropy_coef: float = 0.005
     max_grad_norm: float = 1.0
     max_episode_steps: int = 512
+    transformer_enabled: bool = True
+    card_token_dim: int = 8
+    tableau_token_count: int = 8
+    hand_token_count: int = 4
+    opponent_token_count: int = 4
+    transformer_embed_dim: int = 64
+    transformer_heads: int = 4
+    transformer_layers: int = 2
+    transformer_dropout: float = 0.1
+
+
+class CardAttentionModule(nn.Module):
+    def __init__(
+        self,
+        card_token_dim: int = 8,
+        embed_dim: int = 64,
+        nhead: int = 4,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.card_token_dim = max(1, int(card_token_dim))
+        self.embed_dim = max(16, int(embed_dim))
+        self.nhead = max(1, int(nhead))
+        self.num_layers = max(1, int(num_layers))
+        self.dropout = max(0.0, float(dropout))
+
+        self.card_projection = nn.Linear(self.card_token_dim, self.embed_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.embed_dim,
+            nhead=self.nhead,
+            dim_feedforward=self.embed_dim * 4,
+            dropout=self.dropout,
+            batch_first=True,
+            activation='gelu',
+        )
+        try:
+            # Avoid prototype nested-tensor execution path warnings in current PyTorch.
+            self.tableau_encoder = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=self.num_layers,
+                enable_nested_tensor=False,
+            )
+        except TypeError:
+            # Backward compatibility for torch builds without enable_nested_tensor argument.
+            self.tableau_encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=self.embed_dim,
+            num_heads=self.nhead,
+            dropout=self.dropout,
+            batch_first=True,
+        )
+        self.output = nn.Sequential(
+            nn.Linear(self.embed_dim * 3, self.embed_dim),
+            nn.GELU(),
+            nn.Linear(self.embed_dim, self.embed_dim),
+        )
+        self.norm = nn.LayerNorm(self.embed_dim)
+
+    @staticmethod
+    def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        if values.numel() == 0:
+            return torch.zeros((int(values.shape[0]), int(values.shape[-1])), dtype=values.dtype, device=values.device)
+        mask_f = mask.to(dtype=values.dtype).unsqueeze(-1)
+        denom = torch.clamp(mask_f.sum(dim=1), min=1.0)
+        return (values * mask_f).sum(dim=1) / denom
+
+    def _encode_group(self, group_tokens: torch.Tensor, group_mask: torch.Tensor) -> torch.Tensor:
+        if int(group_tokens.shape[1]) <= 0:
+            return torch.zeros((int(group_tokens.shape[0]), self.embed_dim), dtype=group_tokens.dtype, device=group_tokens.device)
+        safe_mask = group_mask.clone()
+        empty_rows = ~safe_mask.any(dim=1)
+        if bool(empty_rows.any()):
+            safe_mask[empty_rows, 0] = True
+        encoded = self.tableau_encoder(group_tokens, src_key_padding_mask=~safe_mask)
+        pooled = self._masked_mean(encoded, safe_mask)
+        if bool(empty_rows.any()):
+            pooled[empty_rows] = 0.0
+        return pooled
+
+    def _cross_attend(
+        self,
+        query_tokens: torch.Tensor,
+        query_mask: torch.Tensor,
+        key_tokens: torch.Tensor,
+        key_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size = int(query_tokens.shape[0])
+        if int(query_tokens.shape[1]) <= 0 or int(key_tokens.shape[1]) <= 0:
+            return torch.zeros((batch_size, self.embed_dim), dtype=query_tokens.dtype, device=query_tokens.device)
+        if not bool(query_mask.any()) or not bool(key_mask.any()):
+            return torch.zeros((batch_size, self.embed_dim), dtype=query_tokens.dtype, device=query_tokens.device)
+
+        safe_query_mask = query_mask.clone()
+        safe_key_mask = key_mask.clone()
+        query_empty_rows = ~safe_query_mask.any(dim=1)
+        key_empty_rows = ~safe_key_mask.any(dim=1)
+        if bool(query_empty_rows.any()):
+            safe_query_mask[query_empty_rows, 0] = True
+        if bool(key_empty_rows.any()):
+            safe_key_mask[key_empty_rows, 0] = True
+
+        attended, _ = self.cross_attention(
+            query=query_tokens,
+            key=key_tokens,
+            value=key_tokens,
+            key_padding_mask=~safe_key_mask,
+            need_weights=False,
+        )
+        pooled = self._masked_mean(attended, safe_query_mask)
+        zero_rows = query_empty_rows | key_empty_rows
+        if bool(zero_rows.any()):
+            pooled[zero_rows] = 0.0
+        return pooled
+
+    def forward(
+        self,
+        card_tokens: torch.Tensor,
+        tableau_token_count: int,
+        hand_token_count: int,
+        opponent_token_count: int,
+    ) -> torch.Tensor:
+        if card_tokens.dim() != 3:
+            raise ValueError("card_tokens must be 3D tensor [batch, tokens, features]")
+
+        projected = self.card_projection(card_tokens)
+        token_present = card_tokens.abs().sum(dim=-1) > 1e-8
+
+        tableau_end = max(0, min(int(tableau_token_count), int(projected.shape[1])))
+        hand_end = max(tableau_end, min(tableau_end + int(hand_token_count), int(projected.shape[1])))
+        opponent_end = max(hand_end, min(hand_end + int(opponent_token_count), int(projected.shape[1])))
+
+        tableau_tokens = projected[:, :tableau_end, :]
+        tableau_mask = token_present[:, :tableau_end]
+        hand_tokens = projected[:, tableau_end:hand_end, :]
+        hand_mask = token_present[:, tableau_end:hand_end]
+        opponent_tokens = projected[:, hand_end:opponent_end, :]
+        opponent_mask = token_present[:, hand_end:opponent_end]
+
+        tableau_summary = self._encode_group(tableau_tokens, tableau_mask)
+        hand_vs_tableau = self._cross_attend(hand_tokens, hand_mask, tableau_tokens, tableau_mask)
+        hand_vs_opponent = self._cross_attend(hand_tokens, hand_mask, opponent_tokens, opponent_mask)
+
+        combined = torch.cat([tableau_summary, hand_vs_tableau, hand_vs_opponent], dim=-1)
+        return self.norm(self.output(combined))
+
 
 class TerraformingMarsNetwork(nn.Module):
     def __init__(self, config: AgentConfig):
@@ -52,6 +198,18 @@ class TerraformingMarsNetwork(nn.Module):
         self.action_dim = 1000
         self.recurrent_size = max(16, int(config.recurrent_size))
         self.phase_head_count = max(2, int(config.phase_head_count))
+        self.use_transformer = bool(getattr(config, "transformer_enabled", True))
+        self.card_token_dim = max(1, int(getattr(config, "card_token_dim", 8)))
+        self.tableau_token_count = max(0, int(getattr(config, "tableau_token_count", 8)))
+        self.hand_token_count = max(0, int(getattr(config, "hand_token_count", 4)))
+        self.opponent_token_count = max(0, int(getattr(config, "opponent_token_count", 4)))
+        self.card_token_count = self.tableau_token_count + self.hand_token_count + self.opponent_token_count
+        self.card_token_vector_size = self.card_token_count * self.card_token_dim
+        self.card_token_start = max(0, int(config.state_size) - int(self.card_token_vector_size))
+        self.transformer_embed_dim = max(16, int(getattr(config, "transformer_embed_dim", 64)))
+        transformer_heads = max(1, int(getattr(config, "transformer_heads", 4)))
+        transformer_layers = max(1, int(getattr(config, "transformer_layers", 2)))
+        transformer_dropout = max(0.0, float(getattr(config, "transformer_dropout", 0.1)))
 
         # Shared state encoder trunk.
         layers = []
@@ -71,6 +229,34 @@ class TerraformingMarsNetwork(nn.Module):
         self.recurrent_cell = nn.GRUCell(config.hidden_size, self.recurrent_size)
         self.recurrent_to_hidden = nn.Linear(self.recurrent_size, config.hidden_size)
         self.phase_embedding = nn.Embedding(self.phase_head_count, config.hidden_size)
+        if self.use_transformer and self.card_token_count > 0 and self.card_token_vector_size > 0:
+            self.card_attention_module = CardAttentionModule(
+                card_token_dim=self.card_token_dim,
+                embed_dim=self.transformer_embed_dim,
+                nhead=transformer_heads,
+                num_layers=transformer_layers,
+                dropout=transformer_dropout,
+            )
+            self.transformer_fusion = nn.Sequential(
+                nn.Linear(self.transformer_embed_dim, config.hidden_size),
+                nn.Tanh(),
+            )
+        else:
+            self.card_attention_module = None
+            self.transformer_fusion = None
+        self.last_transformer_stats: Dict[str, Any] = {
+            "enabled": bool(self.card_attention_module is not None and self.transformer_fusion is not None),
+            "active_token_ratio": 0.0,
+            "active_row_ratio": 0.0,
+            "attention_context_norm": 0.0,
+            "fusion_delta_norm": 0.0,
+            "fusion_share": 0.0,
+            "shared_pre_norm": 0.0,
+            "shared_post_norm": 0.0,
+            "token_count": int(self.card_token_count),
+            "token_dim": int(self.card_token_dim),
+            "timestamp": 0.0,
+        }
 
         # Phase-specific policy heads.
         self.policy_heads = nn.ModuleList([
@@ -106,9 +292,63 @@ class TerraformingMarsNetwork(nn.Module):
         recurrent_state: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Forward pass with phase-conditioned policy, recurrent memory, and auxiliary heads."""
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
+        state = state.float()
+
         shared = self.state_encoder(state)
         batch_size = int(shared.shape[0])
         device = shared.device
+        transformer_path_active = (
+            self.card_attention_module is not None
+            and self.transformer_fusion is not None
+            and self.card_token_count > 0
+            and self.card_token_vector_size > 0
+            and int(state.shape[1]) >= int(self.card_token_start + self.card_token_vector_size)
+        )
+        active_token_ratio = 0.0
+        active_row_ratio = 0.0
+        attention_context_norm = 0.0
+        fusion_delta_norm = 0.0
+        fusion_share = 0.0
+        with torch.no_grad():
+            shared_pre_norm = float(shared.detach().norm(dim=1).mean().item()) if batch_size > 0 else 0.0
+        shared_post_norm = shared_pre_norm
+
+        if transformer_path_active:
+            token_flat = state[:, self.card_token_start:self.card_token_start + self.card_token_vector_size]
+            card_tokens = token_flat.reshape(batch_size, self.card_token_count, self.card_token_dim)
+            token_present = card_tokens.abs().sum(dim=-1) > 1e-8
+            with torch.no_grad():
+                active_token_ratio = float(token_present.float().mean().item()) if token_present.numel() > 0 else 0.0
+                active_row_ratio = float(token_present.any(dim=1).float().mean().item()) if batch_size > 0 else 0.0
+            attention_context = self.card_attention_module(
+                card_tokens=card_tokens,
+                tableau_token_count=self.tableau_token_count,
+                hand_token_count=self.hand_token_count,
+                opponent_token_count=self.opponent_token_count,
+            )
+            fusion_delta = self.transformer_fusion(attention_context)
+            shared = shared + fusion_delta
+            with torch.no_grad():
+                attention_context_norm = float(attention_context.detach().norm(dim=1).mean().item()) if batch_size > 0 else 0.0
+                fusion_delta_norm = float(fusion_delta.detach().norm(dim=1).mean().item()) if batch_size > 0 else 0.0
+                shared_post_norm = float(shared.detach().norm(dim=1).mean().item()) if batch_size > 0 else 0.0
+                fusion_share = float(fusion_delta_norm / max(shared_pre_norm, 1e-8))
+
+        self.last_transformer_stats = {
+            "enabled": bool(transformer_path_active),
+            "active_token_ratio": float(active_token_ratio),
+            "active_row_ratio": float(active_row_ratio),
+            "attention_context_norm": float(attention_context_norm),
+            "fusion_delta_norm": float(fusion_delta_norm),
+            "fusion_share": float(fusion_share),
+            "shared_pre_norm": float(shared_pre_norm),
+            "shared_post_norm": float(shared_post_norm),
+            "token_count": int(self.card_token_count),
+            "token_dim": int(self.card_token_dim),
+            "timestamp": float(time.time()),
+        }
 
         if recurrent_state is None:
             recurrent_state = torch.zeros((batch_size, self.recurrent_size), dtype=shared.dtype, device=device)
@@ -203,6 +443,15 @@ class RLAgent:
                 state_size=RLAgent._safe_env_int("AGENT_STATE_SIZE", 1024),
                 hidden_size=RLAgent._safe_env_int("AGENT_HIDDEN_SIZE", 256),
                 num_layers=RLAgent._safe_env_int("AGENT_NUM_LAYERS", 3),
+                transformer_enabled=str(os.getenv("AGENT_TRANSFORMER_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off"),
+                card_token_dim=RLAgent._safe_env_int("AGENT_CARD_TOKEN_DIM", 8),
+                tableau_token_count=RLAgent._safe_env_int("AGENT_TABLEAU_TOKEN_COUNT", 8),
+                hand_token_count=RLAgent._safe_env_int("AGENT_HAND_TOKEN_COUNT", 4),
+                opponent_token_count=RLAgent._safe_env_int("AGENT_OPPONENT_TOKEN_COUNT", 4),
+                transformer_embed_dim=RLAgent._safe_env_int("AGENT_TRANSFORMER_EMBED_DIM", 64),
+                transformer_heads=RLAgent._safe_env_int("AGENT_TRANSFORMER_HEADS", 4),
+                transformer_layers=RLAgent._safe_env_int("AGENT_TRANSFORMER_LAYERS", 2),
+                transformer_dropout=RLAgent._safe_env_float("AGENT_TRANSFORMER_DROPOUT", 0.1),
             )
         self.config = config
         # PPO optimizer LR is decoupled from evolutionary config learning_rate by default.
@@ -225,7 +474,13 @@ class RLAgent:
         self.network.eval()
         
         # Game interaction components
-        self.state_encoder = StateEncoder(state_size=self.config.state_size)
+        self.state_encoder = StateEncoder(
+            state_size=self.config.state_size,
+            card_token_dim=self.config.card_token_dim,
+            tableau_token_count=self.config.tableau_token_count,
+            hand_token_count=self.config.hand_token_count,
+            opponent_token_count=self.config.opponent_token_count,
+        )
         self.action_decoder = ActionDecoder()
         
         # Self-play learning configuration (env overrides)
@@ -2205,15 +2460,19 @@ class RLAgent:
         clamped_epsilon = float(max(min_epsilon, min(max_epsilon, sampled_epsilon)))
         clamped_temperature = float(max(min_temperature, min(max_temperature, sampled_temperature)))
 
-        # Create new agent
-        child_config = AgentConfig(
-            state_size=self.config.state_size,
-            hidden_size=self.config.hidden_size,
-            num_layers=self.config.num_layers,
-            learning_rate=np.random.choice([self.config.learning_rate, other_agent.config.learning_rate]),
-            epsilon=clamped_epsilon,
-            temperature=clamped_temperature,
-        )
+        parent_a = asdict(self.config)
+        parent_b = asdict(other_agent.config)
+        child_payload: Dict[str, Any] = {}
+        for key, default_value in asdict(AgentConfig()).items():
+            if key in ("learning_rate", "epsilon", "temperature"):
+                continue
+            pick_a = parent_a.get(key, default_value)
+            pick_b = parent_b.get(key, default_value)
+            child_payload[key] = pick_a if random.random() < 0.5 else pick_b
+        child_payload["learning_rate"] = float(np.random.choice([self.config.learning_rate, other_agent.config.learning_rate]))
+        child_payload["epsilon"] = clamped_epsilon
+        child_payload["temperature"] = clamped_temperature
+        child_config = AgentConfig(**child_payload)
         
         child = RLAgent(child_config)
         
@@ -2266,6 +2525,13 @@ class RLAgent:
         # Rebuild model/optimizer from restored config before loading state dicts.
         self.network = TerraformingMarsNetwork(self.config)
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
+        self.state_encoder = StateEncoder(
+            state_size=self.config.state_size,
+            card_token_dim=self.config.card_token_dim,
+            tableau_token_count=self.config.tableau_token_count,
+            hand_token_count=self.config.hand_token_count,
+            opponent_token_count=self.config.opponent_token_count,
+        )
 
         state_dict = checkpoint.get('network_state_dict', {}) or {}
         
@@ -2332,19 +2598,61 @@ class RLAgent:
         missing = list(getattr(load_result, "missing_keys", []) or [])
         unexpected = list(getattr(load_result, "unexpected_keys", []) or [])
         if missing or unexpected:
-            logger.warning(
-                "Model load used non-strict mode for %s (missing=%d unexpected=%d)",
-                path,
-                len(missing),
-                len(unexpected),
+            expected_missing_prefixes = (
+                "card_attention_module.",
+                "transformer_fusion.",
             )
+            expected_missing = [
+                key for key in missing
+                if any(key.startswith(prefix) for prefix in expected_missing_prefixes)
+            ]
+            if not unexpected and expected_missing and len(expected_missing) == len(missing):
+                logger.info(
+                    "Loaded pre-transformer checkpoint %s (missing transformer params=%d).",
+                    path,
+                    len(missing),
+                )
+            else:
+                logger.warning(
+                    "Model load used non-strict mode for %s (missing=%d unexpected=%d)",
+                    path,
+                    len(missing),
+                    len(unexpected),
+                )
 
         optimizer_state = checkpoint.get('optimizer_state_dict')
         if optimizer_state:
+            saved_group_sizes: List[int] = []
+            current_group_sizes: List[int] = []
             try:
-                self.optimizer.load_state_dict(optimizer_state)
-            except Exception as e:
-                logger.warning(f"Failed to restore optimizer state from {path}: {e}")
+                saved_groups = optimizer_state.get("param_groups", []) if isinstance(optimizer_state, dict) else []
+                current_groups = self.optimizer.state_dict().get("param_groups", [])
+                saved_group_sizes = [
+                    int(len(group.get("params", [])))
+                    for group in saved_groups
+                    if isinstance(group, dict)
+                ]
+                current_group_sizes = [
+                    int(len(group.get("params", [])))
+                    for group in current_groups
+                    if isinstance(group, dict)
+                ]
+            except Exception:
+                saved_group_sizes = []
+                current_group_sizes = []
+
+            if saved_group_sizes and current_group_sizes and saved_group_sizes != current_group_sizes:
+                logger.info(
+                    "Skipping optimizer restore for %s due to parameter-group mismatch (saved=%s current=%s).",
+                    path,
+                    saved_group_sizes,
+                    current_group_sizes,
+                )
+            else:
+                try:
+                    self.optimizer.load_state_dict(optimizer_state)
+                except Exception as e:
+                    logger.warning(f"Failed to restore optimizer state from {path}: {e}")
         # Keep PPO optimizer LR env-driven even after restoring optimizer state.
         for group in self.optimizer.param_groups:
             group["lr"] = float(self.ppo_learning_rate)

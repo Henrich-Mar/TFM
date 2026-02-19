@@ -793,6 +793,7 @@ class RLCoordinator:
         for game_result in matchup_result.get("games", []) or []:
             if not isinstance(game_result, dict):
                 continue
+            game_completed = bool(game_result.get("completed", False))
             for player_result in game_result.get("players", []) or []:
                 if not isinstance(player_result, dict):
                     continue
@@ -801,11 +802,12 @@ class RLCoordinator:
                     continue
                 bucket = stats[agent_id]
                 bucket["games"] += 1.0
-                bucket["vp_sum"] += float(player_result.get("victory_points", 0) or 0)
-                bucket["rank_sum"] += float(player_result.get("rank", 4) or 4)
-                if int(player_result.get("rank", 4) or 4) == 1:
-                    bucket["wins"] += 1.0
-                if bool(player_result.get("completed", False)):
+                player_completed = bool(player_result.get("completed", game_completed))
+                if player_completed:
+                    bucket["vp_sum"] += float(player_result.get("victory_points", 0) or 0)
+                    bucket["rank_sum"] += float(player_result.get("rank", 4) or 4)
+                    if int(player_result.get("rank", 4) or 4) == 1:
+                        bucket["wins"] += 1.0
                     bucket["completed"] += 1.0
 
         aggregate = {
@@ -818,25 +820,29 @@ class RLCoordinator:
         per_agent: Dict[str, Dict[str, float]] = {}
         for agent_id, bucket in stats.items():
             games = float(bucket["games"])
+            completed_games = float(bucket["completed"])
             aggregate["games"] += games
             aggregate["wins"] += float(bucket["wins"])
             aggregate["vp_sum"] += float(bucket["vp_sum"])
             aggregate["rank_sum"] += float(bucket["rank_sum"])
-            aggregate["completed"] += float(bucket["completed"])
+            aggregate["completed"] += completed_games
             per_agent[agent_id] = {
                 "games": games,
-                "win_rate": (float(bucket["wins"]) / games) if games > 0 else 0.0,
-                "avg_vp": (float(bucket["vp_sum"]) / games) if games > 0 else 0.0,
-                "avg_rank": (float(bucket["rank_sum"]) / games) if games > 0 else 0.0,
+                "completed_games": completed_games,
+                "win_rate": (float(bucket["wins"]) / completed_games) if completed_games > 0 else 0.0,
+                "avg_vp": (float(bucket["vp_sum"]) / completed_games) if completed_games > 0 else 0.0,
+                "avg_rank": (float(bucket["rank_sum"]) / completed_games) if completed_games > 0 else 0.0,
                 "completion_rate": (float(bucket["completed"]) / games) if games > 0 else 0.0,
             }
 
         aggregate_games = float(aggregate["games"])
+        aggregate_completed_games = float(aggregate["completed"])
         aggregate_summary = {
             "games": aggregate_games,
-            "win_rate": (float(aggregate["wins"]) / aggregate_games) if aggregate_games > 0 else 0.0,
-            "avg_vp": (float(aggregate["vp_sum"]) / aggregate_games) if aggregate_games > 0 else 0.0,
-            "avg_rank": (float(aggregate["rank_sum"]) / aggregate_games) if aggregate_games > 0 else 0.0,
+            "completed_games": aggregate_completed_games,
+            "win_rate": (float(aggregate["wins"]) / aggregate_completed_games) if aggregate_completed_games > 0 else 0.0,
+            "avg_vp": (float(aggregate["vp_sum"]) / aggregate_completed_games) if aggregate_completed_games > 0 else 0.0,
+            "avg_rank": (float(aggregate["rank_sum"]) / aggregate_completed_games) if aggregate_completed_games > 0 else 0.0,
             "completion_rate": (float(aggregate["completed"]) / aggregate_games) if aggregate_games > 0 else 0.0,
         }
         return {
@@ -1161,6 +1167,10 @@ class RLCoordinator:
                 "last_generation_gate": dict(self.last_generation_gate or {}),
                 "league_state": self.league_manager.get_state(),
                 "fixed_benchmark_checkpoints": list(self.fixed_benchmark_checkpoints or []),
+                "elo_ratings": {
+                    str(agent_id): float(rating)
+                    for agent_id, rating in dict(getattr(self.metrics_tracker, "elo_ratings", {}) or {}).items()
+                },
             }
             with open(tmp_state_path, "w", encoding="utf-8") as f:
                 json.dump(state_payload, f, indent=2)
@@ -1203,6 +1213,14 @@ class RLCoordinator:
             )
             if restored_benchmark:
                 self.fixed_benchmark_checkpoints = restored_benchmark[: int(self.fixed_benchmark_pool_size)]
+            restored_elo_raw = dict(state.get("elo_ratings", {}) or {})
+            restored_elo: Dict[str, float] = {}
+            for agent_id, rating in restored_elo_raw.items():
+                try:
+                    restored_elo[str(agent_id)] = float(rating)
+                except Exception:
+                    continue
+            self.metrics_tracker.elo_ratings = restored_elo
         except Exception as e:
             logger.warning(f"Failed loading checkpoint state file: {e}")
             return False

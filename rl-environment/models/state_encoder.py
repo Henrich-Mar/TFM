@@ -52,8 +52,27 @@ class StateEncoder:
         'Zoologist',
     ]
 
-    def __init__(self, state_size: int = 1024):
+    # Transformer card-token layout encoded inside the tail of the fixed-size state vector.
+    _DEFAULT_CARD_TOKEN_DIM = 8
+    _DEFAULT_TABLEAU_TOKEN_COUNT = 8
+    _DEFAULT_HAND_TOKEN_COUNT = 4
+    _DEFAULT_OPPONENT_TOKEN_COUNT = 4
+
+    def __init__(
+        self,
+        state_size: int = 1024,
+        card_token_dim: int = _DEFAULT_CARD_TOKEN_DIM,
+        tableau_token_count: int = _DEFAULT_TABLEAU_TOKEN_COUNT,
+        hand_token_count: int = _DEFAULT_HAND_TOKEN_COUNT,
+        opponent_token_count: int = _DEFAULT_OPPONENT_TOKEN_COUNT,
+    ):
         self.state_size = state_size
+        self.card_token_dim = max(1, int(card_token_dim))
+        self.tableau_token_count = max(0, int(tableau_token_count))
+        self.hand_token_count = max(0, int(hand_token_count))
+        self.opponent_token_count = max(0, int(opponent_token_count))
+        self.card_token_count = self.tableau_token_count + self.hand_token_count + self.opponent_token_count
+        self.card_token_vector_size = self.card_token_count * self.card_token_dim
         
         # Load authoritative card metadata first; derive common_cards from it when available
         self.card_metadata_by_name: Dict[str, Dict[str, Any]] = self._load_card_metadata()
@@ -157,8 +176,10 @@ class StateEncoder:
             features = features[:self.state_size]
             while len(features) < self.state_size:
                 features.append(0.0)
-            
-            return np.array(features, dtype=np.float32)
+
+            encoded = np.array(features, dtype=np.float32)
+            self._inject_card_token_features(encoded, player_state)
+            return encoded
             
         except Exception as e:
             logger.error(f"Error encoding state: {e}")
@@ -591,6 +612,260 @@ class StateEncoder:
 
         logger.debug("Hand encoding: %s for player %s", encoding, player_state.get('id'))
         return encoding
+
+    def _card_token_segment_bounds(self) -> Tuple[int, int]:
+        if self.state_size <= 0 or self.card_token_vector_size <= 0 or self.card_token_dim <= 0:
+            return (0, 0)
+        start = max(0, int(self.state_size) - int(self.card_token_vector_size))
+        end = min(int(self.state_size), start + int(self.card_token_vector_size))
+        return (start, end)
+
+    def _build_tag_profile_from_cards(self, cards: List[Dict[str, Any]]) -> Dict[str, int]:
+        profile: Dict[str, int] = {}
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            name = str(card.get('name', '') or '')
+            tags = self._get_card_tags(name, fallback=card.get('tags', {}))
+            for tag_name, present in tags.items():
+                if present:
+                    profile[tag_name] = int(profile.get(tag_name, 0)) + 1
+        return profile
+
+    def _get_candidate_hand_cards(self, player_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        waiting_for = player_state.get('waitingFor', {}) or {}
+        waiting_type = str(waiting_for.get('type', '') or '')
+        prompt_cards_raw = waiting_for.get('cards', []) if isinstance(waiting_for, dict) else []
+        prompt_cards = [card for card in prompt_cards_raw if isinstance(card, dict)]
+
+        hand_cards_raw = player_state.get('cardsInHand', [])
+        hand_cards = [card for card in hand_cards_raw if isinstance(card, dict)]
+        if not hand_cards:
+            player_hand = (player_state.get('thisPlayer', {}) or {}).get('cardsInHand', [])
+            hand_cards = [card for card in player_hand if isinstance(card, dict)]
+
+        if waiting_type in ['card', 'projectCard', 'selectCard', 'selectProjectCardToPlay'] and prompt_cards:
+            return prompt_cards
+        return hand_cards
+
+    def _estimate_affordability_for_card(
+        self,
+        player: Dict[str, Any],
+        card: Dict[str, Any],
+        tags: Optional[Dict[str, int]] = None,
+    ) -> float:
+        resolved_tags = tags or self._get_card_tags(str(card.get('name', '') or ''), fallback=card.get('tags', {}))
+        cost = self._get_card_cost(card)
+
+        try:
+            mc = float(player.get('megaCredits', 0) or 0)
+            steel = float(player.get('steel', 0) or 0)
+            titanium = float(player.get('titanium', 0) or 0)
+            steel_value = float(player.get('steelValue', 2) or 2)
+            titanium_value = float(player.get('titaniumValue', 3) or 3)
+        except Exception:
+            mc = 0.0
+            steel = 0.0
+            titanium = 0.0
+            steel_value = 2.0
+            titanium_value = 3.0
+
+        purchasing_power = mc
+        if resolved_tags.get('Building', 0) > 0:
+            purchasing_power += steel * steel_value
+        if resolved_tags.get('Space', 0) > 0:
+            purchasing_power += titanium * titanium_value
+
+        if cost <= 0.0:
+            return 1.0
+        if purchasing_power >= cost:
+            return 1.0
+        return max(0.0, 1.0 - ((cost - purchasing_power) / 25.0))
+
+    def _build_card_token_features(
+        self,
+        card: Dict[str, Any],
+        player: Dict[str, Any],
+        own_tag_profile: Dict[str, int],
+        opponent_tag_profile: Dict[str, int],
+        card_group: str,
+    ) -> List[float]:
+        name = str(card.get('name', '') or '')
+        tags = self._get_card_tags(name, fallback=card.get('tags', {}))
+        cost_norm = min(self._get_card_cost(card) / 50.0, 1.0)
+        vp_proxy = self._get_card_vp_proxy(card, tags)
+        affordability = self._estimate_affordability_for_card(player, card, tags)
+
+        key_tags = ['Science', 'Building', 'Space', 'Earth', 'Jovian']
+        key_tag_density = sum(1 for tag_name in key_tags if tags.get(tag_name, 0) > 0) / float(len(key_tags))
+        own_overlap = sum(float(own_tag_profile.get(tag_name, 0)) for tag_name, present in tags.items() if present)
+        opp_overlap = sum(float(opponent_tag_profile.get(tag_name, 0)) for tag_name, present in tags.items() if present)
+        own_overlap_norm = min(own_overlap / 8.0, 1.0)
+        opp_overlap_norm = min(opp_overlap / 8.0, 1.0)
+
+        # Keep token width fixed; opponent cards use hate-draft signal in the last slot.
+        final_slot = max(0.0, opp_overlap_norm - own_overlap_norm)
+        if card_group == 'tableau':
+            final_slot = own_overlap_norm
+        elif card_group == 'opponent':
+            affordability = 0.5
+            final_slot = opp_overlap_norm
+
+        base_features = [
+            float(cost_norm),
+            float(vp_proxy),
+            float(affordability),
+            float(key_tag_density),
+            1.0 if tags.get('Building', 0) > 0 else 0.0,
+            1.0 if tags.get('Space', 0) > 0 else 0.0,
+            1.0 if tags.get('Science', 0) > 0 else 0.0,
+            float(final_slot),
+        ]
+
+        if len(base_features) >= self.card_token_dim:
+            return base_features[:self.card_token_dim]
+
+        padded = list(base_features)
+        while len(padded) < self.card_token_dim:
+            padded.append(0.0)
+        return padded
+
+    def _select_top_cards(
+        self,
+        cards: List[Dict[str, Any]],
+        count: int,
+        player: Dict[str, Any],
+        own_tag_profile: Dict[str, int],
+        opponent_tag_profile: Dict[str, int],
+        card_group: str,
+    ) -> List[Dict[str, Any]]:
+        if count <= 0:
+            return []
+
+        ranked: List[Tuple[float, Dict[str, Any]]] = []
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            name = str(card.get('name', '') or '')
+            tags = self._get_card_tags(name, fallback=card.get('tags', {}))
+            cost_norm = min(self._get_card_cost(card) / 50.0, 1.0)
+            vp_proxy = self._get_card_vp_proxy(card, tags)
+            affordability = self._estimate_affordability_for_card(player, card, tags)
+            key_tag_density = sum(
+                1 for tag_name in ['Science', 'Building', 'Space', 'Earth', 'Jovian'] if tags.get(tag_name, 0) > 0
+            ) / 5.0
+            own_overlap = sum(float(own_tag_profile.get(tag_name, 0)) for tag_name, present in tags.items() if present)
+            opp_overlap = sum(float(opponent_tag_profile.get(tag_name, 0)) for tag_name, present in tags.items() if present)
+            own_overlap_norm = min(own_overlap / 8.0, 1.0)
+            opp_overlap_norm = min(opp_overlap / 8.0, 1.0)
+            hate_signal = max(0.0, opp_overlap_norm - own_overlap_norm)
+
+            if card_group == 'tableau':
+                score = (1.10 * vp_proxy) + (0.80 * key_tag_density) + (0.75 * own_overlap_norm) - (0.20 * cost_norm)
+            elif card_group == 'opponent':
+                score = (1.10 * vp_proxy) + (0.90 * key_tag_density) + (0.80 * opp_overlap_norm) + (0.15 * cost_norm)
+            else:
+                score = (
+                    (1.15 * affordability)
+                    + (0.90 * vp_proxy)
+                    + (0.60 * key_tag_density)
+                    + (0.55 * own_overlap_norm)
+                    + (0.40 * hate_signal)
+                    + (0.20 * (1.0 - cost_norm))
+                )
+
+            tie_break = (sum(ord(ch) for ch in name) % 100) * 1e-6
+            ranked.append((float(score + tie_break), card))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [item[1] for item in ranked[:count]]
+
+    def _inject_card_token_features(self, state_vector: np.ndarray, player_state: Dict[str, Any]) -> None:
+        if not isinstance(state_vector, np.ndarray) or state_vector.ndim != 1:
+            return
+        if self.card_token_count <= 0 or self.card_token_dim <= 0:
+            return
+
+        start, end = self._card_token_segment_bounds()
+        if end <= start:
+            return
+
+        usable_length = int(end - start)
+        token_slots = int(usable_length // self.card_token_dim)
+        if token_slots <= 0:
+            return
+
+        player = player_state.get('thisPlayer', {}) or {}
+        tableau_cards = [card for card in (player.get('tableau', []) or []) if isinstance(card, dict)]
+        hand_candidates = self._get_candidate_hand_cards(player_state)
+
+        players = player_state.get('players', []) or []
+        own_id = str(player.get('id', '') or '')
+        own_color = str(player.get('color', '') or '').strip().lower()
+        opponent_tableau_cards: List[Dict[str, Any]] = []
+        for rival in players:
+            if not isinstance(rival, dict):
+                continue
+            rival_id = str(rival.get('id', '') or '')
+            rival_color = str(rival.get('color', '') or '').strip().lower()
+            if own_id and rival_id == own_id:
+                continue
+            if own_color and rival_color and rival_color == own_color:
+                continue
+            opponent_tableau_cards.extend(
+                [card for card in (rival.get('tableau', []) or []) if isinstance(card, dict)]
+            )
+
+        own_tag_profile = self._build_tag_profile_from_cards(tableau_cards)
+        opponent_tag_profile = self._build_tag_profile_from_cards(opponent_tableau_cards)
+
+        selected_tableau = self._select_top_cards(
+            tableau_cards,
+            min(self.tableau_token_count, token_slots),
+            player,
+            own_tag_profile,
+            opponent_tag_profile,
+            card_group='tableau',
+        )
+        remaining_slots = max(0, token_slots - len(selected_tableau))
+        selected_hand = self._select_top_cards(
+            hand_candidates,
+            min(self.hand_token_count, remaining_slots),
+            player,
+            own_tag_profile,
+            opponent_tag_profile,
+            card_group='hand',
+        )
+        remaining_slots = max(0, remaining_slots - len(selected_hand))
+        selected_opponent = self._select_top_cards(
+            opponent_tableau_cards,
+            min(self.opponent_token_count, remaining_slots),
+            player,
+            own_tag_profile,
+            opponent_tag_profile,
+            card_group='opponent',
+        )
+
+        token_cards: List[Tuple[Dict[str, Any], str]] = []
+        token_cards.extend((card, 'tableau') for card in selected_tableau)
+        token_cards.extend((card, 'hand') for card in selected_hand)
+        token_cards.extend((card, 'opponent') for card in selected_opponent)
+
+        flat_tokens = np.zeros((token_slots * self.card_token_dim,), dtype=np.float32)
+        for idx, (card, card_group) in enumerate(token_cards[:token_slots]):
+            token_values = self._build_card_token_features(
+                card=card,
+                player=player,
+                own_tag_profile=own_tag_profile,
+                opponent_tag_profile=opponent_tag_profile,
+                card_group=card_group,
+            )
+            token_vec = np.asarray(token_values[:self.card_token_dim], dtype=np.float32)
+            base = idx * self.card_token_dim
+            flat_tokens[base:base + self.card_token_dim] = token_vec
+
+        write_len = min(usable_length, flat_tokens.size)
+        state_vector[start:start + write_len] = flat_tokens[:write_len]
     
     def _encode_board_state(
         self,

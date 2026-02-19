@@ -222,6 +222,32 @@
       background: rgba(239, 68, 68, .16);
       color: #ffb1b1
     }
+
+    .chart {
+      width: 100%;
+      height: 140px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0d1527;
+      display: block;
+    }
+
+    .chart-legend {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: .8rem;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .legend-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      margin-right: 4px;
+    }
   </style>
 </head>
 
@@ -264,6 +290,11 @@
         <h3>Server Health</h3>
         <div id="servers"></div>
         <div id="serverDetails" class="subpanel"></div>
+      </div>
+      <div class="card">
+        <h3>Transformer Live (10s)</h3>
+        <div id="transformerLive"></div>
+        <div id="transformerChartWrap" class="subpanel"></div>
       </div>
     </div>
 
@@ -325,6 +356,8 @@
 
   <script>
     const AUTO_REFRESH_MS = {{ auto_refresh_ms }};
+    const TRANSFORMER_HISTORY_LIMIT = 72;
+    const transformerHistory = [];
 
     function n(v, d = 0) { return Number(v ?? d); }
     function pct(v) { return `${(100 * n(v)).toFixed(1)}%`; }
@@ -339,6 +372,86 @@
         .replaceAll(">", "&gt;")
         .replaceAll("\"", "&quot;")
         .replaceAll("'", "&#39;");
+    }
+
+    function summaryMean(summary) {
+      return n(summary?.mean, 0);
+    }
+
+    function pushTransformerHistory(transformerLive) {
+      transformerHistory.push({
+        ts: Date.now(),
+        activeTokenRatio: summaryMean(transformerLive?.active_token_ratio),
+        activeRowRatio: summaryMean(transformerLive?.active_row_ratio),
+        fusionShare: summaryMean(transformerLive?.fusion_share),
+      });
+      while (transformerHistory.length > TRANSFORMER_HISTORY_LIMIT) {
+        transformerHistory.shift();
+      }
+    }
+
+    function buildPath(values, width, height, yMax) {
+      if (!Array.isArray(values) || values.length === 0) return "";
+      if (values.length === 1) {
+        const y = height - (Math.max(0, Math.min(yMax, n(values[0]))) / yMax) * height;
+        return `M 0 ${y.toFixed(2)} L ${width.toFixed(2)} ${y.toFixed(2)}`;
+      }
+      const stepX = width / (values.length - 1);
+      return values.map((value, idx) => {
+        const x = stepX * idx;
+        const y = height - (Math.max(0, Math.min(yMax, n(value))) / yMax) * height;
+        return `${idx === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+      }).join(" ");
+    }
+
+    function renderTransformerChart() {
+      const target = document.getElementById("transformerChartWrap");
+      if (!target) return;
+      if (transformerHistory.length === 0) {
+        target.innerHTML = `<div class="muted">No transformer samples yet.</div>`;
+        return;
+      }
+
+      const width = 620;
+      const height = 140;
+      const activeToken = transformerHistory.map((x) => n(x.activeTokenRatio));
+      const activeRow = transformerHistory.map((x) => n(x.activeRowRatio));
+      const fusionShare = transformerHistory.map((x) => n(x.fusionShare));
+      const yMax = Math.max(1, ...activeToken, ...activeRow, ...fusionShare);
+
+      const tokenPath = buildPath(activeToken, width, height, yMax);
+      const rowPath = buildPath(activeRow, width, height, yMax);
+      const fusionPath = buildPath(fusionShare, width, height, yMax);
+      const axisY50 = (height * 0.5).toFixed(2);
+
+      target.innerHTML = `
+        <div class="chart-legend">
+          <span><span class="legend-dot" style="background:#4ea8ff"></span>Active tokens</span>
+          <span><span class="legend-dot" style="background:#22c55e"></span>Active rows</span>
+          <span><span class="legend-dot" style="background:#f59e0b"></span>Fusion share</span>
+        </div>
+        <svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="Transformer metrics">
+          <line x1="0" y1="${axisY50}" x2="${width}" y2="${axisY50}" stroke="#27344f" stroke-width="1" />
+          <path d="${tokenPath}" fill="none" stroke="#4ea8ff" stroke-width="2" />
+          <path d="${rowPath}" fill="none" stroke="#22c55e" stroke-width="2" />
+          <path d="${fusionPath}" fill="none" stroke="#f59e0b" stroke-width="2" />
+        </svg>
+      `;
+    }
+
+    function renderTransformerLive(transformerLive) {
+      const staleSeconds = n(transformerLive?.seconds_since_update, 0);
+      renderKV(document.getElementById("transformerLive"), [
+        ["Transformer enabled (cfg)", `${fmt(transformerLive?.agents_config_enabled)} / ${fmt(transformerLive?.agents_total)}`],
+        ["Agents reporting", fmt(transformerLive?.agents_reporting)],
+        ["Active token ratio (mean)", pct(summaryMean(transformerLive?.active_token_ratio))],
+        ["Active row ratio (mean)", pct(summaryMean(transformerLive?.active_row_ratio))],
+        ["Fusion share (mean)", f4(summaryMean(transformerLive?.fusion_share))],
+        ["Fusion delta norm (mean)", f4(summaryMean(transformerLive?.fusion_delta_norm))],
+        ["Attention context norm (mean)", f4(summaryMean(transformerLive?.attention_context_norm))],
+        ["Last sample age (s)", f2(staleSeconds)],
+      ]);
+      renderTransformerChart();
     }
 
     function renderKV(target, pairs) {
@@ -519,6 +632,8 @@
         const pop = await popRes.json();
         const gm = stats.generation_metrics || {};
         const gate = stats.generation_gate || {};
+        const transformerLive = stats.transformer_live || {};
+        pushTransformerHistory(transformerLive);
 
         document.getElementById("status").textContent =
           `Generation ${n(stats.population?.current_generation)} | Updated ${new Date().toLocaleTimeString()}`;
@@ -608,6 +723,7 @@
           ["Input rejects total", fmt(gm["input_reject_count_total"])],
         ]);
         renderServerDetails(stats.servers || {});
+        renderTransformerLive(transformerLive);
 
         renderKV(document.getElementById("behavior"), [
           ["Policy success rate", pct(stats.behavior?.policy_success_rate)],

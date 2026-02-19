@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional, List
 import uvicorn
 import os
+import time
 from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,13 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
 
 def _safe_mean(values: List[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
 
 
 def _summarize_values(values: List[float]) -> Dict[str, float]:
@@ -215,6 +223,60 @@ def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
         },
     }
 
+
+def _aggregate_transformer_live_stats(population: List[Any]) -> Dict[str, Any]:
+    total_agents = int(len(population))
+    config_enabled_agents = 0
+    reporting_agents = 0
+    enabled_reporting_agents = 0
+    latest_update_ts = 0.0
+    token_count_values: List[float] = []
+    active_token_values: List[float] = []
+    active_row_values: List[float] = []
+    attention_context_norm_values: List[float] = []
+    fusion_delta_norm_values: List[float] = []
+    fusion_share_values: List[float] = []
+
+    for agent in population:
+        cfg = getattr(agent, "config", None)
+        if bool(getattr(cfg, "transformer_enabled", False)):
+            config_enabled_agents += 1
+
+        network = getattr(agent, "network", None)
+        raw_stats = getattr(network, "last_transformer_stats", None)
+        if not isinstance(raw_stats, dict):
+            continue
+        reporting_agents += 1
+
+        stats_enabled = bool(raw_stats.get("enabled", False))
+        if stats_enabled:
+            enabled_reporting_agents += 1
+
+        latest_update_ts = max(latest_update_ts, _to_float(raw_stats.get("timestamp", 0.0), 0.0))
+        token_count_values.append(_to_float(raw_stats.get("token_count", 0.0), 0.0))
+        active_token_values.append(_to_float(raw_stats.get("active_token_ratio", 0.0), 0.0))
+        active_row_values.append(_to_float(raw_stats.get("active_row_ratio", 0.0), 0.0))
+        attention_context_norm_values.append(_to_float(raw_stats.get("attention_context_norm", 0.0), 0.0))
+        fusion_delta_norm_values.append(_to_float(raw_stats.get("fusion_delta_norm", 0.0), 0.0))
+        fusion_share_values.append(_to_float(raw_stats.get("fusion_share", 0.0), 0.0))
+
+    now_ts = float(time.time())
+    seconds_since_update = max(0.0, now_ts - latest_update_ts) if latest_update_ts > 0 else None
+    return {
+        "agents_total": total_agents,
+        "agents_config_enabled": int(config_enabled_agents),
+        "agents_reporting": int(reporting_agents),
+        "agents_reporting_enabled": int(enabled_reporting_agents),
+        "token_count": _summarize_values(token_count_values),
+        "active_token_ratio": _summarize_values(active_token_values),
+        "active_row_ratio": _summarize_values(active_row_values),
+        "attention_context_norm": _summarize_values(attention_context_norm_values),
+        "fusion_delta_norm": _summarize_values(fusion_delta_norm_values),
+        "fusion_share": _summarize_values(fusion_share_values),
+        "latest_update_ts": float(latest_update_ts),
+        "seconds_since_update": float(seconds_since_update) if seconds_since_update is not None else None,
+    }
+
 @app.get("/")
 async def root():
     """Root endpoint with basic info"""
@@ -272,6 +334,7 @@ async def get_stats():
         generation_gate = dict(getattr(coordinator, "last_generation_gate", {}) or {})
         generation_gate_overview = dict(generation_gate)
         generation_gate_overview.pop("per_agent", None)
+        transformer_live = _aggregate_transformer_live_stats(coordinator.population)
         
         # Gather recent tournament/game end screens (shallow aggregation)
         recent_end_screens = []
@@ -308,6 +371,7 @@ async def get_stats():
             "population": population_stats,
             "behavior": behavior_stats,
             "generation_metrics": generation_metrics,
+            "transformer_live": transformer_live,
             "generation_gate": generation_gate_overview,
             "generation_behavior_history": list(getattr(coordinator, "generation_behavior_history", [])[-50:]),
             "servers": server_stats,
@@ -511,9 +575,9 @@ async def play_human_vs_best(request: HumanVsBestRequest):
 async def dashboard(request: Request):
     """Render dashboard from a standalone HTML template."""
     try:
-        auto_refresh_ms = max(1000, int(os.getenv("DASHBOARD_REFRESH_MS", "5000")))
+        auto_refresh_ms = max(1000, int(os.getenv("DASHBOARD_REFRESH_MS", "10000")))
     except Exception:
-        auto_refresh_ms = 5000
+        auto_refresh_ms = 10000
 
     return templates.TemplateResponse(
         "dashboard.html",

@@ -335,19 +335,19 @@ services:
       
       # PPO Configuration (Aggressive)
       - PPO_ENABLE=true
-      - PPO_ROLLOUT_STEPS=24576
-      - PPO_MIN_STEPS_PER_AGENT=1536
-      - PPO_EPOCHS=5
-      - PPO_MINIBATCH_SIZE=1024
-      - PPO_ENTROPY_COEF=0.009
-      - PPO_VALUE_COEF=0.9
-      - PPO_TARGET_KL=0.018
-      - PPO_LEARNING_RATE=0.00025
-      - PPO_LR_MIN=0.00012
-      - PPO_LR_MAX=0.00035
-      - PPO_LR_ADAPT_UP=1.02
-      - PPO_LR_ADAPT_DOWN=0.90
-      - PPO_CLIP_EPS=0.2
+      - PPO_ROLLOUT_STEPS=32768
+      - PPO_MIN_STEPS_PER_AGENT=2048
+      - PPO_EPOCHS=8
+      - PPO_MINIBATCH_SIZE=2048
+      - PPO_ENTROPY_COEF=0.005
+      - PPO_VALUE_COEF=1.0
+      - PPO_TARGET_KL=0.015
+      - PPO_LEARNING_RATE=0.00005
+      - PPO_LR_MIN=0.00001
+      - PPO_LR_MAX=0.00010
+      - PPO_LR_ADAPT_UP=1.01
+      - PPO_LR_ADAPT_DOWN=0.85
+      - PPO_CLIP_EPS=0.15
       - PPO_BUFFER_MAX_STEPS=200000
 
       # Promotion Gates (stricter than defaults)

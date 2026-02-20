@@ -1463,6 +1463,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             card,
             payment_options,
             reserve_units=_merge_reserve_units(waiting_for, card),
+            waiting_for=waiting_for,
         )
         if payment is None:
             payment = _payment_empty()
@@ -1530,6 +1531,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                     candidate,
                     payment_options,
                     reserve_units=reserve_units,
+                    waiting_for=waiting_for,
                 ):
                     affordable_indices.append(i)
         if affordable_indices:
@@ -1545,6 +1547,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 card,
                 payment_options,
                 reserve_units=_merge_reserve_units(waiting_for, card),
+                waiting_for=waiting_for,
             )
             if payment is not None:
                 return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
@@ -1559,6 +1562,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             card,
             payment_options,
             reserve_units=_merge_reserve_units(waiting_for, card),
+            waiting_for=waiting_for,
         )
         if payment is None:
             payment = _payment_empty()
@@ -1594,6 +1598,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 card,
                 waiting_for.get('paymentOptions', {}),
                 reserve_units=_merge_reserve_units(waiting_for, card),
+                waiting_for=waiting_for,
             )
             if payment is None:
                 return {'type': 'pass'}
@@ -1714,6 +1719,7 @@ def _build_payment_with_options(
     card: Dict[str, Any],
     payment_options: Dict[str, Any],
     reserve_units: Optional[Dict[str, int]] = None,
+    waiting_for: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, int]]:
     """Build a payment dict honoring paymentOptions from waiting_for."""
     if player_state is None:
@@ -1782,16 +1788,19 @@ def _build_payment_with_options(
 
     cost_remaining = cost
 
-    # Use steel for Building tags if allowed (floor units first; top-up handled later)
-    if tags.get('Building') and allowed('steel') and player_steel > 0:
+    can_use_steel = allowed('steel')
+    can_use_titanium = allowed('titanium')
+
+    # Use steel if allowed (floor units first; top-up handled later)
+    if can_use_steel and player_steel > 0:
         usable_steel_value = player_steel * steel_value
         steel_to_pay = min(cost_remaining, usable_steel_value)
         steel_units = steel_to_pay // steel_value
         payment['steel'] = int(steel_units)
         cost_remaining -= steel_units * steel_value
 
-    # Use titanium for Space tags if allowed (floor units first; top-up handled later)
-    if tags.get('Space') and allowed('titanium') and player_titanium > 0:
+    # Use titanium if allowed (LTF may allow this even for non-space cards).
+    if can_use_titanium and player_titanium > 0:
         usable_titanium_value = player_titanium * titanium_value
         titanium_to_pay = min(cost_remaining, usable_titanium_value)
         titanium_units = titanium_to_pay // titanium_value
@@ -1818,11 +1827,11 @@ def _build_payment_with_options(
     # If still short, top-up with extra steel/titanium units (legal overpay).
     if cost_remaining > 0:
         topup_resources: List[Tuple[str, int, int]] = []
-        if tags.get('Building') and allowed('steel'):
+        if can_use_steel:
             remaining_steel = max(0, int(player_steel - payment.get('steel', 0)))
             if remaining_steel > 0:
                 topup_resources.append(('steel', remaining_steel, max(1, int(steel_value))))
-        if tags.get('Space') and allowed('titanium'):
+        if can_use_titanium:
             remaining_titanium = max(0, int(player_titanium - payment.get('titanium', 0)))
             if remaining_titanium > 0:
                 topup_resources.append(('titanium', remaining_titanium, max(1, int(titanium_value))))
@@ -1858,8 +1867,49 @@ def _build_payment_with_options(
                     payment[key] = int(payment.get(key, 0) + int(add_units))
                 cost_remaining -= int(value_paid)
 
-    # Unaffordable under current payment options.
     if cost_remaining > 0:
+        # Fallback: reuse the payment candidate enumerator with inferred per-card options.
+        waiting_payload: Dict[str, Any] = {}
+        if isinstance(waiting_for, dict):
+            waiting_payload = dict(waiting_for)
+        waiting_payload['amount'] = int(cost)
+
+        effective_options = {}
+        if isinstance(waiting_payload.get('paymentOptions'), dict):
+            effective_options.update(waiting_payload.get('paymentOptions', {}))
+        if isinstance(payment_options, dict):
+            effective_options.update(payment_options)
+        luna_titanium_mode = bool(payment_options.get('lunaTradeFederationTitanium', False)) if isinstance(payment_options, dict) else False
+
+        for resource in _PAYMENT_ALL_KEYS:
+            if resource == 'megaCredits':
+                continue
+            if (
+                resource == 'titanium'
+                and luna_titanium_mode
+                and 'titanium' not in effective_options
+            ):
+                # Keep titanium unset in LTF mode so payment valuation applies -1 correctly.
+                continue
+            if resource not in effective_options:
+                effective_options[resource] = bool(allowed(resource))
+        if isinstance(payment_options, dict) and 'lunaTradeFederationTitanium' in payment_options:
+            effective_options['lunaTradeFederationTitanium'] = bool(payment_options.get('lunaTradeFederationTitanium', False))
+
+        waiting_payload['paymentOptions'] = effective_options
+
+        reserve_payload = dict(waiting_payload.get('reserveUnits', {})) if isinstance(waiting_payload.get('reserveUnits', {}), dict) else {}
+        for key in _PAYMENT_ALL_KEYS:
+            reserve_payload[key] = max(0, int(reserve.get(key, 0) or 0))
+        waiting_payload['reserveUnits'] = reserve_payload
+
+        candidate = _enumerate_payment_candidates(
+            waiting_payload,
+            player_state,
+            max_candidates=1,
+        )
+        if candidate:
+            return _finalize_payment(candidate[0])
         return None
 
     return payment
@@ -1869,12 +1919,14 @@ def _can_afford_card_with_payment_options(
     card: Dict[str, Any],
     payment_options: Optional[Dict[str, Any]],
     reserve_units: Optional[Dict[str, int]] = None,
+    waiting_for: Optional[Dict[str, Any]] = None,
 ) -> bool:
     payment = _build_payment_with_options(
         player_state or {},
         card,
         payment_options or {},
         reserve_units=reserve_units,
+        waiting_for=waiting_for,
     )
     return payment is not None
 
@@ -2100,6 +2152,7 @@ class ActionDecoder:
                                 card,
                                 payment_options,
                                 reserve_units=reserve_units,
+                                waiting_for=option,
                             ):
                                 affordable_indices.append(j)
                         candidate_indices = affordable_indices
@@ -2302,6 +2355,7 @@ class ActionDecoder:
                             card,
                             payment_options,
                             reserve_units=reserve_units,
+                            waiting_for=waiting_for,
                         ):
                             affordable_cards.append(i)
                     else:

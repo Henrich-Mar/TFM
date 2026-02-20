@@ -1076,7 +1076,11 @@ class RLAgent:
                 # If we are waiting for input, make a move.
                 # Otherwise, we wait for our turn.
                 if player_state.get('waitingFor'):
-                    await self._make_move(game_instance, player_id, player_state, episode_steps)
+                    submitted_action = await self._make_move(game_instance, player_id, player_state, episode_steps)
+                    # After a successful action, repoll immediately so chained prompts
+                    # don't pay an extra AGENT_POLL_INTERVAL_SEC delay.
+                    if submitted_action:
+                        continue
                 
                 # Wait before polling again to avoid busy-waiting
                 await self._sleep_if_needed(self.poll_interval_sec)
@@ -1183,7 +1187,7 @@ class RLAgent:
         player_id: str,
         player_state: Dict[str, Any],
         episode_steps: List[Dict[str, Any]],
-    ):
+    ) -> bool:
         """Make a single move in the game, with robust fallbacks."""
         try:
             # Update turn-action counter (resets automatically on phase change)
@@ -1209,7 +1213,7 @@ class RLAgent:
                         self._record_action_choice(800, initial_action, player_state)
                         logger.info(f"Agent {self.id[:8]} startup setup action succeeded")
                         await self._sleep_if_needed(self.post_move_sleep_sec)
-                        return
+                        return True
                     self._bump_decision_stat('policy_rejections')
                     self._log_stuck_context(game_instance, player_id, player_state, "startup_setup_rejected")
                     await self._sleep_if_needed(self.failure_pause_sec)
@@ -1330,7 +1334,7 @@ class RLAgent:
                                     }
                                 )
                     await self._sleep_if_needed(self.post_move_sleep_sec)
-                    return  # Success
+                    return True
                 else:
                     self._bump_decision_stat('policy_rejections')
                     self._bump_decision_stat('action_rejected_by_server')
@@ -1371,12 +1375,13 @@ class RLAgent:
                     self._bump_decision_stat('fallback_passes')
                     self._record_action_choice(pass_base)
                     self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions_pass")
-                    await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
+                    sent_pass = await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
                     await self._sleep_if_needed(self.post_move_sleep_sec)
+                    return bool(sent_pass)
                 else:
                     self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions_no_pass")
                     await self._sleep_if_needed(self.failure_pause_sec or self.poll_interval_sec)
-                return
+                    return False
                  
             random.shuffle(available_actions)
             max_attempts = min(len(available_actions), int(self.max_fallback_attempts))
@@ -1393,7 +1398,7 @@ class RLAgent:
                         self._clear_rejected_action(player_id, player_state, int(random_action_idx))
                         logger.info(f"Random action succeeded for agent {self.id[:8]}.")
                         await self._sleep_if_needed(self.post_move_sleep_sec)
-                        return  # Success
+                        return True
                     self._remember_rejected_action(player_id, player_state, int(random_action_idx))
 
             if can_legally_pass:
@@ -1401,9 +1406,9 @@ class RLAgent:
                 self._bump_decision_stat('fallback_passes')
                 self._record_action_choice(pass_base)
                 self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_pass")
-                await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
+                sent_pass = await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
                 await self._sleep_if_needed(self.post_move_sleep_sec)
-                return
+                return bool(sent_pass)
 
             # Mandatory prompt and no legal pass: never send invalid pass input.
             fallback_candidates = [a for a in self._filter_pass_actions(raw_available_actions, player_state) if int(a) < pass_base]
@@ -1416,18 +1421,19 @@ class RLAgent:
                     self._clear_rejected_action(player_id, player_state, fallback_action_idx)
                     logger.info(f"Mandatory fallback action succeeded for agent {self.id[:8]}.")
                     await self._sleep_if_needed(self.post_move_sleep_sec)
-                    return
+                    return True
                 if fallback_action:
                     self._remember_rejected_action(player_id, player_state, fallback_action_idx)
 
             self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_no_pass")
             await self._sleep_if_needed(self.failure_pause_sec or self.poll_interval_sec)
-            return
+            return False
 
         except Exception as e:
             if isinstance(e, ServerTransportError):
                 raise
             logger.error(f"Error making move for agent {self.id[:8]}: {e}", exc_info=True)
+            return False
 
     def _filter_pass_actions(self, available_actions: List[int], player_state: Dict[str, Any]) -> List[int]:
         if not available_actions:

@@ -25,7 +25,7 @@ from logging_setup import setup_logging
 from training.fitness import (
     PromotionGateConfig,
     apply_promotion_gates,
-    calculate_selection_fitness,
+    calculate_selection_fitness_with_diagnostics,
     compute_generation_behavior_metrics,
     snapshot_population_behavior,
 )
@@ -90,6 +90,7 @@ class RLCoordinator:
         self.last_gated_eval_fitness: Dict[str, float] = {}
         self.last_generation_behavior_metrics: Dict[str, Any] = {}
         self.last_generation_gate: Dict[str, Any] = {}
+        self.last_selection_diagnostics: Dict[str, Any] = {}
         self.generation_behavior_history: List[Dict[str, Any]] = []
         # Track created games for dashboard linking
         self.recent_games: List[Dict[str, str]] = []  # {game_id, url}
@@ -414,6 +415,9 @@ class RLCoordinator:
             )
             for tournament in tournaments
         ])
+        for result in all_results:
+            if isinstance(result, dict):
+                result.setdefault("evaluation_source", "main")
         training_pool_results, training_pool_metrics = await self._evaluate_with_training_opponent_pool(
             matchmaking_population,
             global_game_semaphore=global_game_semaphore,
@@ -425,7 +429,7 @@ class RLCoordinator:
         self._update_elo_ratings(all_results)
         
         # Evaluate selection fitness from tournament outcomes.
-        raw_fitness_scores = self._calculate_fitness_scores(all_results)
+        raw_fitness_scores, selection_diagnostics = self._calculate_fitness_scores(all_results)
 
         # RL-first: optimize policies from collected rollouts after rollout collection.
         ppo_metrics: Dict[str, Any] = {}
@@ -447,6 +451,7 @@ class RLCoordinator:
         )
         generation_metrics["league/matchmaking_ordering_applied"] = bool(matchmaking_ordering_applied)
         generation_metrics.update(training_pool_metrics)
+        generation_metrics.update(selection_diagnostics)
         selection_fitness_scores, gate_summary, per_agent_gate = self._apply_promotion_gates(
             raw_fitness_scores,
             per_agent_behavior,
@@ -474,6 +479,7 @@ class RLCoordinator:
             self.last_gated_eval_fitness = {}
 
         self.last_generation_behavior_metrics = generation_metrics
+        self.last_selection_diagnostics = dict(selection_diagnostics)
         self.last_generation_gate = {
             **gate_summary,
             "per_agent": per_agent_gate,
@@ -581,9 +587,13 @@ class RLCoordinator:
                         
                         self.metrics_tracker.update_elo(id1, id2, score1, score2)
 
-    def _calculate_fitness_scores(self, tournament_results: List[Dict]) -> List[float]:
-        """Calculate fitness scores based on tournament performance"""
-        return calculate_selection_fitness(self.population, tournament_results)
+    def _calculate_fitness_scores(self, tournament_results: List[Dict]) -> Tuple[List[float], Dict[str, Any]]:
+        """Calculate fitness scores based on tournament performance."""
+        fitness_scores, diagnostics = calculate_selection_fitness_with_diagnostics(
+            self.population,
+            tournament_results,
+        )
+        return fitness_scores, diagnostics
 
     @staticmethod
     def _dedupe_existing_checkpoints(paths: List[str]) -> List[str]:
@@ -845,6 +855,13 @@ class RLCoordinator:
                     failed_games += 1
 
         finished_games = successful_games + failed_games
+        label_token = str(label or "").strip().lower()
+        if label_token == "training_pool":
+            evaluation_source = "training_pool"
+        elif label_token == "fixed_benchmark":
+            evaluation_source = "fixed_benchmark"
+        else:
+            evaluation_source = "main"
         return {
             "tournament_id": f"{label}_{int(self.current_generation)}_{uuid.uuid4().hex[:8]}",
             "agents": [agent.id for agent in anchor_agents],
@@ -855,6 +872,7 @@ class RLCoordinator:
             "failed_games": int(failed_games),
             "total_planned_games": int(planned_games),
             "sample_mix": dict(sample_mix),
+            "evaluation_source": evaluation_source,
         }
 
     @staticmethod

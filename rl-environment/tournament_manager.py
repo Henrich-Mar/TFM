@@ -190,6 +190,7 @@ class TournamentManager:
             'successful_games': int(successful_games),
             'failed_games': int(failed_games),
             'total_planned_games': len(game_combinations),
+            'evaluation_source': 'main',
         }
         
         logger.info(f"Tournament {tournament.id} completed: {len(games)} games in {duration:.1f}s")

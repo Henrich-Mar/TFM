@@ -305,9 +305,9 @@ services:
       - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080,http://tfm-server-7:8080,http://tfm-server-8:8080,http://tfm-server-9:8080,http://tfm-server-10:8080
       - POPULATION_SIZE=16
       - GENERATIONS=5000
-      - GAMES_PER_EVAL=6
+      - GAMES_PER_EVAL=8
       - TOURNAMENT_CONCURRENCY=8
-      - GLOBAL_GAME_CONCURRENCY=50    # 50 games per server * 10 servers = 500 games
+      - GLOBAL_GAME_CONCURRENCY=40    # 40 games per server * 10 servers = 400 games
       - MAX_ACTIVE_GAMES_PER_SERVER=5
       - TM_GAME_TIMEOUT_SEC=360
       - TM_HTTP_CONNECTOR_LIMIT=800
@@ -332,33 +332,42 @@ services:
       - SELECTION_RANK_2_POINTS=50
       - SELECTION_RANK_3_POINTS=25
       - SELECTION_RANK_4_POINTS=5
+      - SELECTION_INCLUDE_TRAINING_POOL=0
       
       # PPO Configuration (Aggressive)
       - PPO_ENABLE=true
-      - PPO_ROLLOUT_STEPS=32768
+      - PPO_ROLLOUT_STEPS=24576 
       - PPO_MIN_STEPS_PER_AGENT=2048
-      - PPO_EPOCHS=8
-      - PPO_MINIBATCH_SIZE=2048
-      - PPO_ENTROPY_COEF=0.005
+      - PPO_EPOCHS=4
+      - PPO_MINIBATCH_SIZE=1024
+      - PPO_ENTROPY_COEF=0.010
       - PPO_VALUE_COEF=1.0
       - PPO_TARGET_KL=0.015
-      - PPO_LEARNING_RATE=0.00005
+      - PPO_ENTROPY_COEF_START=0.018
+      - PPO_ENTROPY_COEF_END=0.006
+      - PPO_ENTROPY_COEF_ANNEAL_GAMES=4000
+      - PPO_LEARNING_RATE=0.00008
       - PPO_LR_MIN=0.00001
-      - PPO_LR_MAX=0.00010
-      - PPO_LR_ADAPT_UP=1.01
-      - PPO_LR_ADAPT_DOWN=0.85
-      - PPO_CLIP_EPS=0.15
-      - PPO_BUFFER_MAX_STEPS=200000
+      - PPO_LR_MAX=0.00030
+      - PPO_LR_ADAPT_UP=1.02
+      - PPO_LR_ADAPT_DOWN=0.90
+      - PPO_CLIP_EPS=0.12
+      - PPO_RARE_STATE_PRIORITY_ALPHA=1.2
+      - PPO_BUFFER_MAX_STEPS=400000
+      - PPO_REWARD_DEBUG_ENABLED=1
+      - PPO_REWARD_DEBUG_THRESHOLD=0.001
+      - PPO_REWARD_DEBUG_LOG_EVERY=2000
 
       # Promotion Gates (stricter than defaults)
       - PROMOTION_GATE_ENABLED=true
       - GATE_MIN_CARD_PLAYS_PER_GAME=10.0
-      - GATE_MAX_STANDARD_PROJECT_RATIO=0.25
+      - GATE_MAX_STANDARD_PROJECT_RATIO=0.30
       - GATE_MIN_STEEL_SPENT_PER_GAME=4.0
       - GATE_MIN_TITANIUM_SPENT_PER_GAME=2.0
       - GATE_MIN_STEEL_CONVERSION_EFFICIENCY=0.08
       - GATE_MIN_TITANIUM_CONVERSION_EFFICIENCY=0.10
       - GATE_MAX_PAYMENT_REJECT_COUNT=2
+      - GATE_PENALTY_POINTS=4.0
       - GATE_GLOBAL_PAYMENT_PENALTY_POINTS=2.0
       
       # Evolution
@@ -366,8 +375,8 @@ services:
       - EVOLUTION_MUTATION_RATE=0.1
       - EVOLUTION_IMMIGRANT_RATIO=0.1
       
-      # League
-      - LEAGUE_ENABLE=true
+      # League - momentalne vypnuto aby sme najpr generizovali
+      - LEAGUE_ENABLE=false
       - TRAINING_POOL_GENERATION_WINDOW=20
       - TRAINING_POOL_GAMES_PER_AGENT=2
       - FIXED_BENCHMARK_INTERVAL=3

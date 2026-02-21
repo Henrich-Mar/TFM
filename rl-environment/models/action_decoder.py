@@ -722,6 +722,17 @@ def _apply_project_specific_payment_constraints(
             if have > 0 and int(payment.get('titanium', 0) or 0) < 1:
                 payment['titanium'] = 1
 
+    # Stratospheric Birds (and similar floater-retain prompts) cannot spend every floater.
+    floater_reserve = max(0, int((reserve_units or {}).get('floaters', 0) or 0))
+    if 'stratospheric birds' in project_name_l:
+        floater_reserve = max(int(floater_reserve), 1)
+    if floater_reserve > 0:
+        total_floaters = _payment_available_units(waiting_for, player, 'floaters', reserve_units=None)
+        max_spend_floaters = max(0, int(total_floaters - floater_reserve))
+        spent_floaters = max(0, int(payment.get('floaters', 0) or 0))
+        if spent_floaters > max_spend_floaters:
+            payment['floaters'] = int(max_spend_floaters)
+
 def _finalize_payment(payment: Dict[str, int]) -> Dict[str, int]:
     out = _payment_empty()
     for key in _PAYMENT_ALL_KEYS:

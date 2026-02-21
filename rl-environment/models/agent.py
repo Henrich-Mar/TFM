@@ -268,13 +268,17 @@ class TerraformingMarsNetwork(nn.Module):
             for _ in range(self.phase_head_count)
         ])
 
-        # Scalar value head.
-        self.value_head = nn.Sequential(
-            nn.Linear(config.hidden_size, config.hidden_size // 2),
+        # Partially separate value path to reduce policy/value interference.
+        value_hidden_1 = max(32, int(config.hidden_size // 2))
+        value_hidden_2 = max(16, int(config.hidden_size // 4))
+        self.value_trunk = nn.Sequential(
+            nn.Linear(config.hidden_size, value_hidden_1),
             nn.ReLU(),
-            nn.Linear(config.hidden_size // 2, 1),
-            nn.Tanh()
+            nn.Linear(value_hidden_1, value_hidden_2),
+            nn.ReLU(),
         )
+        # Unclamped scalar value output: rewards are not naturally bounded to [-1, 1].
+        self.value_head = nn.Linear(value_hidden_2, 1)
 
         # ---------------------------------------------------------------------------
         # Learnable action-type bias (replaces hard-coded probability multipliers).
@@ -439,7 +443,8 @@ class TerraformingMarsNetwork(nn.Module):
         # multipliers in _sample_action so the network can learn its own preferences.
         policy_logits = policy_logits + self.action_type_bias[self.action_type_map]
 
-        value = self.value_head(fused)
+        value_features = self.value_trunk(fused)
+        value = self.value_head(value_features)
         aux_raw = self.aux_head(fused)
         
         # Split aux predictions: first 70 are milestones (use sigmoid for multi-label binary classification)
@@ -556,6 +561,7 @@ class RLAgent:
         self.policy_temperature_floor = max(1e-3, self._safe_env_float("POLICY_TEMPERATURE_FLOOR", 0.75))
         self.project_card_priority_weight = max(0.1, self._safe_env_float("PLAY_CARD_PRIORITY_WEIGHT", 1.2))
         self.max_fallback_attempts = max(1, self._safe_env_int("MAX_FALLBACK_ACTION_ATTEMPTS", 6))
+        self.max_fallback_random_retries_per_prompt = max(1, self._safe_env_int("MAX_FALLBACK_RANDOM_RETRIES_PER_PROMPT", 10))
         self.rejected_action_memory_size = max(64, self._safe_env_int("REJECTED_ACTION_MEMORY_SIZE", 2048))
         self.ppo_hparams = PPOHyperParameters(
             clip_eps=self._safe_env_float("PPO_CLIP_EPS", 0.2),
@@ -570,6 +576,18 @@ class RLAgent:
             max_grad_norm=self._safe_env_float("PPO_MAX_GRAD_NORM", 1.0),
             target_kl=self._safe_env_float("PPO_TARGET_KL", 0.02),
         )
+        self.ppo_entropy_coef_start = max(
+            0.0,
+            self._safe_env_float("PPO_ENTROPY_COEF_START", float(self.ppo_hparams.entropy_coef)),
+        )
+        self.ppo_entropy_coef_end = max(
+            0.0,
+            self._safe_env_float("PPO_ENTROPY_COEF_END", float(self.ppo_hparams.entropy_coef)),
+        )
+        self.ppo_entropy_coef_anneal_games = max(
+            1,
+            self._safe_env_int("PPO_ENTROPY_COEF_ANNEAL_GAMES", 1000),
+        )
         self.reward_shaping_initial_coef = max(0.0, self._safe_env_float("PPO_SHAPING_INITIAL_COEF", 1.0))
         self.reward_shaping_final_coef = max(0.0, self._safe_env_float("PPO_SHAPING_FINAL_COEF", 0.0))
         self.reward_shaping_anneal_games = max(1, self._safe_env_int("PPO_SHAPING_ANNEAL_GAMES", 1200))
@@ -580,6 +598,10 @@ class RLAgent:
         self.reward_city_greenery_weight = self._safe_env_float("PPO_SHAPING_CITY_GREENERY_WEIGHT", 1.0)
         self.reward_milestones_awards_weight = self._safe_env_float("PPO_SHAPING_MILESTONES_AWARDS_WEIGHT", 1.0)
         self.reward_other_weight = self._safe_env_float("PPO_SHAPING_OTHER_WEIGHT", 0.5)
+        self.reward_debug_enabled = str(os.getenv("PPO_REWARD_DEBUG_ENABLED", "0")).strip().lower() not in ("0", "false", "no", "off")
+        self.reward_debug_threshold = max(0.0, self._safe_env_float("PPO_REWARD_DEBUG_THRESHOLD", 0.001))
+        self.reward_debug_log_every = max(1, self._safe_env_int("PPO_REWARD_DEBUG_LOG_EVERY", 200))
+        self._reward_debug_counter = 0
         self.rollout_buffer: deque[PPORolloutStep] = deque(maxlen=max(1, int(self.ppo_buffer_max_steps)))
         self.poll_interval_sec = float(os.getenv("AGENT_POLL_INTERVAL_SEC", "0.2"))
         self.post_move_sleep_sec = float(os.getenv("AGENT_POST_MOVE_SLEEP_SEC", "0.0"))
@@ -588,6 +610,8 @@ class RLAgent:
         self._last_stuck_log_by_player: Dict[str, float] = {}
         self._rejected_actions_by_prompt: Dict[str, set[int]] = {}
         self._rejected_action_prompt_order: deque[str] = deque()
+        self._fallback_random_retries_by_prompt: Dict[str, int] = {}
+        self._fallback_retry_prompt_order: deque[str] = deque()
         self._recurrent_hidden_by_player: Dict[str, torch.Tensor] = {}
         # Track how many actions each player has taken in the current action-phase
         # turn.  Reset when phase transitions away from 'action'.
@@ -973,7 +997,21 @@ class RLAgent:
         player = player_state.get('thisPlayer', {}) if isinstance(player_state, dict) else {}
         player_budget = {}
         if isinstance(player, dict):
-            for key in ("megaCredits", "steel", "titanium", "heat", "plants"):
+            for key in (
+                "megaCredits",
+                "steel",
+                "titanium",
+                "heat",
+                "plants",
+                "microbes",
+                "floaters",
+                "lunaArchivesScience",
+                "spireScience",
+                "seeds",
+                "auroraiData",
+                "graphene",
+                "kuiperAsteroids",
+            ):
                 player_budget[key] = int(player.get(key, 0) or 0)
 
         title = waiting_for.get("title", "")
@@ -1044,6 +1082,46 @@ class RLAgent:
             self._rejected_actions_by_prompt.pop(oldest_key, None)
         while len(self._rejected_action_prompt_order) > (max_entries * 2):
             self._rejected_action_prompt_order.popleft()
+
+    def _get_fallback_retry_count_for_prompt(self, player_id: str, player_state: Dict[str, Any]) -> int:
+        cache_key = self._prompt_cache_key(player_id, player_state)
+        if not cache_key:
+            return 0
+        return int(self._fallback_random_retries_by_prompt.get(cache_key, 0) or 0)
+
+    def _bump_fallback_retry_count_for_prompt(
+        self,
+        player_id: str,
+        player_state: Dict[str, Any],
+        amount: int = 1,
+    ) -> int:
+        cache_key = self._prompt_cache_key(player_id, player_state)
+        if not cache_key:
+            return 0
+        if cache_key not in self._fallback_random_retries_by_prompt:
+            self._fallback_random_retries_by_prompt[cache_key] = 0
+            self._fallback_retry_prompt_order.append(cache_key)
+        next_value = int(self._fallback_random_retries_by_prompt.get(cache_key, 0) or 0) + max(0, int(amount))
+        self._fallback_random_retries_by_prompt[cache_key] = int(next_value)
+        self._prune_fallback_retry_cache()
+        return int(next_value)
+
+    def _clear_fallback_retry_count_for_prompt(self, player_id: str, player_state: Dict[str, Any]) -> None:
+        cache_key = self._prompt_cache_key(player_id, player_state)
+        if not cache_key:
+            return
+        self._fallback_random_retries_by_prompt.pop(cache_key, None)
+
+    def _prune_fallback_retry_cache(self) -> None:
+        max_entries = max(64, int(self.rejected_action_memory_size))
+        while len(self._fallback_random_retries_by_prompt) > max_entries:
+            if not self._fallback_retry_prompt_order:
+                self._fallback_random_retries_by_prompt.clear()
+                return
+            oldest_key = self._fallback_retry_prompt_order.popleft()
+            self._fallback_random_retries_by_prompt.pop(oldest_key, None)
+        while len(self._fallback_retry_prompt_order) > (max_entries * 2):
+            self._fallback_retry_prompt_order.popleft()
         
     async def play_game(self, game_instance: GameInstance, player_name: str):
         """Play a complete game"""
@@ -1241,6 +1319,7 @@ class RLAgent:
                     if policy_action_idx is not None:
                         self._record_action_choice(int(policy_action_idx), policy_action, player_state)
                         self._clear_rejected_action(player_id, player_state, int(policy_action_idx))
+                    self._clear_fallback_retry_count_for_prompt(player_id, player_state)
                     if action_meta is not None:
                         self._set_recurrent_state_for_player(
                             player_id,
@@ -1301,6 +1380,30 @@ class RLAgent:
                                 reward_city_greenery_component = float(weighted_city_greenery * step_reward_scale)
                                 reward_milestones_awards_component = float(weighted_milestones_awards * step_reward_scale)
                                 reward_other_component = float(weighted_other * step_reward_scale)
+                                if self.reward_debug_enabled:
+                                    self._reward_debug_counter += 1
+                                    shaped_l1 = (
+                                        abs(reward_tr_component)
+                                        + abs(reward_cards_vp_component)
+                                        + abs(reward_city_greenery_component)
+                                        + abs(reward_milestones_awards_component)
+                                    )
+                                    if (
+                                        self.games_played > 10
+                                        and shaped_l1 < float(self.reward_debug_threshold)
+                                        and (self._reward_debug_counter % int(self.reward_debug_log_every)) == 0
+                                    ):
+                                        logger.warning(
+                                            "Low VP shaping components: tr=%.5f cards=%.5f city_greenery=%.5f milestones_awards=%.5f other=%.5f coef=%.3f scaled=%.5f raw=%.5f",
+                                            reward_tr_component,
+                                            reward_cards_vp_component,
+                                            reward_city_greenery_component,
+                                            reward_milestones_awards_component,
+                                            reward_other_component,
+                                            reward_shaping_coef,
+                                            float(reward_breakdown.get("scaled_total", 0.0)),
+                                            float(reward_breakdown.get("raw_total", 0.0)),
+                                        )
                                 if reward_breakdown.get("hate_draft_bonus_applied"):
                                     self._bump_decision_stat("hate_draft_picks")
                                 if reward_breakdown.get("sniping_milestone_applied"):
@@ -1359,14 +1462,19 @@ class RLAgent:
             prompt_rejected_actions = self._get_rejected_actions_for_prompt(player_id, player_state)
             if prompt_rejected_actions:
                 candidate_actions = [a for a in available_actions if int(a) not in prompt_rejected_actions]
-                if candidate_actions:
-                    blocked_count = max(0, int(len(available_actions) - len(candidate_actions)))
-                    if blocked_count > 0:
-                        self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
-                    available_actions = candidate_actions
+                blocked_count = max(0, int(len(available_actions) - len(candidate_actions)))
+                if blocked_count > 0:
+                    self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
+                available_actions = candidate_actions
             if not available_actions and not can_legally_pass:
                 # In mandatory selection flows we cannot pass; retry non-pass actions even if tried.
-                available_actions = [a for a in self._filter_pass_actions(raw_available_actions, player_state) if int(a) < pass_base]
+                available_actions = [
+                    a
+                    for a in self._filter_pass_actions(raw_available_actions, player_state)
+                    if int(a) < pass_base
+                    and int(a) not in tried_action_indices
+                    and int(a) not in prompt_rejected_actions
+                ]
 
             if not available_actions:
                 # If no actions are available, pass only when pass is legal.
@@ -1376,6 +1484,8 @@ class RLAgent:
                     self._record_action_choice(pass_base)
                     self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions_pass")
                     sent_pass = await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
+                    if sent_pass:
+                        self._clear_fallback_retry_count_for_prompt(player_id, player_state)
                     await self._sleep_if_needed(self.post_move_sleep_sec)
                     return bool(sent_pass)
                 else:
@@ -1384,22 +1494,35 @@ class RLAgent:
                     return False
                  
             random.shuffle(available_actions)
-            max_attempts = min(len(available_actions), int(self.max_fallback_attempts))
-             
+            prompt_retry_budget = int(self.max_fallback_random_retries_per_prompt)
+            prompt_retry_used = self._get_fallback_retry_count_for_prompt(player_id, player_state)
+            remaining_prompt_budget = max(0, int(prompt_retry_budget - prompt_retry_used))
+            max_attempts = min(len(available_actions), int(self.max_fallback_attempts), int(remaining_prompt_budget))
+
+            if max_attempts <= 0 and remaining_prompt_budget <= 0:
+                logger.warning(
+                    "Fallback retry budget exhausted for agent %s on current prompt (budget=%d).",
+                    self.id[:8],
+                    prompt_retry_budget,
+                )
+
             for i in range(max_attempts):
                 random_action_idx = available_actions[i]
                 random_action = self.action_decoder.decode_action(random_action_idx, player_state)
                  
                 if random_action:
                     self._bump_decision_stat('fallback_random_attempts')
+                    self._bump_fallback_retry_count_for_prompt(player_id, player_state, 1)
                     if await game_instance.send_player_input(player_id, random_action):
                         self._bump_decision_stat('fallback_random_successes')
                         self._record_action_choice(int(random_action_idx), random_action, player_state)
                         self._clear_rejected_action(player_id, player_state, int(random_action_idx))
+                        self._clear_fallback_retry_count_for_prompt(player_id, player_state)
                         logger.info(f"Random action succeeded for agent {self.id[:8]}.")
                         await self._sleep_if_needed(self.post_move_sleep_sec)
                         return True
                     self._remember_rejected_action(player_id, player_state, int(random_action_idx))
+                    prompt_rejected_actions.add(int(random_action_idx))
 
             if can_legally_pass:
                 logger.warning(f"All random actions failed for agent {self.id[:8]}. Passing.")
@@ -1407,24 +1530,12 @@ class RLAgent:
                 self._record_action_choice(pass_base)
                 self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_pass")
                 sent_pass = await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
+                if sent_pass:
+                    self._clear_fallback_retry_count_for_prompt(player_id, player_state)
                 await self._sleep_if_needed(self.post_move_sleep_sec)
                 return bool(sent_pass)
 
-            # Mandatory prompt and no legal pass: never send invalid pass input.
-            fallback_candidates = [a for a in self._filter_pass_actions(raw_available_actions, player_state) if int(a) < pass_base]
-            if fallback_candidates:
-                fallback_action_idx = int(fallback_candidates[0])
-                fallback_action = self.action_decoder.decode_action(fallback_action_idx, player_state)
-                if fallback_action and await game_instance.send_player_input(player_id, fallback_action):
-                    self._bump_decision_stat('fallback_random_successes')
-                    self._record_action_choice(fallback_action_idx, fallback_action, player_state)
-                    self._clear_rejected_action(player_id, player_state, fallback_action_idx)
-                    logger.info(f"Mandatory fallback action succeeded for agent {self.id[:8]}.")
-                    await self._sleep_if_needed(self.post_move_sleep_sec)
-                    return True
-                if fallback_action:
-                    self._remember_rejected_action(player_id, player_state, fallback_action_idx)
-
+            # Mandatory prompt and no legal pass: do not resend blacklisted actions.
             self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_no_pass")
             await self._sleep_if_needed(self.failure_pause_sec or self.poll_interval_sec)
             return False
@@ -1852,11 +1963,10 @@ class RLAgent:
                 rejected_actions = self._get_rejected_actions_for_prompt(player_id, player_state)
                 if rejected_actions:
                     filtered_actions = [a for a in available_actions if int(a) not in rejected_actions]
-                    if filtered_actions:
-                        blocked_count = max(0, int(len(available_actions) - len(filtered_actions)))
-                        if blocked_count > 0:
-                            self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
-                        available_actions = filtered_actions
+                    blocked_count = max(0, int(len(available_actions) - len(filtered_actions)))
+                    if blocked_count > 0:
+                        self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
+                    available_actions = filtered_actions
             waiting_for = player_state.get('waitingFor', {})
             self._bump_decision_stat('available_action_observations')
             self._bump_decision_stat('sum_available_actions', len(available_actions))
@@ -2263,6 +2373,8 @@ class RLAgent:
             if not steps:
                 return {"rollout/steps": 0, "rollout/schema_filtered": int(schema_filtered)}
 
+            current_entropy_coef = float(self._current_ppo_entropy_coef())
+            self.ppo_hparams.entropy_coef = float(current_entropy_coef)
             metrics = optimize_ppo_policy(
                 network=self.network,
                 optimizer=self.optimizer,
@@ -2274,19 +2386,31 @@ class RLAgent:
                 metrics.update(self._adapt_ppo_learning_rate(float(metrics.get("ppo/approx_kl", 0.0))))
                 metrics["ppo/learning_rate"] = float(self.optimizer.param_groups[0].get("lr", 0.0))
                 metrics["ppo/target_kl"] = float(self.ppo_hparams.target_kl)
+                metrics["ppo/entropy_coef"] = float(current_entropy_coef)
             self.network.eval()
 
         metrics["rollout/schema_filtered"] = int(schema_filtered)
         if metrics:
             logger.info(
-                "Agent %s PPO update: steps=%d policy_loss=%.4f value_loss=%.4f approx_kl=%.4f",
+                "Agent %s PPO update: steps=%d policy_loss=%.4f value_loss=%.4f approx_kl=%.4f entropy_coef=%.4f",
                 self.id[:8],
                 int(metrics.get("rollout/steps", 0)),
                 float(metrics.get("ppo/policy_loss", 0.0)),
                 float(metrics.get("ppo/value_loss", 0.0)),
                 float(metrics.get("ppo/approx_kl", 0.0)),
+                float(metrics.get("ppo/entropy_coef", self.ppo_hparams.entropy_coef)),
             )
         return metrics
+
+    def _current_ppo_entropy_coef(self) -> float:
+        start = max(0.0, float(self.ppo_entropy_coef_start))
+        end = max(0.0, float(self.ppo_entropy_coef_end))
+        anneal_games = max(1, int(self.ppo_entropy_coef_anneal_games))
+        if abs(start - end) <= 1e-12:
+            return float(start)
+        games_played = max(0.0, float(getattr(self, "games_played", 0)))
+        progress = min(1.0, games_played / float(anneal_games))
+        return float(start + ((end - start) * progress))
 
     def _adapt_ppo_learning_rate(self, approx_kl: float) -> Dict[str, float]:
         target_kl = float(self.ppo_hparams.target_kl)
@@ -2710,6 +2834,25 @@ class RLAgent:
                 # Replace in state_dict
                 state_dict[old_aux_weight_key] = new_weight
                 state_dict[old_aux_bias_key] = new_bias
+
+        # Backward compatibility: older checkpoints stored value head as
+        # value_head.{0,2}.* (Sequential). The current model uses value_trunk +
+        # value_head linear output, so drop legacy keys to avoid noisy warnings.
+        legacy_value_head_keys: List[str] = []
+        for key in list(state_dict.keys()):
+            if not key.startswith("value_head."):
+                continue
+            key_parts = key.split(".")
+            if len(key_parts) >= 3 and key_parts[1].isdigit():
+                legacy_value_head_keys.append(key)
+        if legacy_value_head_keys:
+            for key in legacy_value_head_keys:
+                state_dict.pop(key, None)
+            logger.info(
+                "Dropped %d legacy value-head parameter(s) from %s to load new value architecture.",
+                len(legacy_value_head_keys),
+                path,
+            )
         
         load_result = self.network.load_state_dict(state_dict, strict=False)
         missing = list(getattr(load_result, "missing_keys", []) or [])
@@ -2721,6 +2864,8 @@ class RLAgent:
             expected_missing_prefixes = (
                 "card_attention_module.",
                 "transformer_fusion.",
+                "value_trunk.",
+                "value_head.",
             )
             expected_missing = [
                 key for key in missing

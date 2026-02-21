@@ -300,10 +300,27 @@ def _can_afford_card_now(card: Dict[str, Any], player: Dict[str, Any]) -> bool:
 
 
 def _vp_component(player: Dict[str, Any], key: str) -> float:
+    requested = str(key or '').strip()
+    # TR is tracked as a live top-level field in player state; VP breakdown can lag.
+    if requested in ('terraforming', 'terraformRating'):
+        top_level_tr = _safe_float(player.get('terraformRating', 0), 0.0)
+        if abs(top_level_tr) > 1e-9:
+            return top_level_tr
+
     breakdown = player.get('victoryPointsBreakdown', {})
     if not isinstance(breakdown, dict):
         return 0.0
-    return _safe_float(breakdown.get(key, 0), 0.0)
+    # Support both legacy and current Terraforming Mars VP breakdown keys.
+    aliases = {
+        'terraforming': ('terraforming', 'terraformRating'),
+        'terraformRating': ('terraformRating', 'terraforming'),
+        'cards': ('cards', 'victoryPoints'),
+        'victoryPoints': ('victoryPoints', 'cards'),
+    }
+    for candidate in aliases.get(requested, (requested,)):
+        if candidate in breakdown:
+            return _safe_float(breakdown.get(candidate, 0), 0.0)
+    return 0.0
 
 
 def _normalize_token(value: Any) -> str:

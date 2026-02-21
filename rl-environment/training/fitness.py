@@ -474,7 +474,10 @@ def apply_promotion_gates(
     return gated_scores, summary, per_agent_gate
 
 
-def calculate_selection_fitness(population: Sequence[Any], tournament_results: List[Dict[str, Any]]) -> List[float]:
+def calculate_selection_fitness_with_diagnostics(
+    population: Sequence[Any],
+    tournament_results: List[Dict[str, Any]],
+) -> Tuple[List[float], Dict[str, Any]]:
     agent_scores = {agent.id: 0.0 for agent in population}
     agent_games = {agent.id: 0 for agent in population}
     include_incomplete = str(os.getenv("SELECTION_INCLUDE_INCOMPLETE_GAMES", "0")).strip().lower() in (
@@ -483,13 +486,31 @@ def calculate_selection_fitness(population: Sequence[Any], tournament_results: L
         "yes",
         "on",
     )
+    include_training_pool = str(os.getenv("SELECTION_INCLUDE_TRAINING_POOL", "0")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    main_games_counted = 0
+    training_pool_games_counted = 0
 
     for tournament_result in tournament_results:
+        if not isinstance(tournament_result, dict):
+            continue
+        evaluation_source = str(tournament_result.get("evaluation_source", "main") or "main").strip().lower()
+        source_bucket = "training_pool" if evaluation_source == "training_pool" else "main"
+        if (source_bucket == "training_pool") and (not include_training_pool):
+            continue
         for game_result in tournament_result.get("games", []):
             if not isinstance(game_result, dict):
                 continue
             if (not include_incomplete) and (not bool(game_result.get("completed", False))):
                 continue
+            if source_bucket == "training_pool":
+                training_pool_games_counted += 1
+            else:
+                main_games_counted += 1
             game_generation = game_result.get("game_generation")
             for player_result in game_result.get("players", []):
                 agent_id = player_result.get("agent_id")
@@ -508,4 +529,18 @@ def calculate_selection_fitness(population: Sequence[Any], tournament_results: L
     for agent in population:
         played = int(agent_games.get(agent.id, 0))
         fitness_scores.append((agent_scores[agent.id] / played) if played > 0 else 0.0)
+
+    diagnostics = {
+        "selection/include_training_pool": bool(include_training_pool),
+        "selection/main_games_counted": int(main_games_counted),
+        "selection/training_pool_games_counted": int(training_pool_games_counted),
+    }
+    return fitness_scores, diagnostics
+
+
+def calculate_selection_fitness(population: Sequence[Any], tournament_results: List[Dict[str, Any]]) -> List[float]:
+    fitness_scores, _diagnostics = calculate_selection_fitness_with_diagnostics(
+        population=population,
+        tournament_results=tournament_results,
+    )
     return fitness_scores

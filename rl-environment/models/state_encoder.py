@@ -379,15 +379,7 @@ class StateEncoder:
         hand_cards = [card for card in hand_raw if isinstance(card, dict)]
         waiting_for = player_state.get('waitingFor', {}) or {}
         waiting_type = str(waiting_for.get('type', '') or '')
-        prompt_cards_raw = waiting_for.get('cards', []) if isinstance(waiting_for, dict) else []
-        prompt_cards = [card for card in prompt_cards_raw if isinstance(card, dict)]
-
-        # Candidate cards are the immediately actionable cards (buy/play prompt),
-        # falling back to hand cards when no card prompt is active.
-        if waiting_type in ['card', 'projectCard', 'selectProjectCardToPlay'] and prompt_cards:
-            candidate_cards = prompt_cards
-        else:
-            candidate_cards = hand_cards
+        candidate_cards = self._get_candidate_hand_cards(player_state)
 
         player = player_state.get('thisPlayer', {}) or {}
         mc = float(player.get('megaCredits', 0) or 0)
@@ -653,6 +645,16 @@ class StateEncoder:
 
         if waiting_type in ['card', 'projectCard', 'selectCard', 'selectProjectCardToPlay'] and prompt_cards:
             return prompt_cards
+        if waiting_type in ['initialCards', 'selectInitialCards']:
+            startup_cards: List[Dict[str, Any]] = []
+            for option in waiting_for.get('options', []) or []:
+                if not isinstance(option, dict):
+                    continue
+                for card in option.get('cards', []) or []:
+                    if isinstance(card, dict):
+                        startup_cards.append(card)
+            if startup_cards:
+                return startup_cards
         return hand_cards
 
     def _estimate_affordability_for_card(
@@ -1255,6 +1257,72 @@ class StateEncoder:
             elif input_type == 'card':
                 cards = waiting_for.get('cards', [])
                 encoding[11] = min(len(cards) / 20.0, 1.0)
+            elif input_type in ['initialCards', 'selectInitialCards']:
+                options = [opt for opt in (waiting_for.get('options', []) or []) if isinstance(opt, dict)]
+                corp_option = None
+                prelude_option = None
+                project_option = None
+                for idx, option in enumerate(options):
+                    title_value = option.get('title', '')
+                    if isinstance(title_value, dict):
+                        title_value = title_value.get('message', '')
+                    title = str(title_value or '').lower()
+                    min_cards = int(option.get('min', 0) or 0)
+                    max_cards = int(option.get('max', 0) or 0)
+                    if corp_option is None and ('corporation' in title or (idx == 0 and min_cards == 1 and max_cards == 1)):
+                        corp_option = option
+                    elif prelude_option is None and ('prelude' in title or (min_cards == 2 and max_cards == 2)):
+                        prelude_option = option
+                    elif project_option is None and ('initial cards' in title or 'cards to buy' in title or 'project' in title):
+                        project_option = option
+
+                corp_cards = [c for c in (corp_option.get('cards', []) if corp_option else []) if isinstance(c, dict)]
+                prelude_cards = [c for c in (prelude_option.get('cards', []) if prelude_option else []) if isinstance(c, dict)]
+                project_cards = [c for c in (project_option.get('cards', []) if project_option else []) if isinstance(c, dict)]
+
+                encoding[42] = min(len(corp_cards) / 4.0, 1.0)
+                best_starting_mc = 0.0
+                best_card_cost = max(float((player_state.get('thisPlayer', {}) or {}).get('cardCost', 3) or 3), 1.0)
+                best_keep_cap = 0.0
+                project_max = len(project_cards)
+                if project_option is not None:
+                    try:
+                        project_max = int(project_option.get('max', len(project_cards)) or len(project_cards))
+                    except Exception:
+                        project_max = len(project_cards)
+                for corp in corp_cards:
+                    name = str(corp.get('name', '') or '')
+                    meta = self.card_metadata_by_name.get(name, {}) if name else {}
+                    start_mc = float(meta.get('startingMegaCredits', meta.get('startingMegacredits', 0)) or 0)
+                    card_cost = float(meta.get('cardCost', (player_state.get('thisPlayer', {}) or {}).get('cardCost', 3)) or 3)
+                    card_cost = max(card_cost, 1.0)
+                    keep_cap = min(float(project_max), float(max(0, int(start_mc // card_cost))))
+                    if keep_cap > best_keep_cap or (keep_cap == best_keep_cap and start_mc > best_starting_mc):
+                        best_keep_cap = keep_cap
+                        best_starting_mc = start_mc
+                        best_card_cost = card_cost
+
+                encoding[43] = min(best_starting_mc / 80.0, 1.0)
+                encoding[44] = min(best_card_cost / 8.0, 1.0)
+                encoding[45] = min(best_keep_cap / 10.0, 1.0)
+                encoding[46] = min(len(prelude_cards) / 8.0, 1.0)
+
+                prelude_utility = 0.0
+                if prelude_cards:
+                    quality = []
+                    for card in prelude_cards:
+                        cost_norm = min(self._get_card_cost(card) / 40.0, 1.0)
+                        quality.append(float(self._get_card_vp_proxy(card) + (0.25 * (1.0 - cost_norm))))
+                    prelude_utility = float(sum(quality) / max(1, len(quality)))
+                encoding[47] = min(prelude_utility, 1.0)
+
+                project_qualities: List[float] = []
+                for card in project_cards:
+                    cost_norm = min(self._get_card_cost(card) / 40.0, 1.0)
+                    project_qualities.append(float(self._get_card_vp_proxy(card) + (0.35 * (1.0 - cost_norm))))
+                if project_qualities:
+                    encoding[48] = min(float(sum(project_qualities) / len(project_qualities)), 1.0)
+                    encoding[49] = min(float(max(project_qualities)), 1.0)
             elif input_type in ['selectCard', 'projectCard', 'selectProjectCardToPlay']:
                 cards = waiting_for.get('cards', [])
                 encoding[36] = min(len(cards) / 20.0, 1.0)
@@ -1650,13 +1718,15 @@ class StateEncoder:
         if env_path:
             candidate_paths.append(env_path)
         candidate_paths.extend([
-            os.path.join(one_up, 'card_metadata.json'),
             os.path.join(two_up, 'card_metadata.json'),
             os.path.join(two_up, 'terraforming-mars', 'card_metadata.json'),
             os.path.join(one_up, 'terraforming-mars', 'card_metadata.json'),
+            os.path.join(one_up, 'card_metadata.json'),
         ])
 
         seen: set = set()
+        fallback_data: Optional[Dict[str, Dict[str, Any]]] = None
+        fallback_path: str = ''
         for candidate in candidate_paths:
             if not candidate:
                 continue
@@ -1693,13 +1763,35 @@ class StateEncoder:
                     meta_copy['tags'] = norm_tags
                     meta_copy['type'] = self._normalize_card_type(meta_copy.get('type', ''))
                     normalized[str(name)] = meta_copy
-                logger.info(f"Loaded card metadata for {len(normalized)} cards from {path}")
+                has_corp_economics = any(
+                    isinstance(meta, dict) and (
+                        meta.get('startingMegaCredits', None) is not None
+                        or meta.get('cardCost', None) is not None
+                    )
+                    for meta in normalized.values()
+                )
                 StateEncoder._CARD_METADATA_CACHE[path] = normalized
-                return normalized
+                if has_corp_economics:
+                    logger.info(f"Loaded card metadata for {len(normalized)} cards from {path}")
+                    return normalized
+                if normalized and fallback_data is None:
+                    fallback_data = normalized
+                    fallback_path = path
+                    logger.info(
+                        "Loaded metadata from %s without corporation economics; continuing search",
+                        path,
+                    )
             except Exception as e:
                 logger.warning(f"Failed to load card metadata from {path}: {e}")
                 StateEncoder._CARD_METADATA_CACHE[path] = {}
 
+        if fallback_data:
+            logger.info(
+                "Using fallback card metadata for %d cards from %s",
+                len(fallback_data),
+                fallback_path or "unknown path",
+            )
+            return fallback_data
         return {}
 
     def _get_card_tags(self, card_name: str, fallback: Any = None) -> Dict[str, int]:

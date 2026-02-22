@@ -319,6 +319,7 @@ class TerraformingMarsNetwork(nn.Module):
         _amap[0:100] = 0    # play_card
         _amap[100:200] = 1  # standard_project
         _amap[200:300] = 2  # select_option
+        _amap[850:882] = 2  # startup_plan selections
         _amap[400:500] = 3  # payment_action
         _amap[520:600] = 4  # card_selection_mask
         _amap[700] = 5      # convert_plants
@@ -606,6 +607,7 @@ class RLAgent:
         self.poll_interval_sec = float(os.getenv("AGENT_POLL_INTERVAL_SEC", "0.2"))
         self.post_move_sleep_sec = float(os.getenv("AGENT_POST_MOVE_SLEEP_SEC", "0.0"))
         self.failure_pause_sec = float(os.getenv("AGENT_FAILURE_PAUSE_SEC", "0.0"))
+        self.startup_autosubmit = str(os.getenv("AGENT_STARTUP_AUTOSUBMIT", "0")).strip().lower() in ("1", "true", "yes", "on")
         self.stuck_log_cooldown_sec = float(os.getenv("AGENT_STUCK_LOG_COOLDOWN_SEC", "5.0"))
         self._last_stuck_log_by_player: Dict[str, float] = {}
         self._rejected_actions_by_prompt: Dict[str, set[int]] = {}
@@ -1139,8 +1141,10 @@ class RLAgent:
                 game_instance.get_internal_player_api_url(player_id),
             )
 
-            # Dedicated startup flow for corporation/prelude/initial card selection.
-            await self._run_initial_setup(game_instance, player_id)
+            # Optional deterministic startup autosubmit. Keep disabled by default
+            # so startup choices can be learned by policy from STARTUP_PLAN actions.
+            if self.startup_autosubmit:
+                await self._run_initial_setup(game_instance, player_id)
              
             # Game loop
             while True:
@@ -1280,7 +1284,7 @@ class RLAgent:
             waiting_type = waiting_for.get('type', 'unknown')
             logger.info(f"Agent {self.id[:8]} making move for input type: {waiting_type}")
 
-            if waiting_type in ['initialCards', 'selectInitialCards']:
+            if self.startup_autosubmit and waiting_type in ['initialCards', 'selectInitialCards']:
                 initial_action = self.action_decoder.build_initial_setup_response(player_state)
                 if initial_action:
                     self._bump_decision_stat('policy_attempts')
@@ -1778,12 +1782,16 @@ class RLAgent:
         pass_base = int(self.action_decoder.action_types.get('PASS', 900))
         mask_base = int(self.action_decoder.action_types.get('SELECT_CARD_MASK', -1))
         mask_limit = int(getattr(self.action_decoder, 'card_selection_mask_limit', 0) or 0)
+        startup_base = int(self.action_decoder.action_types.get('STARTUP_PLAN', -1))
+        startup_limit = int(getattr(self.action_decoder, 'startup_plan_limit', 0) or 0)
         if action_index >= pass_base:
             return 'pass'
         if action_index < 100:
             return 'play_card'
         if action_index < 200:
             return 'standard_project'
+        if startup_base >= 0 and startup_limit > 0 and startup_base <= action_index < (startup_base + startup_limit):
+            return 'startup_plan'
         if action_index < 300:
             return 'select_option'
         if mask_base >= 0 and mask_limit > 0 and mask_base <= action_index < (mask_base + mask_limit):
@@ -2002,11 +2010,15 @@ class RLAgent:
             option_titles = waiting_for.get('options', []) if waiting_for.get('type') == 'or' else []
             card_mask_base = int(self.action_decoder.action_types.get('SELECT_CARD_MASK', -1))
             card_mask_limit = int(getattr(self.action_decoder, 'card_selection_mask_limit', 0) or 0)
+            startup_base = int(self.action_decoder.action_types.get('STARTUP_PLAN', -1))
+            startup_limit = int(getattr(self.action_decoder, 'startup_plan_limit', 0) or 0)
             for action_idx in available_actions:
                 if action_idx < 100:
                     action_types.append(f"PLAY_CARD({action_idx})")
                 elif action_idx < 200:
                     action_types.append(f"STANDARD_PROJECT({action_idx-100})")
+                elif startup_base >= 0 and startup_limit > 0 and startup_base <= action_idx < (startup_base + startup_limit):
+                    action_types.append(f"STARTUP_PLAN({action_idx - startup_base})")
                 elif action_idx >= 200 and action_idx < 300:  # SELECT_OPTION range
                     option_idx = action_idx - 200
                     option_name = str(option_idx)

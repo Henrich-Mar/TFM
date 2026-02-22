@@ -4,6 +4,7 @@ Game Interface - Handles communication with Terraforming Mars game servers
 import asyncio
 import aiohttp
 import logging
+import random
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import json
@@ -49,6 +50,20 @@ class GameInstance:
         if self.session is None or self.session.closed:
             raise ServerTransportError("HTTP session is closed")
         return self.session
+
+    @staticmethod
+    def _cancellation_requested() -> bool:
+        """True when current task is being intentionally cancelled."""
+        try:
+            task = asyncio.current_task()
+            if task is None:
+                return False
+            cancelling = getattr(task, "cancelling", None)
+            if callable(cancelling):
+                return bool(cancelling())
+            return bool(task.cancelled())
+        except Exception:
+            return False
 
     @staticmethod
     def _is_transport_error(exc: Exception) -> bool:
@@ -158,7 +173,10 @@ class GameInstance:
                     raise ValueError(f"Player {player_name} not found in game")
                 else:
                     raise ValueError(f"Failed to get game state: {response.status}")
-                    
+        except asyncio.CancelledError as e:
+            if self._cancellation_requested():
+                raise
+            self._raise_transport_error("join player", RuntimeError(f"request cancelled: {e}"))
         except Exception as e:
             if self._is_transport_error(e):
                 self._raise_transport_error("join player", e)
@@ -178,6 +196,10 @@ class GameInstance:
                     if int(response.status) >= 500:
                         self._raise_transport_error("get player state", error)
                     raise error
+        except asyncio.CancelledError as e:
+            if self._cancellation_requested():
+                raise
+            self._raise_transport_error("get player state", RuntimeError(f"request cancelled: {e}"))
         except Exception as e:
             if self._is_transport_error(e):
                 self._raise_transport_error("get player state", e)
@@ -187,48 +209,139 @@ class GameInstance:
     async def send_player_input(self, player_id: str, input_data: Dict[str, Any]) -> bool:
         """Send player input to the game"""
         try:
-            session = self._get_session()
-            async with session.post(f"{self.base_url}/player/input",
-                                       params={'id': player_id},
-                                       json=input_data,
-                                       headers={'Content-Type': 'application/json'}) as response:
-                if response.status == 200:
-                    return True
-                else:
-                    response_text = await response.text()
-                    try:
-                        payload_preview = json.dumps(input_data, ensure_ascii=True, separators=(',', ':'))
-                    except Exception:
-                        payload_preview = str(input_data)
-                    if len(payload_preview) > 800:
-                        payload_preview = payload_preview[:800] + "...(truncated)"
-                    logger.error(
-                        "Failed to send input for player %s. Status: %s, Response: %s, "
-                        "Input: %s, GameURL: %s, PlayerAPI(public): %s, PlayerAPI(internal): %s",
-                        player_id,
-                        response.status,
-                        response_text,
-                        payload_preview,
-                        self.get_public_game_url(),
-                        self.get_public_player_api_url(player_id),
-                        self.get_internal_player_api_url(player_id),
-                    )
-                    if int(response.status) >= 500:
-                        self._raise_transport_error(
-                            "send player input",
-                            RuntimeError(f"Server returned {response.status}"),
+            payload_full = json.dumps(input_data, ensure_ascii=True, separators=(',', ':'))
+        except Exception:
+            payload_full = str(input_data)
+        payload_preview = payload_full
+        if len(payload_preview) > 800:
+            payload_preview = payload_preview[:800] + "...(truncated)"
+        input_type = str((input_data or {}).get('type', 'unknown'))
+        is_initial_cards_input = input_type in ('initialCards', 'selectInitialCards')
+        try:
+            retry_attempts = max(1, int(os.getenv("TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS", "2")))
+        except Exception:
+            retry_attempts = 2
+        if is_initial_cards_input:
+            try:
+                initial_retry_attempts = max(
+                    1,
+                    int(os.getenv("TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL", "6")),
+                )
+            except Exception:
+                initial_retry_attempts = 6
+            retry_attempts = max(retry_attempts, initial_retry_attempts)
+            try:
+                initial_jitter_ms = max(
+                    0,
+                    int(os.getenv("TM_SEND_INPUT_INITIAL_CARDS_JITTER_MS", "250")),
+                )
+            except Exception:
+                initial_jitter_ms = 250
+            if initial_jitter_ms > 0:
+                await asyncio.sleep(random.uniform(0.0, float(initial_jitter_ms) / 1000.0))
+
+        for attempt in range(retry_attempts):
+            attempt_no = attempt + 1
+            try:
+                session = self._get_session()
+                async with session.post(f"{self.base_url}/player/input",
+                                           params={'id': player_id},
+                                           json=input_data,
+                                           headers={'Content-Type': 'application/json'}) as response:
+                    if response.status == 200:
+                        return True
+                    else:
+                        response_text = await response.text()
+                        logger.error(
+                            "Failed to send input for player %s. Status: %s, Response: %s, "
+                            "Input: %s, GameURL: %s, PlayerAPI(public): %s, PlayerAPI(internal): %s",
+                            player_id,
+                            response.status,
+                            response_text,
+                            payload_preview,
+                            self.get_public_game_url(),
+                            self.get_public_player_api_url(player_id),
+                            self.get_internal_player_api_url(player_id),
                         )
-                    try:
-                        if self.cluster is not None and hasattr(self.cluster, "record_input_reject"):
-                            self.cluster.record_input_reject(response_text)
-                    except Exception:
-                        pass
-                    return False
-        except Exception as e:
-            if self._is_transport_error(e):
-                self._raise_transport_error("send player input", e)
-            logger.error(f"Failed to send input for player {player_id}: {e!r}")
-            return False
+                        logger.error(
+                            "Full input payload for failed player input (%s): %s",
+                            input_type,
+                            payload_full,
+                        )
+                        if int(response.status) >= 500:
+                            self._raise_transport_error(
+                                "send player input",
+                                RuntimeError(f"Server returned {response.status}"),
+                            )
+                        try:
+                            if self.cluster is not None and hasattr(self.cluster, "record_input_reject"):
+                                self.cluster.record_input_reject(response_text)
+                        except Exception:
+                            pass
+                        return False
+            except Exception as e:
+                if self._is_transport_error(e):
+                    msg_l = str(e or "").lower()
+                    write_path_error = (
+                        isinstance(e, (aiohttp.ClientOSError, ConnectionResetError, BrokenPipeError))
+                        or "can not write request body" in msg_l
+                    )
+                    if write_path_error and attempt_no < retry_attempts:
+                        if is_initial_cards_input:
+                            backoff = min(1.50, 0.25 * float(attempt_no))
+                        else:
+                            backoff = 0.05 * float(attempt_no)
+                        
+                        logger.warning(
+                            "Attempt %d/%d failed with transport error for player %s (input_type=%s) on %s:%s. "
+                            "Backing off for %.2fs: %s",
+                            attempt_no,
+                            retry_attempts,
+                            player_id,
+                            input_type,
+                            self.server.host,
+                            self.server.port,
+                            backoff,
+                            e,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    logger.error(
+                        "Transport failure sending player input (input_type=%s, player_id=%s): payload=%s",
+                        input_type,
+                        player_id,
+                        payload_full,
+                    )
+                    wrapped = RuntimeError(
+                        f"{e} [input_type={input_type}, payload={payload_full}]"
+                    )
+                    self._raise_transport_error("send player input", wrapped)
+                logger.error(f"Failed to send input for player {player_id}: {e!r}")
+                return False
+            except asyncio.CancelledError as e:
+                if self._cancellation_requested():
+                    raise
+                if attempt_no < retry_attempts:
+                    if is_initial_cards_input:
+                        backoff = min(1.50, 0.25 * float(attempt_no))
+                    else:
+                        backoff = 0.05 * float(attempt_no)
+                    logger.warning(
+                        "Retrying send_player_input after unexpected cancellation on %s:%s "
+                        "(attempt %d/%d, input_type=%s): %s",
+                        self.server.host,
+                        self.server.port,
+                        attempt_no,
+                        retry_attempts,
+                        input_type,
+                        e,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+                wrapped = RuntimeError(f"request cancelled: {e} [input_type={input_type}, payload={payload_full}]")
+                self._raise_transport_error("send player input", wrapped)
+
+        return False
     
     async def get_final_state(self) -> Dict[str, Any]:
         """Get final game state after completion"""
@@ -243,6 +356,10 @@ class GameInstance:
                     if int(response.status) >= 500:
                         self._raise_transport_error("get final state", error)
                     raise error
+        except asyncio.CancelledError as e:
+            if self._cancellation_requested():
+                raise
+            self._raise_transport_error("get final state", RuntimeError(f"request cancelled: {e}"))
         except Exception as e:
             if self._is_transport_error(e):
                 self._raise_transport_error("get final state", e)
@@ -315,11 +432,26 @@ class GameServerCluster:
         self._server_backoff_until: Dict[str, float] = {}
         self._last_health_check_monotonic: float = 0.0
         self._health_check_lock = asyncio.Lock()
+        self._recycle_lock = asyncio.Lock()
+        self._last_recycle_monotonic: float = 0.0
         # Optional cross-component scratchpad for latest game URLs
         self.recent_games: List[Dict[str, str]] = []
         self.base_game_options = self._load_game_options()
         self.input_reject_count: int = 0
         self.payment_reject_count: int = 0
+
+    @staticmethod
+    def _cancellation_requested() -> bool:
+        try:
+            task = asyncio.current_task()
+            if task is None:
+                return False
+            cancelling = getattr(task, "cancelling", None)
+            if callable(cancelling):
+                return bool(cancelling())
+            return bool(task.cancelled())
+        except Exception:
+            return False
 
     @staticmethod
     def _parse_int_env(name: str, default: int, min_value: int = 0) -> int:
@@ -428,6 +560,27 @@ class GameServerCluster:
         """Close shared HTTP session used for game/server API calls."""
         if self.session and not self.session.closed:
             await self.session.close()
+            self.session = None
+
+    async def recycle_session(self):
+        """Force next request to use a fresh HTTP session after transport errors.
+
+        Uses a lock + 2-second debounce so that concurrent callers don't
+        destroy each other's in-flight requests via the shared connector.
+        """
+        async with self._recycle_lock:
+            try:
+                now = asyncio.get_running_loop().time()
+            except RuntimeError:
+                now = 0.0
+            if (now - self._last_recycle_monotonic) < 2.0:
+                return
+            self._last_recycle_monotonic = now
+            if self.session and not self.session.closed:
+                try:
+                    await self.session.close()
+                except Exception:
+                    pass
             self.session = None
 
     def _default_game_options(self) -> Dict[str, Any]:
@@ -671,6 +824,15 @@ class GameServerCluster:
                 for player_name in player_names:
                     try:
                         await game_instance.join_player(player_name)
+                    except asyncio.CancelledError as e:
+                        if self._cancellation_requested():
+                            raise
+                        logger.warning(
+                            "Join player %s was unexpectedly cancelled on %s: %s",
+                            player_name,
+                            server_key,
+                            e,
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to join player {player_name}: {e}")
 
@@ -702,6 +864,30 @@ class GameServerCluster:
 
                 logger.error(f"Failed to create game on {server.host}:{server.port}: {e}")
                 raise
+            except asyncio.CancelledError as e:
+                if slot_reserved:
+                    await self.release_server_slot(server)
+                if self._cancellation_requested():
+                    raise
+                wrapped = RuntimeError(f"create game attempt cancelled on {server_key}: {e}")
+                last_error = wrapped
+                self._mark_server_failure(server, wrapped)
+                has_next_attempt = (attempt_idx + 1) < attempts
+                if has_next_attempt:
+                    backoff_sec = float(self.create_game_retry_backoff_sec) * float(attempt_idx + 1)
+                    logger.warning(
+                        "Create game attempt %d/%d cancelled unexpectedly on %s: %s. Retrying after %.2fs",
+                        attempt_idx + 1,
+                        attempts,
+                        server_key,
+                        e,
+                        backoff_sec,
+                    )
+                    if backoff_sec > 0.0:
+                        await asyncio.sleep(backoff_sec)
+                    continue
+                logger.error("Failed to create game on %s due to unexpected cancellation: %s", server_key, e)
+                raise wrapped
 
         if last_error is not None:
             raise last_error

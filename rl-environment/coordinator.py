@@ -1797,11 +1797,15 @@ async def main():
         for task in (evolution_task, api_task):
             if task is not None and not task.done():
                 task.cancel()
-        await asyncio.gather(
-            *[task for task in (evolution_task, api_task) if task is not None],
-            return_exceptions=True,
-        )
-        await coordinator.shutdown()
+        try:
+            await asyncio.gather(
+                *[task for task in (evolution_task, api_task) if task is not None],
+                return_exceptions=True,
+            )
+        except asyncio.CancelledError:
+            # Continue shutdown even if current task is being cancelled.
+            pass
+        await asyncio.shield(coordinator.shutdown())
 
 if __name__ == "__main__":
     asyncio.run(main())

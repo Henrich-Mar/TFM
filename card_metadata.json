@@ -1581,7 +1581,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "You start with 42 M€. Instead of choosing from 10 cards during setup, you get 10 cards for free."
+    "description": "You start with 42 M€. Instead of choosing from 10 cards during setup, you get 10 cards for free.",
+    "startingMegaCredits": 42
   },
   "CrediCor": {
     "name": "CrediCor",
@@ -1590,7 +1591,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "You start with 57 M€."
+    "description": "You start with 57 M€.",
+    "startingMegaCredits": 57
   },
   "EcoLine": {
     "name": "EcoLine",
@@ -1601,7 +1603,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "You start with 2 plant production, 3 plants, and 36 M€."
+    "description": "You start with 2 plant production, 3 plants, and 36 M€.",
+    "startingMegaCredits": 36
   },
   "Helion": {
     "name": "Helion",
@@ -1612,7 +1615,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "You start with 3 heat production and 42 M€."
+    "description": "You start with 3 heat production and 42 M€.",
+    "startingMegaCredits": 42
   },
   "Interplanetary Cinematics": {
     "name": "Interplanetary Cinematics",
@@ -1623,7 +1627,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "You start with 20 steel and 30 M€."
+    "description": "You start with 20 steel and 30 M€.",
+    "startingMegaCredits": 30
   },
   "Inventrix": {
     "name": "Inventrix",
@@ -1634,7 +1639,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "As your first action in the game, draw 3 cards. Start with 45 M€."
+    "description": "As your first action in the game, draw 3 cards. Start with 45 M€.",
+    "startingMegaCredits": 45
   },
   "Mining Guild": {
     "name": "Mining Guild",
@@ -1646,7 +1652,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "You start with 30 M€, 5 steel and 1 steel production."
+    "description": "You start with 30 M€, 5 steel and 1 steel production.",
+    "startingMegaCredits": 30
   },
   "PhoboLog": {
     "name": "PhoboLog",
@@ -1657,7 +1664,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "You start with 10 titanium and 23 M€."
+    "description": "You start with 10 titanium and 23 M€.",
+    "startingMegaCredits": 23
   },
   "Tharsis Republic": {
     "name": "Tharsis Republic",
@@ -1668,7 +1676,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "You start with 40 M€. As your first action in the game, place a city tile."
+    "description": "You start with 40 M€. As your first action in the game, place a city tile.",
+    "startingMegaCredits": 40
   },
   "Thorgate": {
     "name": "Thorgate",
@@ -1679,7 +1688,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "You start with 1 energy production and 48 M€."
+    "description": "You start with 1 energy production and 48 M€.",
+    "startingMegaCredits": 48
   },
   "United Nations Mars Initiative": {
     "name": "United Nations Mars Initiative",
@@ -1690,7 +1700,8 @@
     "cost": 0,
     "module": "base",
     "category": "corporation",
-    "description": "You start with 40 M€."
+    "description": "You start with 40 M€.",
+    "startingMegaCredits": 40
   },
   "Aquifer": {
     "name": "Aquifer",
@@ -2580,7 +2591,8 @@
     "cost": 0,
     "module": "corpera",
     "category": "corporation",
-    "description": "You start with 1 titanium production and 42 M€."
+    "description": "You start with 1 titanium production and 42 M€.",
+    "startingMegaCredits": 42
   },
   "Teractor": {
     "name": "Teractor",
@@ -2591,7 +2603,8 @@
     "cost": 0,
     "module": "corpera",
     "category": "corporation",
-    "description": "You start with 60 M€."
+    "description": "You start with 60 M€.",
+    "startingMegaCredits": 60
   },
   "Penguins": {
     "name": "Penguins",
@@ -3379,7 +3392,8 @@
     "cost": 0,
     "module": "promo",
     "category": "corporation",
-    "description": "You start with 40 M€ and 10 steel. AS YOUR FIRST ACTION, PLACE A COMMUNITY [PLAYER MARKER] ON A NON-RESERVED AREA."
+    "description": "You start with 40 M€ and 10 steel. AS YOUR FIRST ACTION, PLACE A COMMUNITY [PLAYER MARKER] ON A NON-RESERVED AREA.",
+    "startingMegaCredits": 40
   },
   "Astrodrill": {
     "name": "Astrodrill",
@@ -3390,7 +3404,8 @@
     "cost": 0,
     "module": "promo",
     "category": "corporation",
-    "description": "You start with 35 M€ and 3 asteroid resources."
+    "description": "You start with 35 M€ and 3 asteroid resources.",
+    "startingMegaCredits": 35
   },
   "Factorum": {
     "name": "Factorum",
@@ -3402,7 +3417,8 @@
     "cost": 0,
     "module": "promo",
     "category": "corporation",
-    "description": "You start with 37 M€. Increase your steel production 1 step."
+    "description": "You start with 37 M€. Increase your steel production 1 step.",
+    "startingMegaCredits": 37
   },
   "Pharmacy Union": {
     "name": "Pharmacy Union",
@@ -3413,7 +3429,8 @@
     ],
     "cost": 0,
     "module": "promo",
-    "category": "corporation"
+    "category": "corporation",
+    "startingMegaCredits": 54
   },
   "Philares": {
     "name": "Philares",
@@ -3424,7 +3441,8 @@
     "cost": 0,
     "module": "promo",
     "category": "corporation",
-    "description": "You start with 47 M€. As your first action, place a greenery tile and raise the oxygen 1 step."
+    "description": "You start with 47 M€. As your first action, place a greenery tile and raise the oxygen 1 step.",
+    "startingMegaCredits": 47
   },
   "Mons Insurance": {
     "name": "Mons Insurance",
@@ -3433,7 +3451,8 @@
     "cost": 0,
     "module": "promo",
     "category": "corporation",
-    "description": "You start with 48 M€. Increase your M€ production 4 steps. ALL OPPONENTS DECREASE THEIR M€ production 2 STEPS. THIS DOES NOT TRIGGER THE EFFECT BELOW."
+    "description": "You start with 48 M€. Increase your M€ production 4 steps. ALL OPPONENTS DECREASE THEIR M€ production 2 STEPS. THIS DOES NOT TRIGGER THE EFFECT BELOW.",
+    "startingMegaCredits": 48
   },
   "Recyclon": {
     "name": "Recyclon",
@@ -3445,7 +3464,8 @@
     "cost": 0,
     "module": "promo",
     "category": "corporation",
-    "description": "You start with 38 M€ and 1 steel production."
+    "description": "You start with 38 M€ and 1 steel production.",
+    "startingMegaCredits": 38
   },
   "Splice": {
     "name": "Splice",
@@ -3456,7 +3476,8 @@
     "cost": 0,
     "module": "promo",
     "category": "corporation",
-    "description": "You start with 44 M€. As your first action, reveal cards until you have revealed a microbe tag. Take it and discard the rest."
+    "description": "You start with 44 M€. As your first action, reveal cards until you have revealed a microbe tag. Take it and discard the rest.",
+    "startingMegaCredits": 44
   },
   "Tycho Magnetics": {
     "name": "Tycho Magnetics",
@@ -3468,7 +3489,8 @@
     "cost": 0,
     "module": "promo",
     "category": "corporation",
-    "description": "You start with 42 M€. Increase your energy production 1 step."
+    "description": "You start with 42 M€. Increase your energy production 1 step.",
+    "startingMegaCredits": 42
   },
   "Kuiper Cooperative": {
     "name": "Kuiper Cooperative",
@@ -3480,7 +3502,8 @@
     "cost": 0,
     "module": "promo",
     "category": "corporation",
-    "description": "You start with 33 M€. Increase titanium production 1 step."
+    "description": "You start with 33 M€. Increase titanium production 1 step.",
+    "startingMegaCredits": 33
   },
   "PolderTECH Dutch": {
     "name": "PolderTECH Dutch",
@@ -3491,7 +3514,8 @@
     "cost": 0,
     "module": "promo",
     "category": "corporation",
-    "description": "You start with 35 M€. As your first action, place an ocean tile and a greenery tile next to each other. Raise oxygen 1 step."
+    "description": "You start with 35 M€. As your first action, place an ocean tile and a greenery tile next to each other. Raise oxygen 1 step.",
+    "startingMegaCredits": 35
   },
   "New Partner": {
     "name": "New Partner",
@@ -4146,7 +4170,8 @@
     "cost": 0,
     "module": "venus",
     "category": "corporation",
-    "description": "You start with 1 plant production and 47 M€."
+    "description": "You start with 1 plant production and 47 M€.",
+    "startingMegaCredits": 47
   },
   "Celestic": {
     "name": "Celestic",
@@ -4157,7 +4182,8 @@
     "cost": 0,
     "module": "venus",
     "category": "corporation",
-    "description": "You start with 42 M€. As your first action, reveal cards from the deck until you have revealed 2 cards with a floater icon on it. Take them into hand and discard the rest."
+    "description": "You start with 42 M€. As your first action, reveal cards from the deck until you have revealed 2 cards with a floater icon on it. Take them into hand and discard the rest.",
+    "startingMegaCredits": 42
   },
   "Manutech": {
     "name": "Manutech",
@@ -4168,7 +4194,8 @@
     "cost": 0,
     "module": "venus",
     "category": "corporation",
-    "description": "You start with 1 steel production, and 35 M€."
+    "description": "You start with 1 steel production, and 35 M€.",
+    "startingMegaCredits": 35
   },
   "Morning Star Inc.": {
     "name": "Morning Star Inc.",
@@ -4179,7 +4206,8 @@
     "cost": 0,
     "module": "venus",
     "category": "corporation",
-    "description": "You start with 50 M€. As your first action, reveal cards from the deck until you have revealed 3 Venus-tag cards. Take those into hand and discard the rest."
+    "description": "You start with 50 M€. As your first action, reveal cards from the deck until you have revealed 3 Venus-tag cards. Take those into hand and discard the rest.",
+    "startingMegaCredits": 50
   },
   "Viron": {
     "name": "Viron",
@@ -4190,7 +4218,8 @@
     "cost": 0,
     "module": "venus",
     "category": "corporation",
-    "description": "You start with 48 M€."
+    "description": "You start with 48 M€.",
+    "startingMegaCredits": 48
   },
   "Air Scrapping": {
     "name": "Air Scrapping",
@@ -4772,7 +4801,8 @@
     "cost": 0,
     "module": "colonies",
     "category": "corporation",
-    "description": "You start with 40 M€. As your first action, put an additional Colony Tile of your choice into play"
+    "description": "You start with 40 M€. As your first action, put an additional Colony Tile of your choice into play",
+    "startingMegaCredits": 40
   },
   "Arklight": {
     "name": "Arklight",
@@ -4783,7 +4813,8 @@
     "cost": 0,
     "module": "colonies",
     "category": "corporation",
-    "description": "You start with 45 M€. Increase your M€ production 2 steps. 1 VP per 2 animals on this card."
+    "description": "You start with 45 M€. Increase your M€ production 2 steps. 1 VP per 2 animals on this card.",
+    "startingMegaCredits": 45
   },
   "Polyphemos": {
     "name": "Polyphemos",
@@ -4792,7 +4823,8 @@
     "cost": 0,
     "module": "colonies",
     "category": "corporation",
-    "description": "You start with 50 M€. Increase your M€ production 5 steps. Gain 5 titanium."
+    "description": "You start with 50 M€. Increase your M€ production 5 steps. Gain 5 titanium.",
+    "startingMegaCredits": 50
   },
   "Poseidon": {
     "name": "Poseidon",
@@ -4801,7 +4833,8 @@
     "cost": 0,
     "module": "colonies",
     "category": "corporation",
-    "description": "You start with 45 M€. As your first action, place a colony."
+    "description": "You start with 45 M€. As your first action, place a colony.",
+    "startingMegaCredits": 45
   },
   "Stormcraft Incorporated": {
     "name": "Stormcraft Incorporated",
@@ -4812,7 +4845,8 @@
     "cost": 0,
     "module": "colonies",
     "category": "corporation",
-    "description": "You start with 48 M€."
+    "description": "You start with 48 M€.",
+    "startingMegaCredits": 48
   },
   "Colony": {
     "name": "Colony",
@@ -4913,7 +4947,8 @@
     "cost": 0,
     "module": "prelude",
     "category": "corporation",
-    "description": "You start with 3 M€ production and 44 M€."
+    "description": "You start with 3 M€ production and 44 M€.",
+    "startingMegaCredits": 44
   },
   "Point Luna": {
     "name": "Point Luna",
@@ -4925,7 +4960,8 @@
     "cost": 0,
     "module": "prelude",
     "category": "corporation",
-    "description": "You start with 1 titanium production and 38 M€."
+    "description": "You start with 1 titanium production and 38 M€.",
+    "startingMegaCredits": 38
   },
   "Robinson Industries": {
     "name": "Robinson Industries",
@@ -4934,7 +4970,8 @@
     "cost": 0,
     "module": "prelude",
     "category": "corporation",
-    "description": "You start with 47 M€."
+    "description": "You start with 47 M€.",
+    "startingMegaCredits": 47
   },
   "Valley Trust": {
     "name": "Valley Trust",
@@ -4945,7 +4982,8 @@
     "cost": 0,
     "module": "prelude",
     "category": "corporation",
-    "description": "You start with 37 M€. As your first action, draw 3 Prelude cards, and play one of them. Discard the other two."
+    "description": "You start with 37 M€. As your first action, draw 3 Prelude cards, and play one of them. Discard the other two.",
+    "startingMegaCredits": 37
   },
   "Vitor": {
     "name": "Vitor",
@@ -4956,7 +4994,8 @@
     "cost": 0,
     "module": "prelude",
     "category": "corporation",
-    "description": "You start with 45 M€. As your first action, fund an award for free."
+    "description": "You start with 45 M€. As your first action, fund an award for free.",
+    "startingMegaCredits": 48
   },
   "Allied Bank": {
     "name": "Allied Bank",
@@ -5603,7 +5642,8 @@
     "cost": 0,
     "module": "prelude2",
     "category": "corporation",
-    "description": "You start with 30 M€. Increase your energy, plant, and steel production 1 step each."
+    "description": "You start with 30 M€. Increase your energy, plant, and steel production 1 step each.",
+    "startingMegaCredits": 30
   },
   "Palladin Shipping": {
     "name": "Palladin Shipping",
@@ -5614,7 +5654,8 @@
     "cost": 0,
     "module": "prelude2",
     "category": "corporation",
-    "description": "You start with 36 M€. Gain 5 titanium."
+    "description": "You start with 36 M€. Gain 5 titanium.",
+    "startingMegaCredits": 36
   },
   "Sagitta Frontier Services": {
     "name": "Sagitta Frontier Services",
@@ -5623,7 +5664,8 @@
     "cost": 0,
     "module": "prelude2",
     "category": "corporation",
-    "description": "You start with 31 M€. Increase energy production 1 step and M€ production 2 steps. Draw a card that has no tag."
+    "description": "You start with 31 M€. Increase energy production 1 step and M€ production 2 steps. Draw a card that has no tag.",
+    "startingMegaCredits": 31
   },
   "EcoTec": {
     "name": "EcoTec",
@@ -5635,7 +5677,8 @@
     "cost": 0,
     "module": "prelude2",
     "category": "corporation",
-    "description": "You start with 42 M€. Increase your plant production 1 step."
+    "description": "You start with 42 M€. Increase your plant production 1 step.",
+    "startingMegaCredits": 42
   },
   "Spire": {
     "name": "Spire",
@@ -5646,7 +5689,8 @@
     ],
     "cost": 0,
     "module": "prelude2",
-    "category": "corporation"
+    "category": "corporation",
+    "startingMegaCredits": 50
   },
   "Applied Science": {
     "name": "Applied Science",
@@ -6113,7 +6157,8 @@
     "cost": 0,
     "module": "turmoil",
     "category": "corporation",
-    "description": "You start with 54 M€."
+    "description": "You start with 54 M€.",
+    "startingMegaCredits": 54
   },
   "Pristar": {
     "name": "Pristar",
@@ -6122,7 +6167,8 @@
     "cost": 0,
     "module": "turmoil",
     "category": "corporation",
-    "description": "You start with 53 M€. Decrease your TR 2 steps. 1 VP per preservation resource here."
+    "description": "You start with 53 M€. Decrease your TR 2 steps. 1 VP per preservation resource here.",
+    "startingMegaCredits": 53
   },
   "Terralabs Research": {
     "name": "Terralabs Research",
@@ -6134,7 +6180,8 @@
     "cost": 0,
     "module": "turmoil",
     "category": "corporation",
-    "description": "You start with 14 M€. Lower your TR 1 step."
+    "description": "You start with 14 M€. Lower your TR 1 step.",
+    "startingMegaCredits": 14
   },
   "Utopia Invest": {
     "name": "Utopia Invest",
@@ -6145,7 +6192,8 @@
     "cost": 0,
     "module": "turmoil",
     "category": "corporation",
-    "description": "You start with 40 M€. Increase your steel and titanium production 1 step each."
+    "description": "You start with 40 M€. Increase your steel and titanium production 1 step each.",
+    "startingMegaCredits": 40
   },
   "Septem Tribus": {
     "name": "Septem Tribus",
@@ -6156,7 +6204,8 @@
     "cost": 0,
     "module": "turmoil",
     "category": "corporation",
-    "description": "You start with 36 M€. When you perform an action, the wild tag counts as any tag of your choice."
+    "description": "You start with 36 M€. When you perform an action, the wild tag counts as any tag of your choice.",
+    "startingMegaCredits": 36
   },
   "Agricola Inc": {
     "name": "Agricola Inc",
@@ -6167,7 +6216,8 @@
     "cost": 0,
     "module": "community",
     "category": "corporation",
-    "description": "You start with 1 plant production, 1 M€ production, 1 heat production and 40 M€."
+    "description": "You start with 1 plant production, 1 M€ production, 1 heat production and 40 M€.",
+    "startingMegaCredits": 40
   },
   "Project Workshop": {
     "name": "Project Workshop",
@@ -6178,7 +6228,8 @@
     "cost": 0,
     "module": "community",
     "category": "corporation",
-    "description": "You start with 39 M€, 1 steel and 1 titanium. As your first action, draw a blue card."
+    "description": "You start with 39 M€, 1 steel and 1 titanium. As your first action, draw a blue card.",
+    "startingMegaCredits": 39
   },
   "Incite": {
     "name": "Incite",
@@ -6189,7 +6240,8 @@
     "cost": 0,
     "module": "community",
     "category": "corporation",
-    "description": "You start with 32 M€. As your first action, place two delegates in one party."
+    "description": "You start with 32 M€. As your first action, place two delegates in one party.",
+    "startingMegaCredits": 32
   },
   "Playwrights": {
     "name": "Playwrights",
@@ -6200,7 +6252,8 @@
     "cost": 0,
     "module": "community",
     "category": "corporation",
-    "description": "You start with 38 M€ and 1 energy production."
+    "description": "You start with 38 M€ and 1 energy production.",
+    "startingMegaCredits": 38
   },
   "Curiosity II": {
     "name": "Curiosity II",
@@ -6212,7 +6265,8 @@
     "cost": 0,
     "module": "community",
     "category": "corporation",
-    "description": "You start with 40 M€ and 2 steel production."
+    "description": "You start with 40 M€ and 2 steel production.",
+    "startingMegaCredits": 40
   },
   "Midas": {
     "name": "Midas",
@@ -6221,7 +6275,8 @@
     "cost": 0,
     "module": "community",
     "category": "corporation",
-    "description": "You start with 120 M€. Lower your TR 7 steps."
+    "description": "You start with 120 M€. Lower your TR 7 steps.",
+    "startingMegaCredits": 120
   },
   "United Nations Mission One": {
     "name": "United Nations Mission One",
@@ -6232,7 +6287,8 @@
     "cost": 0,
     "module": "community",
     "category": "corporation",
-    "description": "You start with 39 M€. Increase your TR 1 step."
+    "description": "You start with 39 M€. Increase your TR 1 step.",
+    "startingMegaCredits": 40
   },
   "Junk Ventures": {
     "name": "Junk Ventures",
@@ -6241,7 +6297,8 @@
     "cost": 0,
     "module": "community",
     "category": "corporation",
-    "description": "You start with 43 M€. As your first action, discard the top 3 cards of the deck."
+    "description": "You start with 43 M€. As your first action, discard the top 3 cards of the deck.",
+    "startingMegaCredits": 43
   },
   "Eris": {
     "name": "Eris",
@@ -6252,7 +6309,8 @@
     "cost": 0,
     "module": "community",
     "category": "corporation",
-    "description": "You start with 46 M€. As your first action, draw an Ares card."
+    "description": "You start with 46 M€. As your first action, draw an Ares card.",
+    "startingMegaCredits": 46
   },
   "Athena": {
     "name": "Athena",
@@ -6263,7 +6321,8 @@
     "cost": 0,
     "module": "community",
     "category": "corporation",
-    "description": "You start with 62 M€. As your first action, place 2 hazard tiles adjacent to no other tiles."
+    "description": "You start with 62 M€. As your first action, place 2 hazard tiles adjacent to no other tiles.",
+    "startingMegaCredits": 62
   },
   "Research Grant": {
     "name": "Research Grant",
@@ -7748,7 +7807,8 @@
     "cost": 0,
     "module": "moon",
     "category": "corporation",
-    "description": "You start with 42 M€. As your first action, draw 3 cards. Take 2 of them into hand, and discard the rest. 1 VP for every 2 science resources here."
+    "description": "You start with 42 M€. As your first action, draw 3 cards. Take 2 of them into hand, and discard the rest. 1 VP for every 2 science resources here.",
+    "startingMegaCredits": 42
   },
   "Tempest Consultancy": {
     "name": "Tempest Consultancy",
@@ -7759,7 +7819,8 @@
     "cost": 0,
     "module": "moon",
     "category": "corporation",
-    "description": "You start with 37 M€. As your first action, place 2 delegates in one party."
+    "description": "You start with 37 M€. As your first action, place 2 delegates in one party.",
+    "startingMegaCredits": 37
   },
   "The Darkside of The Moon Syndicate": {
     "name": "The Darkside of The Moon Syndicate",
@@ -7769,7 +7830,8 @@
     ],
     "cost": 0,
     "module": "moon",
-    "category": "corporation"
+    "category": "corporation",
+    "startingMegaCredits": 40
   },
   "Luna Hyperloop Corporation": {
     "name": "Luna Hyperloop Corporation",
@@ -7781,7 +7843,8 @@
     "cost": 0,
     "module": "moon",
     "category": "corporation",
-    "description": "You start with 38 M€ and 4 steel."
+    "description": "You start with 38 M€ and 4 steel.",
+    "startingMegaCredits": 38
   },
   "Crescent Research Association": {
     "name": "Crescent Research Association",
@@ -7793,7 +7856,8 @@
     "cost": 0,
     "module": "moon",
     "category": "corporation",
-    "description": "You start with 50 M€. 1 VP for every 3 Moon tags you have."
+    "description": "You start with 50 M€. 1 VP for every 3 Moon tags you have.",
+    "startingMegaCredits": 50
   },
   "Luna First Incorporated": {
     "name": "Luna First Incorporated",
@@ -7804,7 +7868,8 @@
     "cost": 0,
     "module": "moon",
     "category": "corporation",
-    "description": "You start with 40 M€, 1 steel, and 1 titanium."
+    "description": "You start with 40 M€, 1 steel, and 1 titanium.",
+    "startingMegaCredits": 40
   },
   "The Grand Luna Capital Group": {
     "name": "The Grand Luna Capital Group",
@@ -7816,7 +7881,8 @@
     "cost": 0,
     "module": "moon",
     "category": "corporation",
-    "description": "[object Object]"
+    "description": "[object Object]",
+    "startingMegaCredits": 32
   },
   "Intragen Sanctuary Headquarters": {
     "name": "Intragen Sanctuary Headquarters",
@@ -7828,7 +7894,8 @@
     "cost": 0,
     "module": "moon",
     "category": "corporation",
-    "description": "You start with 38 M€. As your first action, place a habitat tile on The Moon and raise the habitat rate 1 step. 1 VP for every 2 animals on this card."
+    "description": "You start with 38 M€. As your first action, place a habitat tile on The Moon and raise the habitat rate 1 step. 1 VP for every 2 animals on this card.",
+    "startingMegaCredits": 38
   },
   "Luna Trade Federation": {
     "name": "Luna Trade Federation",
@@ -7840,7 +7907,8 @@
     "cost": 0,
     "module": "moon",
     "category": "corporation",
-    "description": "You start with 15 M€ and 10 titanium."
+    "description": "You start with 15 M€ and 10 titanium.",
+    "startingMegaCredits": 15
   },
   "The Archaic Foundation Institute": {
     "name": "The Archaic Foundation Institute",
@@ -7852,7 +7920,8 @@
     "cost": 0,
     "module": "moon",
     "category": "corporation",
-    "description": "You start with 55 M€."
+    "description": "You start with 55 M€.",
+    "startingMegaCredits": 55
   },
   "First Lunar Settlement": {
     "name": "First Lunar Settlement",
@@ -8940,7 +9009,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 32 M€. As your first action, place an ocean tile."
+    "description": "You start with 32 M€. As your first action, place an ocean tile.",
+    "startingMegaCredits": 32
   },
   "Ambient": {
     "name": "Ambient",
@@ -8951,7 +9021,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 38 M€. As your first action, raise the Venus scale 2 steps."
+    "description": "You start with 38 M€. As your first action, raise the Venus scale 2 steps.",
+    "startingMegaCredits": 38
   },
   "Ringcom": {
     "name": "Ringcom",
@@ -8962,7 +9033,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 39 M€. and 3 M€ production. As your first action, draw 2 cards with a Jovian tag."
+    "description": "You start with 39 M€. and 3 M€ production. As your first action, draw 2 cards with a Jovian tag.",
+    "startingMegaCredits": 39
   },
   "Chimera": {
     "name": "Chimera",
@@ -8974,7 +9046,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 36 M€, 1 steel, and 1 titanium."
+    "description": "You start with 36 M€, 1 steel, and 1 titanium.",
+    "startingMegaCredits": 36
   },
   "Soylent Seedling Systems": {
     "name": "Soylent Seedling Systems",
@@ -8986,7 +9059,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 38M€ and 2 seeds on this card."
+    "description": "You start with 38M€ and 2 seeds on this card.",
+    "startingMegaCredits": 38
   },
   "Steelaris": {
     "name": "Steelaris",
@@ -8998,7 +9072,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 42 M€."
+    "description": "You start with 42 M€.",
+    "startingMegaCredits": 42
   },
   "Mars Maths": {
     "name": "Mars Maths",
@@ -9009,7 +9084,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 40 M€. As your first action, draw 2 cards"
+    "description": "You start with 40 M€. As your first action, draw 2 cards",
+    "startingMegaCredits": 40
   },
   "Mars Direct": {
     "name": "Mars Direct",
@@ -9020,7 +9096,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 52 M€."
+    "description": "You start with 52 M€.",
+    "startingMegaCredits": 52
   },
   "Martian Insurance Group": {
     "name": "Martian Insurance Group",
@@ -9031,7 +9108,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 42 M€ and 1 M€ production."
+    "description": "You start with 42 M€ and 1 M€ production.",
+    "startingMegaCredits": 42
   },
   "SolBank": {
     "name": "SolBank",
@@ -9040,7 +9118,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 40 M€"
+    "description": "You start with 40 M€",
+    "startingMegaCredits": 40
   },
   "Bio-Sol": {
     "name": "Bio-Sol",
@@ -9051,7 +9130,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 42 M€. As your first action, draw 2 cards with a microbe tag."
+    "description": "You start with 42 M€. As your first action, draw 2 cards with a microbe tag.",
+    "startingMegaCredits": 42
   },
   "Aurorai": {
     "name": "Aurorai",
@@ -9062,7 +9142,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 33 M€. and 2 data on this card"
+    "description": "You start with 33 M€. and 2 data on this card",
+    "startingMegaCredits": 33
   },
   "Collegium Copernicus": {
     "name": "Collegium Copernicus",
@@ -9074,7 +9155,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 33 M€. As your first action, draw 2 cards with a science tag."
+    "description": "You start with 33 M€. As your first action, draw 2 cards with a science tag.",
+    "startingMegaCredits": 33
   },
   "Robin Haulings": {
     "name": "Robin Haulings",
@@ -9086,7 +9168,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 39 M€."
+    "description": "You start with 39 M€.",
+    "startingMegaCredits": 39
   },
   "Odyssey": {
     "name": "Odyssey",
@@ -9095,7 +9178,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 33 M€."
+    "description": "You start with 33 M€.",
+    "startingMegaCredits": 33
   },
   "Gagarin Mobile Base": {
     "name": "Gagarin Mobile Base",
@@ -9106,7 +9190,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 42 M€. As your first action, put Gagarin Mobile Base on ANY area on Mars. Collect the bonus."
+    "description": "You start with 42 M€. As your first action, put Gagarin Mobile Base on ANY area on Mars. Collect the bonus.",
+    "startingMegaCredits": 42
   },
   "Mars Frontier Alliance": {
     "name": "Mars Frontier Alliance",
@@ -9115,7 +9200,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 40 M€. When you reveal this card, select any remaining political program tile (you may use its effect as a passive effect of your corporation or as ruling party this generation)."
+    "description": "You start with 40 M€. When you reveal this card, select any remaining political program tile (you may use its effect as a passive effect of your corporation or as ruling party this generation).",
+    "startingMegaCredits": 40
   },
   "Mind Set Mars": {
     "name": "Mind Set Mars",
@@ -9124,7 +9210,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 44 M€ and 1 agenda resource to this card."
+    "description": "You start with 44 M€ and 1 agenda resource to this card.",
+    "startingMegaCredits": 44
   },
   "Habitat Marte": {
     "name": "Habitat Marte",
@@ -9135,7 +9222,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 40 M€."
+    "description": "You start with 40 M€.",
+    "startingMegaCredits": 40
   },
   "Adhai High Orbit Constructions": {
     "name": "Adhai High Orbit Constructions",
@@ -9146,7 +9234,8 @@
     "cost": 0,
     "module": "pathfinders",
     "category": "corporation",
-    "description": "You start with 43 M€."
+    "description": "You start with 43 M€.",
+    "startingMegaCredits": 43
   },
   "Venus First": {
     "name": "Venus First",
@@ -10921,7 +11010,8 @@
     "cost": 0,
     "module": "underworld",
     "category": "corporation",
-    "description": "You start with 40 M€ and 5 steel. As your first action, identify any 3 underground resources on Mars."
+    "description": "You start with 40 M€ and 5 steel. As your first action, identify any 3 underground resources on Mars.",
+    "startingMegaCredits": 40
   },
   "Demetron Labs": {
     "name": "Demetron Labs",
@@ -10932,7 +11022,8 @@
     "cost": 0,
     "module": "underworld",
     "category": "corporation",
-    "description": "You start with 45 M€ and 2 data on this card."
+    "description": "You start with 45 M€ and 2 data on this card.",
+    "startingMegaCredits": 45
   },
   "Jenson-Boyle & Co": {
     "name": "Jenson-Boyle & Co",
@@ -10943,7 +11034,8 @@
     "cost": 0,
     "module": "underworld",
     "category": "corporation",
-    "description": "You start with 46 M€ and 2 corruption."
+    "description": "You start with 46 M€ and 2 corruption.",
+    "startingMegaCredits": 46
   },
   "Henkei Genetics": {
     "name": "Henkei Genetics",
@@ -10954,7 +11046,8 @@
     "cost": 0,
     "module": "underworld",
     "category": "corporation",
-    "description": "You start with 47 M€ and 1 corruption. As your first action, draw 2 microbe cards. 1 VP per 3 microbes on this card."
+    "description": "You start with 47 M€ and 1 corruption. As your first action, draw 2 microbe cards. 1 VP per 3 microbes on this card.",
+    "startingMegaCredits": 47
   },
   "Arborist Collective": {
     "name": "Arborist Collective",
@@ -10965,7 +11058,8 @@
     "cost": 0,
     "module": "underworld",
     "category": "corporation",
-    "description": "You start with 40 M€, 2 plants and 2 plant production."
+    "description": "You start with 40 M€, 2 plants and 2 plant production.",
+    "startingMegaCredits": 40
   },
   "Kingdom of Tauraro": {
     "name": "Kingdom of Tauraro",
@@ -10977,7 +11071,8 @@
     "module": "underworld",
     "category": "corporation",
     "victoryPoints": -2,
-    "description": "You start with 50 M€ and 6 M€ production. All opponents gain 2 M€ production. As your first action, place a city."
+    "description": "You start with 50 M€ and 6 M€ production. All opponents gain 2 M€ production. As your first action, place a city.",
+    "startingMegaCredits": 50
   },
   "Aeron Genomics": {
     "name": "Aeron Genomics",
@@ -10988,7 +11083,8 @@
     "cost": 0,
     "module": "underworld",
     "category": "corporation",
-    "description": "You start with 35 M€, 5 steel, and 2 animals on this card. 1 VP per 3 animals on this card."
+    "description": "You start with 35 M€, 5 steel, and 2 animals on this card. 1 VP per 3 animals on this card.",
+    "startingMegaCredits": 35
   },
   "Keplertec": {
     "name": "Keplertec",
@@ -11000,7 +11096,8 @@
     "cost": 0,
     "module": "underworld",
     "category": "corporation",
-    "description": "You start with 33 M€, 3 titanium, and 1 titanium production."
+    "description": "You start with 33 M€, 3 titanium, and 1 titanium production.",
+    "startingMegaCredits": 33
   },
   "Voltagon": {
     "name": "Voltagon",
@@ -11011,7 +11108,8 @@
     "cost": 0,
     "module": "underworld",
     "category": "corporation",
-    "description": "You start with 38 M€ and 1 energy production."
+    "description": "You start with 38 M€ and 1 energy production.",
+    "startingMegaCredits": 38
   },
   "Anubis Securities": {
     "name": "Anubis Securities",
@@ -11022,7 +11120,8 @@
     "cost": 0,
     "module": "underworld",
     "category": "corporation",
-    "description": "You start with 42 M€. As your first action, play a card ignoring global requirements."
+    "description": "You start with 42 M€. As your first action, play a card ignoring global requirements.",
+    "startingMegaCredits": 42
   },
   "Hecate Speditions": {
     "name": "Hecate Speditions",
@@ -11034,7 +11133,8 @@
     "cost": 0,
     "module": "underworld",
     "category": "corporation",
-    "description": "You start with 38 M€, 2 supply chain resources here, and an extra trade fleet."
+    "description": "You start with 38 M€, 2 supply chain resources here, and an extra trade fleet.",
+    "startingMegaCredits": 38
   },
   "Free Trade Port": {
     "name": "Free Trade Port",

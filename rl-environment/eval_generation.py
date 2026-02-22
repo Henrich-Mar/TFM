@@ -57,38 +57,41 @@ def find_checkpoint(models_root: str, generation: int, agent_index: int) -> str:
 
 async def evaluate_agents(server_addrs: List[str], agents: List[RLAgent], games: int) -> None:
     cluster = GameServerCluster(server_addrs)
-    await cluster.health_check()
-    tm = TournamentManager(cluster)
+    try:
+        await cluster.health_check()
+        tm = TournamentManager(cluster)
 
-    # Create a small bracket with these agents; duplicate if fewer than 4
-    eval_agents = agents[:]
-    while len(eval_agents) < 4:
-        eval_agents.append(agents[0])
+        # Create a small bracket with these agents; duplicate if fewer than 4
+        eval_agents = agents[:]
+        while len(eval_agents) < 4:
+            eval_agents.append(agents[0])
 
-    from collections import defaultdict
-    totals = defaultdict(lambda: {"vp": 0, "games": 0, "wins": 0})
-    total_completed = 0
-    total_planned = 0
-    for _ in range(max(1, games)):
-        brackets = tm.create_tournaments(eval_agents, tournament_size=4, games_per_evaluation=1)
-        result = await tm.run_tournament(brackets[0])
-        total_completed += result.get('completed_games', 0)
-        total_planned += result.get('total_planned_games', 0)
-        for g in result.get("games", []):
-            for p in g.get("players", []):
-                aid = p.get("agent_id")
-                totals[aid]["vp"] += int(p.get("victory_points", 0))
-                totals[aid]["games"] += 1
-                if int(p.get("rank", 4)) == 1:
-                    totals[aid]["wins"] += 1
+        from collections import defaultdict
+        totals = defaultdict(lambda: {"vp": 0, "games": 0, "wins": 0})
+        total_completed = 0
+        total_planned = 0
+        for _ in range(max(1, games)):
+            brackets = tm.create_tournaments(eval_agents, tournament_size=4, games_per_evaluation=1)
+            result = await tm.run_tournament(brackets[0])
+            total_completed += result.get('completed_games', 0)
+            total_planned += result.get('total_planned_games', 0)
+            for g in result.get("games", []):
+                for p in g.get("players", []):
+                    aid = p.get("agent_id")
+                    totals[aid]["vp"] += int(p.get("victory_points", 0))
+                    totals[aid]["games"] += 1
+                    if int(p.get("rank", 4)) == 1:
+                        totals[aid]["wins"] += 1
 
-    # Summarize
-    print("Evaluation completed:")
-    print(f"  Games: {total_completed}/{total_planned}")
-    for aid, t in totals.items():
-        avg_vp = t["vp"] / max(1, t["games"])
-        wr = t["wins"] / max(1, t["games"])
-        print(f"  Agent {aid[:8]}: games={t['games']}, avg_vp={avg_vp:.1f}, win_rate={wr*100:.1f}%")
+        # Summarize
+        print("Evaluation completed:")
+        print(f"  Games: {total_completed}/{total_planned}")
+        for aid, t in totals.items():
+            avg_vp = t["vp"] / max(1, t["games"])
+            wr = t["wins"] / max(1, t["games"])
+            print(f"  Agent {aid[:8]}: games={t['games']}, avg_vp={avg_vp:.1f}, win_rate={wr*100:.1f}%")
+    finally:
+        await cluster.close()
 
 
 def main():

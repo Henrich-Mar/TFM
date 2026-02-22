@@ -2,7 +2,7 @@
 Action Decoder - Converts neural network output to game actions
 """
 import numpy as np
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Set
 import logging
 import random
 import os
@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 _CARD_SELECTION_MASK_BASE = 520
 _CARD_SELECTION_MASK_LIMIT = 80
 _CARD_SELECTION_CANDIDATE_LIMIT = 12
+_STARTUP_PLAN_BASE = 850
+_STARTUP_PLAN_LIMIT = 32
 _PAYMENT_ACTION_BASE = 400
 _PAYMENT_ACTION_VARIANTS = 8
 _PAYMENT_ALL_KEYS = [
@@ -93,6 +95,37 @@ def _card_vp(card: Dict[str, Any]) -> int:
         return int(meta.get('victoryPoints', card.get('victoryPoints', 0)) or 0)
     except Exception:
         return 0
+
+def _metadata_for_card(card_or_name: Any) -> Dict[str, Any]:
+    if isinstance(card_or_name, dict):
+        card_name = str(card_or_name.get('name', '') or '')
+    else:
+        card_name = str(card_or_name or '')
+    if not card_name or not isinstance(_CARD_META_CACHE, dict):
+        return {}
+    meta = _CARD_META_CACHE.get(card_name, {})
+    return meta if isinstance(meta, dict) else {}
+
+def _card_starting_megacredits(card: Dict[str, Any], default: int = 0) -> int:
+    raw_direct = card.get('startingMegaCredits', card.get('startingMegacredits', None))
+    if raw_direct is not None:
+        direct = _safe_int(raw_direct, default)
+        if direct > 0:
+            return int(direct)
+    meta = _metadata_for_card(card)
+    raw_meta = meta.get('startingMegaCredits', meta.get('startingMegacredits', None))
+    if raw_meta is not None:
+        return _safe_int(raw_meta, default)
+    return int(default)
+
+def _card_keep_cost(card: Dict[str, Any], default: int = 3) -> int:
+    raw_direct = card.get('cardCost', None)
+    if raw_direct is not None:
+        return max(1, _safe_int(raw_direct, default))
+    meta = _metadata_for_card(card)
+    if meta.get('cardCost', None) is not None:
+        return max(1, _safe_int(meta.get('cardCost', default), default))
+    return max(1, int(default))
 
 def _with_metadata_tags(card: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(card or {})
@@ -426,8 +459,8 @@ def _score_initial_card(
     cost = float(_card_cost(card))
     vp = float(_card_vp(card))
     tags = _card_tags(card)
-    starting_mc = float(_safe_int(card.get('startingMegaCredits', card.get('startingMegacredits', 0)), 0))
-    card_cost_override = float(_safe_int(card.get('cardCost', 3), 3))
+    starting_mc = float(_card_starting_megacredits(card, default=0))
+    card_cost_override = float(_card_keep_cost(card, default=3))
 
     score = 0.0
     if role == 'project':
@@ -491,6 +524,9 @@ def _select_initial_card_names(
         reverse=True,
     )
 
+    if target <= 0:
+        return []
+
     selected_names: List[str] = []
     for card in ranked_cards:
         name = str(card.get('name', '') or '')
@@ -511,7 +547,247 @@ def _select_initial_card_names(
 
     return selected_names[:max_cards]
 
-def _build_initial_setup_response(waiting_for: Dict[str, Any], player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _enabled_cards(option: Dict[str, Any]) -> List[Dict[str, Any]]:
+    cards = [c for c in (option.get('cards', []) or []) if isinstance(c, dict)]
+    enabled = [card for card in cards if not card.get('isDisabled', False)]
+    return enabled if enabled else cards
+
+def _count_tags(cards: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for card in cards:
+        for tag_name in _card_tags(card).keys():
+            counts[tag_name] = int(counts.get(tag_name, 0)) + 1
+    return counts
+
+def _startup_project_subset_scores(
+    project_cards: List[Dict[str, Any]],
+    min_cards: int,
+    max_cards: int,
+    project_tag_counts: Dict[str, int],
+    corp_tags: Dict[str, int],
+    prelude_tags: Dict[str, int],
+    limit: int,
+) -> List[Tuple[float, List[str]]]:
+    if not project_cards:
+        return [(0.0, [])] if min_cards == 0 else []
+
+    ranked_cards = sorted(
+        project_cards,
+        key=lambda c: _score_initial_card(c, 'project', project_tag_counts),
+        reverse=True,
+    )
+    candidate_cards = ranked_cards[:min(len(ranked_cards), 12)]
+
+    top_scored: List[Tuple[float, List[str], str]] = []
+    if min_cards == 0:
+        top_scored.append((0.0, [], ''))
+
+    for pick_count in range(max(1, min_cards), max_cards + 1):
+        if pick_count > len(candidate_cards):
+            break
+        for combo in itertools.combinations(candidate_cards, pick_count):
+            score_base = 0.0
+            combo_tag_counts: Dict[str, int] = {}
+            combo_cost = 0.0
+            names: List[str] = []
+            for card in combo:
+                score_base += _score_initial_card(card, 'project', project_tag_counts)
+                combo_cost += float(_card_cost(card))
+                names.append(str(card.get('name', '') or ''))
+                for tag_name in _card_tags(card).keys():
+                    combo_tag_counts[tag_name] = int(combo_tag_counts.get(tag_name, 0)) + 1
+
+            cheap_bonus = 0.0
+            if pick_count > 0:
+                cheap_bonus = max(0.0, (20.0 * pick_count) - combo_cost) / max(1.0, 20.0 * pick_count)
+
+            synergy_bonus = 0.0
+            for tag_name, count in combo_tag_counts.items():
+                corp_pull = float(corp_tags.get(tag_name, 0))
+                prelude_pull = float(prelude_tags.get(tag_name, 0))
+                synergy_bonus += float(count) * (0.08 + (0.04 * corp_pull) + (0.02 * prelude_pull))
+
+            diversity_bonus = 0.04 * float(len(combo_tag_counts))
+            keep_count_bonus = 0.03 * float(pick_count)
+            total = float(score_base + (0.70 * cheap_bonus) + synergy_bonus + diversity_bonus + keep_count_bonus)
+            signature = '|'.join(sorted(names))
+            top_scored.append((total, names, signature))
+
+    top_scored.sort(key=lambda item: (item[0], len(item[1]), item[2]), reverse=True)
+    dedup_seen: Set[str] = set()
+    out: List[Tuple[float, List[str]]] = []
+    for score, names, signature in top_scored:
+        if signature in dedup_seen:
+            continue
+        dedup_seen.add(signature)
+        out.append((float(score), list(names)))
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+def _enumerate_startup_plan_payloads(
+    waiting_for: Dict[str, Any],
+    player_state: Optional[Dict[str, Any]],
+    max_plans: int = _STARTUP_PLAN_LIMIT,
+) -> List[Dict[str, Any]]:
+    options = waiting_for.get('options', []) or []
+    if not options:
+        return []
+
+    roles = [_initial_option_role(opt, idx) for idx, opt in enumerate(options)]
+    corp_idx = next((i for i, role in enumerate(roles) if role == 'corporation'), -1)
+    project_idx = next((i for i, role in enumerate(roles) if role == 'project'), -1)
+    prelude_idx = next((i for i, role in enumerate(roles) if role == 'prelude'), -1)
+    ceo_idx = next((i for i, role in enumerate(roles) if role == 'ceo'), -1)
+    if corp_idx < 0 or project_idx < 0:
+        return []
+
+    corp_option = options[corp_idx]
+    project_option = options[project_idx]
+    prelude_option = options[prelude_idx] if prelude_idx >= 0 else None
+    ceo_option = options[ceo_idx] if ceo_idx >= 0 else None
+    corp_cards = _enabled_cards(corp_option)
+    project_cards = _enabled_cards(project_option)
+    prelude_cards = _enabled_cards(prelude_option) if prelude_option else []
+    ceo_cards = _enabled_cards(ceo_option) if ceo_option else []
+
+    if not corp_cards:
+        return []
+
+    player = (player_state or {}).get('thisPlayer', {}) if isinstance(player_state, dict) else {}
+    project_tag_counts: Dict[str, int] = {}
+    for card in project_cards:
+        for tag_name in _card_tags(card).keys():
+            project_tag_counts[tag_name] = int(project_tag_counts.get(tag_name, 0)) + 1
+
+    prelude_choices: List[Tuple[float, List[str], Dict[str, int]]] = [(0.0, [], {})]
+    if prelude_option is not None:
+        prelude_min = _safe_int(prelude_option.get('min', 2), 2)
+        prelude_max = _safe_int(prelude_option.get('max', prelude_min), prelude_min)
+        prelude_max = min(prelude_max, len(prelude_cards))
+        prelude_min = min(prelude_min, prelude_max)
+        prelude_choices = []
+        if prelude_max == 0 and prelude_min == 0:
+            prelude_choices.append((0.0, [], {}))
+        else:
+            for count in range(prelude_min, prelude_max + 1):
+                for combo in itertools.combinations(prelude_cards, count):
+                    names = [str(card.get('name', '') or '') for card in combo]
+                    combo_score = sum(_score_initial_card(card, 'prelude', project_tag_counts) for card in combo)
+                    combo_tags = _count_tags(list(combo))
+                    signature = '|'.join(sorted(names))
+                    prelude_choices.append((float(combo_score), names, combo_tags))
+            prelude_choices.sort(key=lambda item: (item[0], len(item[1]), '|'.join(sorted(item[1]))), reverse=True)
+            prelude_choices = prelude_choices[:32]
+
+    ceo_choices: List[Tuple[float, List[str], Dict[str, int]]] = [(0.0, [], {})]
+    if ceo_option is not None:
+        ceo_min = _safe_int(ceo_option.get('min', 1), 1)
+        ceo_max = _safe_int(ceo_option.get('max', ceo_min), ceo_min)
+        ceo_max = min(ceo_max, len(ceo_cards))
+        ceo_min = min(ceo_min, ceo_max)
+        ceo_choices = []
+        for count in range(ceo_min, ceo_max + 1):
+            for combo in itertools.combinations(ceo_cards, count):
+                names = [str(card.get('name', '') or '') for card in combo]
+                combo_score = sum(_score_initial_card(card, 'ceo', project_tag_counts) for card in combo)
+                combo_tags = _count_tags(list(combo))
+                ceo_choices.append((float(combo_score), names, combo_tags))
+        if not ceo_choices and ceo_min == 0:
+            ceo_choices.append((0.0, [], {}))
+        ceo_choices.sort(key=lambda item: (item[0], len(item[1]), '|'.join(sorted(item[1]))), reverse=True)
+        ceo_choices = ceo_choices[:8]
+
+    project_min = _safe_int(project_option.get('min', 0), 0)
+    project_max = _safe_int(project_option.get('max', len(project_cards)), len(project_cards))
+    project_max = min(project_max, len(project_cards))
+    project_min = min(project_min, project_max)
+
+    top_candidates: List[Tuple[float, Dict[str, Any], str]] = []
+    for corp_card in corp_cards:
+        corp_name = str(corp_card.get('name', '') or '')
+        corp_score = _score_initial_card(corp_card, 'corporation', project_tag_counts)
+        corp_tags = _count_tags([corp_card])
+        corp_start_mc = _card_starting_megacredits(
+            corp_card,
+            default=_safe_int(player.get('megaCredits', 40), 40),
+        )
+        corp_card_cost = _card_keep_cost(
+            corp_card,
+            default=_safe_int(player.get('cardCost', 3), 3),
+        )
+        affordability_cap = max(0, int(corp_start_mc // max(1, corp_card_cost)))
+        legal_project_max = min(project_max, affordability_cap)
+        if legal_project_max < project_min:
+            if project_min == 0:
+                legal_project_max = 0
+            else:
+                continue
+
+        for prelude_score, prelude_names, prelude_tags in prelude_choices:
+            project_choices = _startup_project_subset_scores(
+                project_cards=project_cards,
+                min_cards=project_min,
+                max_cards=legal_project_max,
+                project_tag_counts=project_tag_counts,
+                corp_tags=corp_tags,
+                prelude_tags=prelude_tags,
+                limit=64,
+            )
+            if not project_choices:
+                continue
+            for ceo_score, ceo_names, ceo_tags in ceo_choices:
+                ceo_tag_bonus = 0.0
+                for tag_name, count in ceo_tags.items():
+                    ceo_tag_bonus += 0.05 * float(count) * (1.0 + 0.1 * float(project_tag_counts.get(tag_name, 0)))
+                for project_score, project_names in project_choices:
+                    keep_count = len(project_names)
+                    budget_ratio = float(keep_count) / float(max(1, legal_project_max))
+                    total_score = (
+                        float(corp_score)
+                        + float(prelude_score)
+                        + float(ceo_score)
+                        + float(project_score)
+                        + (0.18 * budget_ratio)
+                    )
+                    responses: List[Dict[str, Any]] = []
+                    for idx, option in enumerate(options):
+                        if idx == corp_idx:
+                            responses.append({'type': 'card', 'cards': [corp_name]})
+                        elif idx == prelude_idx:
+                            responses.append({'type': 'card', 'cards': list(prelude_names)})
+                        elif idx == ceo_idx:
+                            responses.append({'type': 'card', 'cards': list(ceo_names)})
+                        elif idx == project_idx:
+                            responses.append({'type': 'card', 'cards': list(project_names)})
+                        else:
+                            responses.append(build_response_for_input(option, None, player_state))
+                    payload = {'type': 'initialCards', 'responses': responses}
+                    
+                    # Tuple signature for O(1) deduplication (much faster than json.dumps)
+                    sig_prelude = tuple(sorted(prelude_names))
+                    sig_ceo = tuple(sorted(ceo_names))
+                    sig_project = tuple(sorted(project_names))
+                    signature = (corp_name, sig_prelude, sig_ceo, sig_project)
+                    
+                    top_candidates.append((float(total_score + ceo_tag_bonus), payload, signature))
+
+    if not top_candidates:
+        return []
+
+    top_candidates.sort(key=lambda item: (item[0], item[2]), reverse=True)
+    dedup: Set[Tuple] = set()
+    selected: List[Dict[str, Any]] = []
+    for _, payload, signature in top_candidates:
+        if signature in dedup:
+            continue
+        dedup.add(signature)
+        selected.append(payload)
+        if len(selected) >= max(1, int(max_plans)):
+            break
+    return selected
+
+def _build_initial_setup_response_legacy(waiting_for: Dict[str, Any], player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     options = waiting_for.get('options', []) or []
     if not options:
         return {'type': 'initialCards', 'responses': []}
@@ -604,6 +880,27 @@ def _build_initial_setup_response(waiting_for: Dict[str, Any], player_state: Opt
         for response in responses
     ]
     return {'type': 'initialCards', 'responses': final_responses}
+
+def _build_initial_setup_response(waiting_for: Dict[str, Any], player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    selection_mode = str(os.getenv("AGENT_STARTUP_PLAN_SELECTION", "best")).strip().lower()
+    if selection_mode in ("legacy", "original", "legacy_only"):
+        return _build_initial_setup_response_legacy(waiting_for, player_state)
+
+    plans = _enumerate_startup_plan_payloads(
+        waiting_for=waiting_for,
+        player_state=player_state,
+        max_plans=_STARTUP_PLAN_LIMIT,
+    )
+    if plans:
+        if selection_mode in ("random", "sample", "uniform"):
+            try:
+                top_k = int(os.getenv("AGENT_STARTUP_PLAN_RANDOM_TOP_K", "4"))
+            except Exception:
+                top_k = 4
+            top_k = max(1, min(int(top_k), len(plans)))
+            return random.choice(plans[:top_k])
+        return plans[0]
+    return _build_initial_setup_response_legacy(waiting_for, player_state)
 
 def _payment_empty() -> Dict[str, int]:
     return {k: 0 for k in _PAYMENT_ALL_KEYS}
@@ -1227,7 +1524,21 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         responses = [build_response_for_input(opt, None, player_state) for opt in options]
         return {'type': 'and', 'responses': responses}
     elif input_type == 'initialCards':
-        if action_index is None or _safe_int(action_index, -1) == 800:
+        normalized_initial_index = _safe_int(action_index, -1)
+        if action_index is None or normalized_initial_index == 800:
+            return _build_initial_setup_response(waiting_for, player_state)
+        if _STARTUP_PLAN_BASE <= normalized_initial_index < (_STARTUP_PLAN_BASE + _STARTUP_PLAN_LIMIT):
+            # Using the ActionDecoder instance for caching if available (via dirty hack or refactoring)
+            # However, build_response_for_input is static. 
+            # We'll regenerate here, but _enumerate_startup_plan_payloads is now faster.
+            startup_plans = _enumerate_startup_plan_payloads(
+                waiting_for=waiting_for,
+                player_state=player_state,
+                max_plans=_STARTUP_PLAN_LIMIT,
+            )
+            startup_offset = normalized_initial_index - _STARTUP_PLAN_BASE
+            if 0 <= startup_offset < len(startup_plans):
+                return startup_plans[startup_offset]
             return _build_initial_setup_response(waiting_for, player_state)
         options = waiting_for.get('options', [])
         # Use action_index to determine selections if available
@@ -1952,10 +2263,10 @@ def _metadata_candidate_paths() -> List[str]:
     if env_path:
         candidate_paths.append(env_path)
     candidate_paths.extend([
-        os.path.join(one_up, 'card_metadata.json'),
         os.path.join(two_up, 'card_metadata.json'),
         os.path.join(two_up, 'terraforming-mars', 'card_metadata.json'),
         os.path.join(one_up, 'terraforming-mars', 'card_metadata.json'),
+        os.path.join(one_up, 'card_metadata.json'),
     ])
 
     resolved: List[str] = []
@@ -1971,6 +2282,8 @@ def _metadata_candidate_paths() -> List[str]:
     return resolved
 
 def _metadata_loader() -> Dict[str, Dict[str, Any]]:
+    fallback_data: Optional[Dict[str, Dict[str, Any]]] = None
+    fallback_path: Optional[str] = None
     for path in _metadata_candidate_paths():
         if not os.path.exists(path):
             continue
@@ -1979,11 +2292,33 @@ def _metadata_loader() -> Dict[str, Dict[str, Any]]:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            if isinstance(data, dict):
-                logger.info("Loaded card metadata for %d cards from %s", len(data), path)
-                return data
+            if isinstance(data, dict) and data:
+                has_corp_economics = any(
+                    isinstance(meta, dict) and (
+                        meta.get('startingMegaCredits', None) is not None
+                        or meta.get('cardCost', None) is not None
+                    )
+                    for meta in data.values()
+                )
+                if has_corp_economics:
+                    logger.info("Loaded card metadata for %d cards from %s", len(data), path)
+                    return data
+                if fallback_data is None:
+                    fallback_data = data
+                    fallback_path = path
+                    logger.info(
+                        "Loaded metadata from %s without corporation economics; continuing search",
+                        path,
+                    )
         except Exception as e:
             logger.warning("Failed to load card metadata from %s: %s", path, e)
+    if fallback_data:
+        logger.info(
+            "Using fallback card metadata for %d cards from %s",
+            len(fallback_data),
+            fallback_path or "unknown path",
+        )
+        return fallback_data
     return {}
 
 _CARD_META_CACHE: Dict[str, Dict[str, Any]] = _metadata_loader()
@@ -2057,12 +2392,17 @@ class ActionDecoder:
             'STANDARD_PROJECT': 100,
             'SELECT_OPTION': 200,
             'SELECT_CARD_MASK': _CARD_SELECTION_MASK_BASE,
+            'STARTUP_PLAN': _STARTUP_PLAN_BASE,
             'SELECT_SPACE': 300,
             'SELECT_PAYMENT': _PAYMENT_ACTION_BASE,
             'SELECT_AMOUNT': 500,
             'PASS': 900,
             'END_TURN': 950
         }
+        
+        # Performance caches
+        self._startup_plan_cache = []
+        self._startup_plan_cache_state_id = None
         
         # Standard projects mapping - use actual game API names (card_metadata)
         self.standard_projects = [
@@ -2073,6 +2413,7 @@ class ActionDecoder:
             'Road Infrastructure (var. 2)', 'Lunar Mine (var. 2)', 'Lunar Habitat (var. 2)',
         ]
         self.card_selection_mask_limit = _CARD_SELECTION_MASK_LIMIT
+        self.startup_plan_limit = _STARTUP_PLAN_LIMIT
 
     def _is_standard_project_wasteful(self, card_payload: Dict[str, Any], player_state: Dict[str, Any]) -> bool:
         """Check if a standard project is wasteful (maxed out parameter)"""
@@ -2131,6 +2472,31 @@ class ActionDecoder:
         if input_type not in ['initialCards', 'selectInitialCards']:
             return None
         return _build_initial_setup_response(waiting_for, player_state)
+
+    def _get_cached_startup_plans(self, waiting_for: Dict[str, Any], player_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Manage caching of startup plans to avoid redundant O(N^3) calculations."""
+        # Use player ID and step/gameAge as a rough state identifier
+        player = player_state.get('thisPlayer', {})
+        game = player_state.get('game', {})
+        state_id = (
+            game.get('id'),
+            player.get('id'),
+            game.get('step'),
+            game.get('gameAge'),
+        )
+        
+        if self._startup_plan_cache_state_id == state_id:
+            return self._startup_plan_cache
+        
+        plans = _enumerate_startup_plan_payloads(
+            waiting_for=waiting_for,
+            player_state=player_state,
+            max_plans=_STARTUP_PLAN_LIMIT,
+        )
+        
+        self._startup_plan_cache = plans
+        self._startup_plan_cache_state_id = state_id
+        return plans
     
     def get_available_actions(self, player_state: Dict[str, Any]) -> List[int]:
         """Get list of available action indices for current game state"""
@@ -2434,6 +2800,10 @@ class ActionDecoder:
                 for i, _ in enumerate(tokens):
                     available_actions.append(760 + i)
             elif input_type == 'selectInitialCards' or input_type == 'initialCards':
+                startup_plans = self._get_cached_startup_plans(waiting_for, player_state)
+                for i, _ in enumerate(startup_plans):
+                    available_actions.append(_STARTUP_PLAN_BASE + i)
+                # Keep deterministic fallback always available.
                 available_actions.append(800)
             elif input_type == 'aresGlobalParameters':
                 available_actions.append(810)
@@ -2481,10 +2851,6 @@ class ActionDecoder:
             # Use the new builder for all input types
             response = build_response_for_input(waiting_for, action_index, player_state)
 
-            # Optionally, add runId if present
-            run_id = waiting_for.get('runId')
-            if run_id:
-                response['runId'] = run_id
             # logger.info(f"agent response: {response}")
             return response
 

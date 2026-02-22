@@ -503,7 +503,9 @@ def _select_initial_card_names(
     cap: Optional[int] = None,
     force_minimum: Optional[int] = None,
 ) -> List[str]:
-    cards = option.get('cards', []) or []
+    # Prefer currently enabled cards; disabled entries can produce invalid
+    # SelectCardResponse payloads during startup flows.
+    cards = _enabled_cards(option)
     if not cards:
         return []
 

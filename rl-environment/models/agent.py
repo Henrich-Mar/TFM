@@ -11,6 +11,7 @@ import json
 import os
 import time
 import hashlib
+import re
 from typing import Dict, Any, List, Optional, Tuple
 import uuid
 from dataclasses import dataclass, asdict
@@ -607,6 +608,17 @@ class RLAgent:
         self.poll_interval_sec = float(os.getenv("AGENT_POLL_INTERVAL_SEC", "0.2"))
         self.post_move_sleep_sec = float(os.getenv("AGENT_POST_MOVE_SLEEP_SEC", "0.0"))
         self.failure_pause_sec = float(os.getenv("AGENT_FAILURE_PAUSE_SEC", "0.0"))
+        self.initial_cards_fallback_max_attempts = max(
+            0,
+            self._safe_env_int("AGENT_INITIAL_CARDS_FALLBACK_MAX_ATTEMPTS", 1),
+        )
+        self.initial_cards_reject_pause_sec = max(
+            0.0,
+            self._safe_env_float(
+                "AGENT_INITIAL_CARDS_REJECT_PAUSE_SEC",
+                max(self.failure_pause_sec, self.poll_interval_sec),
+            ),
+        )
         self.startup_autosubmit = str(os.getenv("AGENT_STARTUP_AUTOSUBMIT", "0")).strip().lower() in ("1", "true", "yes", "on")
         self.stuck_log_cooldown_sec = float(os.getenv("AGENT_STUCK_LOG_COOLDOWN_SEC", "5.0"))
         self._last_stuck_log_by_player: Dict[str, float] = {}
@@ -1128,6 +1140,8 @@ class RLAgent:
     async def play_game(self, game_instance: GameInstance, player_name: str):
         """Play a complete game"""
         episode_steps: List[Dict[str, Any]] = []
+        max_transport_retries = max(1, self._safe_env_int("AGENT_TRANSPORT_RETRY_LIMIT", 6))
+        transport_retry_backoff_sec = max(0.5, self._safe_env_float("AGENT_TRANSPORT_RETRY_BACKOFF_SEC", 3.0))
         try:
             # Join the game
             player_id = await game_instance.join_player(player_name)
@@ -1140,16 +1154,39 @@ class RLAgent:
                 game_instance.get_public_player_api_url(player_id),
                 game_instance.get_internal_player_api_url(player_id),
             )
+            await self._maybe_apply_startup_seat_stagger(player_name)
 
             # Optional deterministic startup autosubmit. Keep disabled by default
             # so startup choices can be learned by policy from STARTUP_PLAN actions.
             if self.startup_autosubmit:
                 await self._run_initial_setup(game_instance, player_id)
              
-            # Game loop
+            # Game loop with transient-error resilience: the game still exists on
+            # the server after a disconnect, so we back off and retry instead of
+            # immediately killing the episode.
+            consecutive_transport_errors = 0
             while True:
-                # Get current game state
-                player_state = await game_instance.get_player_state(player_id)
+                try:
+                    player_state = await game_instance.get_player_state(player_id)
+                    consecutive_transport_errors = 0
+                except ServerTransportError:
+                    consecutive_transport_errors += 1
+                    if consecutive_transport_errors > max_transport_retries:
+                        raise
+                    backoff = min(
+                        transport_retry_backoff_sec * float(consecutive_transport_errors),
+                        15.0,
+                    )
+                    logger.warning(
+                        "Agent %s transient transport error polling state (%d/%d). "
+                        "Backing off %.1fs before retry.",
+                        self.id[:8],
+                        consecutive_transport_errors,
+                        max_transport_retries,
+                        backoff,
+                    )
+                    await self._sleep_if_needed(backoff)
+                    continue
                 
                 # Check if game is over
                 if player_state.get('game', {}).get('phase') == 'end':
@@ -1158,7 +1195,27 @@ class RLAgent:
                 # If we are waiting for input, make a move.
                 # Otherwise, we wait for our turn.
                 if player_state.get('waitingFor'):
-                    submitted_action = await self._make_move(game_instance, player_id, player_state, episode_steps)
+                    try:
+                        submitted_action = await self._make_move(game_instance, player_id, player_state, episode_steps)
+                    except ServerTransportError:
+                        consecutive_transport_errors += 1
+                        if consecutive_transport_errors > max_transport_retries:
+                            raise
+                        backoff = min(
+                            transport_retry_backoff_sec * float(consecutive_transport_errors),
+                            15.0,
+                        )
+                        logger.warning(
+                            "Agent %s transient transport error during move (%d/%d). "
+                            "Backing off %.1fs before retry.",
+                            self.id[:8],
+                            consecutive_transport_errors,
+                            max_transport_retries,
+                            backoff,
+                        )
+                        await self._sleep_if_needed(backoff)
+                        continue
+                    consecutive_transport_errors = 0
                     # After a successful action, repoll immediately so chained prompts
                     # don't pay an extra AGENT_POLL_INTERVAL_SEC delay.
                     if submitted_action:
@@ -1185,6 +1242,9 @@ class RLAgent:
                 else:
                     await self._train_from_episode(episode_steps, reward)
             
+        except asyncio.CancelledError:
+            logger.warning("Agent %s play_game task cancelled", self.id[:8])
+            raise
         except Exception as e:
             logger.error(f"Agent {self.id[:8]} failed during game: {e}")
             raise
@@ -1198,6 +1258,36 @@ class RLAgent:
         delay = max(0.0, float(seconds or 0.0))
         if delay > 0.0:
             await asyncio.sleep(delay)
+
+    @staticmethod
+    def _seat_index_from_player_name(player_name: str) -> int:
+        raw = str(player_name or "").strip()
+        match = re.match(r"^A(\d+)_", raw)
+        if not match:
+            return 0
+        try:
+            return max(0, int(match.group(1)) - 1)
+        except Exception:
+            return 0
+
+    async def _maybe_apply_startup_seat_stagger(self, player_name: str):
+        base_ms = max(0, self._safe_env_int("AGENT_STARTUP_SEAT_STAGGER_MS", 0))
+        jitter_ms = max(0, self._safe_env_int("AGENT_STARTUP_SEAT_STAGGER_JITTER_MS", 0))
+        if base_ms <= 0 and jitter_ms <= 0:
+            return
+        seat_index = self._seat_index_from_player_name(player_name)
+        stagger_ms = float(seat_index * base_ms)
+        if jitter_ms > 0:
+            stagger_ms += float(random.randint(0, int(jitter_ms)))
+        if stagger_ms <= 0.0:
+            return
+        logger.debug(
+            "Applying startup seat stagger for %s: seat=%d delay_ms=%.1f",
+            player_name,
+            seat_index + 1,
+            stagger_ms,
+        )
+        await asyncio.sleep(stagger_ms / 1000.0)
 
     async def _run_initial_setup(self, game_instance: GameInstance, player_id: str, max_attempts: int = 12) -> bool:
         """
@@ -1282,6 +1372,7 @@ class RLAgent:
             # Log what we're waiting for
             waiting_for = player_state.get('waitingFor', {})
             waiting_type = waiting_for.get('type', 'unknown')
+            is_initial_cards_prompt = waiting_type in ['initialCards', 'selectInitialCards']
             logger.info(f"Agent {self.id[:8]} making move for input type: {waiting_type}")
 
             if self.startup_autosubmit and waiting_type in ['initialCards', 'selectInitialCards']:
@@ -1451,7 +1542,10 @@ class RLAgent:
                         self._remember_rejected_action(player_id, player_state, action_idx)
                     logger.warning(f"Agent {self.id[:8]} policy action was rejected by game")
                     self._log_stuck_context(game_instance, player_id, player_state, "policy_action_rejected")
-                    await self._sleep_if_needed(self.failure_pause_sec)
+                    pause_after_reject = self.failure_pause_sec
+                    if is_initial_cards_prompt:
+                        pause_after_reject = max(pause_after_reject, self.initial_cards_reject_pause_sec)
+                    await self._sleep_if_needed(pause_after_reject)
 
             logger.warning(f"Policy action failed for agent {self.id[:8]}. Trying random actions.")
             self._bump_decision_stat('fallback_decisions')
@@ -1502,6 +1596,8 @@ class RLAgent:
             prompt_retry_used = self._get_fallback_retry_count_for_prompt(player_id, player_state)
             remaining_prompt_budget = max(0, int(prompt_retry_budget - prompt_retry_used))
             max_attempts = min(len(available_actions), int(self.max_fallback_attempts), int(remaining_prompt_budget))
+            if is_initial_cards_prompt:
+                max_attempts = min(max_attempts, int(self.initial_cards_fallback_max_attempts))
 
             if max_attempts <= 0 and remaining_prompt_budget <= 0:
                 logger.warning(

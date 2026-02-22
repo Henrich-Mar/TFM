@@ -7,6 +7,7 @@ import asyncio
 import os
 import logging
 import random
+from contextlib import suppress
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
@@ -157,6 +158,16 @@ class TournamentManager:
                         successful_games += 1
                     else:
                         failed_games += 1
+                except asyncio.CancelledError as e:
+                    current = asyncio.current_task()
+                    if current is not None and getattr(current, "cancelling", lambda: 0)():
+                        raise
+                    failed_games += 1
+                    logger.error(
+                        "Game task in tournament %s was cancelled unexpectedly; counting as failed: %s",
+                        tournament.id,
+                        e,
+                    )
                 except Exception as e:
                     failed_games += 1
                     logger.error(f"Game failed in tournament {tournament.id}: {e}")
@@ -170,6 +181,8 @@ class TournamentManager:
                             "status": "running",
                         })
             
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"Tournament {tournament.id} failed: {e}")
         finally:
@@ -276,21 +289,32 @@ class TournamentManager:
 
             # Connect agents to game
             agent_tasks = [
-                agent.play_game(game_instance, player_name)
+                asyncio.create_task(
+                    agent.play_game(game_instance, player_name),
+                    name=f"agent-play:{actual_game_id}:{player_name}",
+                )
                 for agent, player_name in zip(agents, seat_player_names)
             ]
-            
+            agent_group = asyncio.gather(*agent_tasks, return_exceptions=True)
+             
             # Wait for game completion with configurable timeout.
             try:
                 timeout_sec = float(os.getenv('TM_GAME_TIMEOUT_SEC', '300'))
             except Exception:
                 timeout_sec = 300.0
             timeout_sec = max(60.0, timeout_sec)
-            await asyncio.wait_for(
-                asyncio.gather(*agent_tasks), 
-                timeout=timeout_sec
-            )
-            
+            agent_results = await asyncio.wait_for(agent_group, timeout=timeout_sec)
+            task_errors = [r for r in agent_results if isinstance(r, Exception)]
+            task_cancellations = [r for r in agent_results if isinstance(r, asyncio.CancelledError)]
+            if task_cancellations:
+                raise RuntimeError(
+                    f"{len(task_cancellations)} agent task(s) were cancelled unexpectedly while game was running"
+                )
+            if task_errors:
+                raise RuntimeError(
+                    f"{len(task_errors)} agent task(s) failed; first error: {task_errors[0]!r}"
+                )
+             
             # Get final game state and results
             game_state = await game_instance.get_final_state()
             
@@ -463,6 +487,15 @@ class TournamentManager:
             return result
             
         except asyncio.TimeoutError:
+            # Ensure all in-flight agent tasks are cancelled and awaited so gather
+            # does not emit "exception was never retrieved" warnings.
+            with suppress(Exception):
+                for t in locals().get("agent_tasks", []):
+                    if not t.done():
+                        t.cancel()
+            with suppress(Exception):
+                if "agent_group" in locals():
+                    await agent_group
             try:
                 timeout_sec = float(os.getenv('TM_GAME_TIMEOUT_SEC', '300'))
             except Exception:
@@ -499,8 +532,25 @@ class TournamentManager:
                 error_message="Game timed out",
                 end_screens=[]
             )
-            
+        except asyncio.CancelledError:
+            # Propagate service-level cancellation, but drain child tasks first.
+            with suppress(Exception):
+                for t in locals().get("agent_tasks", []):
+                    if not t.done():
+                        t.cancel()
+            with suppress(Exception):
+                if "agent_group" in locals():
+                    await agent_group
+            raise
+             
         except Exception as e:
+            with suppress(Exception):
+                for t in locals().get("agent_tasks", []):
+                    if not t.done():
+                        t.cancel()
+            with suppress(Exception):
+                if "agent_group" in locals():
+                    await agent_group
             logger.error(f"Game {actual_game_id} failed: {e}")
             return GameResult(
                 game_id=actual_game_id,

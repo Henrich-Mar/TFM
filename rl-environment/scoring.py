@@ -429,7 +429,14 @@ def _award_identity(award: Dict[str, Any]) -> str:
     return f"{name}|{player_name}|{color}"
 
 
-def _award_expected_points_for_player(scores: List[Dict[str, Any]], player: Dict[str, Any]) -> float:
+def _award_projection_for_player(scores: List[Dict[str, Any]], player: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    Return (projected_points, confidence) for the player's current award standing.
+
+    projected_points is 5 for current first place, 2 for current second place, 0 otherwise.
+    confidence is a conservative [0.0, 1.0] estimate based on score magnitude, lead gap,
+    and ties (ties reduce confidence because standings are volatile).
+    """
     own_name = _normalize_token(player.get('name'))
     own_color = _normalize_token(player.get('color'))
     rows: List[Dict[str, Any]] = []
@@ -444,11 +451,12 @@ def _award_expected_points_for_player(scores: List[Dict[str, Any]], player: Dict
             {
                 "name": row_name,
                 "color": row_color,
-                "score": _safe_float(row.get('score', 0), 0.0),
+                # Server payloads can use either "score" or "playerScore".
+                "score": _safe_float(row.get('score', row.get('playerScore', 0)), 0.0),
             }
         )
     if not rows:
-        return 0.0
+        return 0.0, 0.0
 
     rows.sort(key=lambda item: item["score"], reverse=True)
     top_score = rows[0]["score"]
@@ -461,17 +469,40 @@ def _award_expected_points_for_player(scores: List[Dict[str, Any]], player: Dict
             return True
         return False
 
-    if top_score > 0.0 and any(_is_own(row) for row in top_rows):
-        return 5.0
+    if top_score <= 0.0:
+        return 0.0, 0.0
 
     remaining_rows = [row for row in rows if row["score"] < top_score]
-    if not remaining_rows:
-        return 0.0
-    second_score = remaining_rows[0]["score"]
+    second_score = remaining_rows[0]["score"] if remaining_rows else 0.0
     second_rows = [row for row in remaining_rows if row["score"] == second_score]
-    if second_score > 0.0 and any(_is_own(row) for row in second_rows):
-        return 2.0
-    return 0.0
+
+    projected_points = 0.0
+    rank_tied = False
+    gap_to_fall = 0.0
+
+    own_in_top = any(_is_own(row) for row in top_rows)
+    own_in_second = bool(second_rows) and any(_is_own(row) for row in second_rows)
+
+    if own_in_top:
+        projected_points = 5.0
+        rank_tied = len(top_rows) > 1
+        gap_to_fall = 0.0 if rank_tied else max(0.0, top_score - second_score)
+    elif second_score > 0.0 and own_in_second:
+        projected_points = 2.0
+        rank_tied = len(second_rows) > 1
+        third_rows = [row for row in rows if row["score"] < second_score]
+        third_score = third_rows[0]["score"] if third_rows else 0.0
+        gap_to_fall = 0.0 if rank_tied else max(0.0, second_score - third_score)
+    else:
+        return 0.0, 0.0
+
+    # Confidence increases with absolute score progression and clear lead margin.
+    score_signal = max(0.0, min(top_score / 10.0, 1.0))
+    gap_signal = max(0.0, min(gap_to_fall / max(2.0, top_score), 1.0))
+    tie_multiplier = 0.55 if rank_tied else 1.0
+    confidence = (0.18 + (0.42 * score_signal) + (0.40 * gap_signal)) * tie_multiplier
+    confidence = max(0.08, min(confidence, 1.0))
+    return float(projected_points), float(confidence)
 
 
 def _estimate_award_funding_cost(prior_funded_count: int) -> float:
@@ -1057,18 +1088,26 @@ def calculate_step_reward_decomposition(
         prior_funded_total = _funded_award_count(before_game)
         for idx, award in enumerate(newly_funded):
             scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
-            expected_vp = _award_expected_points_for_player(scores, after_player)
+            projected_points, projection_confidence = _award_projection_for_player(scores, after_player)
+            expected_vp = projected_points * projection_confidence
             estimated_cost = _estimate_award_funding_cost(prior_funded_total + idx)
-            expected_net_vp = expected_vp - (estimated_cost / 5.0)
-            timing_factor = 0.5 + (0.5 * generation_progress)
+            estimated_cost_vp = estimated_cost / 5.0
+            # Early funding has high uncertainty and high opportunity cost.
+            # Apply a generation-weighted commitment tax so gen-1/2 funding requires
+            # genuinely strong projected standings before receiving positive shaping.
+            commitment_window = max(0.0, 1.0 - (generation_progress / 0.75))
+            commitment_tax_vp = estimated_cost_vp * commitment_window * 0.65
+            expected_net_vp = expected_vp - estimated_cost_vp - commitment_tax_vp
+            positive_timing_factor = 0.20 + (0.80 * generation_progress)
+            negative_timing_factor = 1.15 - (0.55 * generation_progress)
             if expected_net_vp > 0.0:
-                milestones_awards_component += min(0.18, (0.04 + (0.035 * expected_net_vp)) * timing_factor)
+                milestones_awards_component += min(0.14, (0.015 + (0.028 * expected_net_vp)) * positive_timing_factor)
                 # Sniping bonus: late-game award funding when we're ahead (positive EV).
-                if generation_progress > 0.6:
+                if generation_progress > 0.65 and projected_points >= 5.0 and projection_confidence >= 0.75:
                     milestones_awards_component += min(0.04, 0.02 * expected_net_vp)
                     sniping_award_applied = True
             else:
-                milestones_awards_component -= min(0.14, (0.03 + (0.04 * abs(expected_net_vp))) * timing_factor)
+                milestones_awards_component -= min(0.24, (0.04 + (0.045 * abs(expected_net_vp))) * negative_timing_factor)
 
     # Final-generation card VP pressure: prefer affordable VP cards over low-ceiling alternatives.
     selected_card_name = _extract_selected_card_name(action_input)

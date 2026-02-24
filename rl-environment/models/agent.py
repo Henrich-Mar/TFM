@@ -1656,6 +1656,10 @@ class RLAgent:
 
         waiting_for = player_state.get('waitingFor', {}) if player_state else {}
         waiting_type = str(waiting_for.get('type', ''))
+        sell_option_actions = set()
+
+        def _is_sell_patents_action(action_idx: int) -> bool:
+            return int(action_idx) == 702 or int(action_idx) in sell_option_actions
 
         # Keep pass available during explicit selection flows (draft/research/buy/keep).
         if waiting_type in ['card', 'selectCard', 'projectCard', 'selectProjectCardToPlay', 'initialCards']:
@@ -1685,7 +1689,6 @@ class RLAgent:
             select_option_base = self.action_decoder.action_types.get('SELECT_OPTION', 200)
             filtered = list(non_pass_actions)
             pass_option_actions = set()
-            sell_option_actions = set()
             for i, option in enumerate(options):
                 title = option.get('title', '')
                 if isinstance(title, dict):
@@ -1699,9 +1702,6 @@ class RLAgent:
                 if 'sell patents' in title_l:
                     sell_option_actions.add(select_option_base + i)
 
-            def _is_sell_patents_action(action_idx: int) -> bool:
-                return int(action_idx) == 702 or int(action_idx) in sell_option_actions
-
             non_pass_non_pass_option = [a for a in non_pass_actions if int(a) not in pass_option_actions]
             productive_actions = [a for a in non_pass_non_pass_option if not _is_sell_patents_action(int(a))]
 
@@ -1713,8 +1713,12 @@ class RLAgent:
             filtered_non_sell = [a for a in filtered if not _is_sell_patents_action(int(a))]
             return filtered_non_sell if filtered_non_sell else (filtered if filtered else available_actions)
 
+        productive_non_sell = [a for a in non_pass_actions if not _is_sell_patents_action(int(a))]
+        if productive_non_sell:
+            return productive_non_sell
+
         # If the only non-pass action is sell patents, keep pass to avoid forced selling.
-        if non_pass_actions and all(int(a) == 702 for a in non_pass_actions):
+        if non_pass_actions and all(_is_sell_patents_action(int(a)) for a in non_pass_actions):
             return available_actions
 
         return non_pass_actions
@@ -2674,9 +2678,22 @@ class RLAgent:
         
         avg_vp = self.total_victory_points / self.games_played
         win_rate = self.wins / self.games_played
-        
-        # Fitness combines average VP and win rate
-        fitness = avg_vp * 0.7 + win_rate * 100 * 0.3
+
+        # Dashboard/summary fitness: keep configurable, defaulting to win-rate emphasis.
+        try:
+            vp_weight = float(os.getenv("AGENT_FITNESS_VP_WEIGHT", "0.45"))
+        except Exception:
+            vp_weight = 0.45
+        try:
+            win_weight = float(os.getenv("AGENT_FITNESS_WIN_WEIGHT", "0.55"))
+        except Exception:
+            win_weight = 0.55
+        vp_weight = max(0.0, vp_weight)
+        win_weight = max(0.0, win_weight)
+        denom = max(1e-6, vp_weight + win_weight)
+        vp_w = vp_weight / denom
+        win_w = win_weight / denom
+        fitness = avg_vp * vp_w + win_rate * 100 * win_w
         return fitness
 
     def get_behavior_stats(self) -> Dict[str, Any]:

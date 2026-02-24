@@ -2,6 +2,7 @@
 Shared scoring utilities used by both tournament fitness and policy training.
 """
 from typing import Any, Dict, List, Optional, Tuple
+import json
 import os
 
 
@@ -90,6 +91,205 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+_CARD_METADATA_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+
+
+def _load_card_metadata() -> Dict[str, Dict[str, Any]]:
+    global _CARD_METADATA_CACHE
+    if _CARD_METADATA_CACHE is not None:
+        return _CARD_METADATA_CACHE
+
+    module_dir = os.path.abspath(os.path.dirname(__file__))
+    repo_root = os.path.abspath(os.path.join(module_dir, '..'))
+    candidate_paths = [
+        os.getenv('TM_CARD_METADATA_PATH', ''),
+        os.path.join(repo_root, 'card_metadata.json'),
+        os.path.join(repo_root, 'terraforming-mars', 'card_metadata.json'),
+        os.path.join(module_dir, 'card_metadata.json'),
+    ]
+    for path in candidate_paths:
+        if not path:
+            continue
+        full = os.path.abspath(path)
+        if not os.path.exists(full) or os.path.getsize(full) <= 0:
+            continue
+        try:
+            with open(full, 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            if isinstance(data, dict):
+                normalized: Dict[str, Dict[str, Any]] = {}
+                for name, meta in data.items():
+                    normalized[str(name or '')] = dict(meta or {})
+                _CARD_METADATA_CACHE = normalized
+                return _CARD_METADATA_CACHE
+        except Exception:
+            continue
+    _CARD_METADATA_CACHE = {}
+    return _CARD_METADATA_CACHE
+
+
+def _card_metadata_by_name(card_name: Any) -> Dict[str, Any]:
+    name = str(card_name or '').strip()
+    if not name:
+        return {}
+    metadata = _load_card_metadata()
+    return metadata.get(name, {}) or {}
+
+
+def _normalize_resource_type(value: Any) -> str:
+    raw = str(value or '').strip().lower().replace('-', '').replace('_', '').replace(' ', '')
+    if not raw:
+        return ''
+    aliases = {
+        'microbe': 'microbe',
+        'microbes': 'microbe',
+        'animal': 'animal',
+        'animals': 'animal',
+        'floater': 'floater',
+        'floaters': 'floater',
+        'science': 'science',
+        'fighter': 'fighter',
+        'fighters': 'fighter',
+        'asteroid': 'asteroid',
+        'astro': 'asteroid',
+    }
+    return aliases.get(raw, raw)
+
+
+def _card_resource_type(card: Dict[str, Any]) -> str:
+    direct = _normalize_resource_type(card.get('resourceType', ''))
+    if direct:
+        return direct
+    meta = _card_metadata_by_name(card.get('name', ''))
+    return _normalize_resource_type(meta.get('resourceType', ''))
+
+
+def _resource_count(card: Dict[str, Any]) -> float:
+    return max(0.0, _safe_float(card.get('resources', 0), 0.0))
+
+
+def _vp_per_resource(card: Dict[str, Any]) -> float:
+    meta = _card_metadata_by_name(card.get('name', ''))
+    for raw in (card.get('vpPerResource', None), meta.get('vpPerResource', None)):
+        val = _safe_float(raw, 0.0)
+        if val > 0.0:
+            return val
+
+    dyn_card = card.get('dynamicVictoryPoints') if isinstance(card.get('dynamicVictoryPoints'), dict) else {}
+    dyn_meta = meta.get('dynamicVictoryPoints') if isinstance(meta.get('dynamicVictoryPoints'), dict) else {}
+    for dyn in (dyn_card, dyn_meta):
+        points = _safe_float(dyn.get('points', 0), 0.0)
+        target = _safe_float(dyn.get('target', 0), 0.0)
+        if points > 0.0 and target > 0.0:
+            return points / target
+    return 0.0
+
+
+def _resource_conversion_threshold(card: Dict[str, Any]) -> float:
+    meta = _card_metadata_by_name(card.get('name', ''))
+    return max(
+        _safe_float(card.get('resourceConversionThreshold', 0), 0.0),
+        _safe_float(meta.get('resourceConversionThreshold', 0), 0.0),
+    )
+
+
+def _resource_behavior(card: Dict[str, Any]) -> str:
+    meta = _card_metadata_by_name(card.get('name', ''))
+    behavior = str(card.get('resourceBehavior', meta.get('resourceBehavior', 'none')) or 'none').strip().lower()
+    valid = {'vp_accumulation', 'conversion', 'stealing', 'adding', 'none'}
+
+    adds_to_any = bool(card.get('resourceActionAddsToAnyCard', meta.get('resourceActionAddsToAnyCard', False)))
+    targets_opponent = bool(card.get('resourceActionTargetsOpponent', meta.get('resourceActionTargetsOpponent', False)))
+    removes_resources = bool(card.get('resourceActionRemovesResources', meta.get('resourceActionRemovesResources', False)))
+    vp_ratio = _vp_per_resource(card)
+    has_resource_type = bool(_card_resource_type(card))
+
+    if targets_opponent and removes_resources:
+        return 'stealing'
+    if adds_to_any:
+        return 'adding'
+    if removes_resources:
+        return 'conversion'
+    if vp_ratio > 0.0 and has_resource_type:
+        return 'vp_accumulation'
+    return behavior if behavior in valid else 'none'
+
+
+def _resource_management_adjustment(
+    before_state: Dict[str, Any],
+    after_state: Dict[str, Any],
+    action_input: Dict[str, Any],
+) -> float:
+    before_player = _extract_player(before_state)
+    after_player = _extract_player(after_state)
+    before_tableau = [card for card in (before_player.get('tableau', []) or []) if isinstance(card, dict)]
+    after_tableau = [card for card in (after_player.get('tableau', []) or []) if isinstance(card, dict)]
+    if not before_tableau or not after_tableau:
+        return 0.0
+
+    before_by_name: Dict[str, Dict[str, Any]] = {}
+    after_by_name: Dict[str, Dict[str, Any]] = {}
+    for card in before_tableau:
+        key = _normalize_token(card.get('name'))
+        if key and key not in before_by_name:
+            before_by_name[key] = card
+    for card in after_tableau:
+        key = _normalize_token(card.get('name'))
+        if key and key not in after_by_name:
+            after_by_name[key] = card
+
+    adjustment = 0.0
+    for key, before_card in before_by_name.items():
+        after_card = after_by_name.get(key)
+        if not isinstance(after_card, dict):
+            continue
+        before_resources = _resource_count(before_card)
+        after_resources = _resource_count(after_card)
+        if abs(after_resources - before_resources) <= 1e-9:
+            continue
+
+        behavior = _resource_behavior(after_card)
+        vp_ratio = _vp_per_resource(after_card)
+        threshold = _resource_conversion_threshold(after_card)
+        delta = after_resources - before_resources
+
+        if delta < 0.0:
+            spent = abs(delta)
+            if behavior == 'vp_accumulation' and vp_ratio > 0.0:
+                vp_lost = spent * vp_ratio
+                adjustment -= min(0.18, 0.03 + (0.035 * vp_lost))
+            elif behavior == 'conversion':
+                if threshold > 0.0 and before_resources >= threshold:
+                    adjustment += min(0.11, 0.02 + (0.015 * spent))
+                else:
+                    adjustment -= min(0.06, 0.015 + (0.01 * spent))
+        else:
+            gained = delta
+            if behavior == 'vp_accumulation' and vp_ratio > 0.0:
+                adjustment += min(0.10, 0.01 * gained * max(vp_ratio, 0.25))
+            elif behavior == 'stealing':
+                adjustment += min(0.07, 0.01 * gained)
+
+    # Mild penalty for over-hoarding conversion resources or passing while conversions are ready.
+    conversion_ready_cards = 0
+    for card in after_tableau:
+        behavior = _resource_behavior(card)
+        if behavior != 'conversion':
+            continue
+        resources = _resource_count(card)
+        threshold = _resource_conversion_threshold(card)
+        if threshold > 0.0 and resources >= threshold:
+            conversion_ready_cards += 1
+        if threshold > 0.0 and resources >= max(8.0, threshold * 3.0):
+            adjustment -= 0.02
+
+    action_type = str((action_input or {}).get('type', '') or '').lower() if isinstance(action_input, dict) else ''
+    if action_type == 'pass' and conversion_ready_cards > 0:
+        adjustment -= min(0.06, 0.02 * float(conversion_ready_cards))
+
+    return float(max(-0.20, min(0.20, adjustment)))
 
 
 def _extract_player(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1020,10 +1220,52 @@ def calculate_step_reward_decomposition(
         and 'sell patent' in before_title_l
     )
     if is_sell_patents_action:
-        other_component -= min(0.10, 0.04 * float(len(sold_cards)))
-        affordable_cards = sum(1 for card in before_hand if _can_afford_card_now(card, before_player))
-        if affordable_cards > 0:
-            other_component -= min(0.10, 0.02 * float(affordable_cards))
+        sold_count = float(len(sold_cards))
+        before_affordable = sum(1 for card in before_hand if _can_afford_card_now(card, before_player))
+        after_affordable = sum(1 for card in after_hand if _can_afford_card_now(card, after_player))
+        affordable_delta = float(after_affordable - before_affordable)
+
+        # Base penalty: discourage routine liquidity dumps.
+        other_component -= min(0.18, 0.06 * sold_count)
+
+        # Additional pressure when selling does not unlock immediate playable cards.
+        if affordable_delta <= 0.0:
+            other_component -= min(0.12, 0.03 * sold_count)
+        else:
+            other_component += min(0.04, 0.015 * affordable_delta)
+
+        # Extra penalty for large single-action dumps.
+        if sold_count > 3.0:
+            other_component -= min(0.10, 0.02 * (sold_count - 3.0))
+
+        # Selling persistent engine cards is usually long-term value destruction.
+        sold_names = {
+            str(name or "").strip()
+            for name in sold_cards
+            if isinstance(name, str) and str(name or "").strip()
+        }
+        persistent_sold = 0
+        for card in before_hand:
+            if not isinstance(card, dict):
+                continue
+            name = str(card.get("name", "") or "").strip()
+            if not name or name not in sold_names:
+                continue
+            meta = _card_metadata_by_name(name)
+            has_action = bool(card.get("hasAction", meta.get("hasAction", False)))
+            vp = _safe_float(meta.get("victoryPoints", card.get("victoryPoints", 0)), 0.0)
+            desc = str(card.get("description", meta.get("description", "")) or "").lower()
+            is_persistent = bool(
+                has_action
+                or vp > 0.0
+                or ("production" in desc)
+                or ("ongoing" in desc)
+                or ("effect" in desc)
+            )
+            if is_persistent:
+                persistent_sold += 1
+        if persistent_sold > 0:
+            other_component -= min(0.20, 0.07 * float(persistent_sold))
 
     generation_raw = _safe_float(before_game.get('generation', 1), 1.0)
     generation_progress = max(0.0, min(generation_raw / 14.0, 1.0))
@@ -1125,6 +1367,9 @@ def calculate_step_reward_decomposition(
             cards_vp_component -= min(0.16, endgame_pressure * (0.05 + (0.02 * min(best_affordable_vp, 5.0))))
         elif action_type == 'pass' and best_affordable_vp > 0.0:
             cards_vp_component -= min(0.12, endgame_pressure * (0.03 + (0.02 * min(best_affordable_vp, 5.0))))
+
+    # Resource-pattern shaping: penalize burning VP-hoard resources and reward efficient conversions.
+    cards_vp_component += _resource_management_adjustment(before_state, after_state, action_input)
 
     raw_total = (
         tr_component

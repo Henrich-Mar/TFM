@@ -10,6 +10,24 @@ from typing import Any, Dict, List, Sequence, Tuple
 from scoring import calculate_selection_score
 
 
+def _safe_env_float(name: str, default: float) -> float:
+    try:
+        raw = os.getenv(name, str(default))
+        value = float(raw)
+    except Exception:
+        value = float(default)
+    return float(value)
+
+
+def _safe_env_int(name: str, default: int) -> int:
+    try:
+        raw = os.getenv(name, str(default))
+        value = int(raw)
+    except Exception:
+        value = int(default)
+    return int(value)
+
+
 def _sum_moon_type(counts: Dict[str, Any], pattern: str) -> int:
     """Sum counts for standard project keys matching pattern (e.g. 'Lunar Mine', 'Road Infrastructure')."""
     if not isinstance(counts, dict):
@@ -480,6 +498,7 @@ def calculate_selection_fitness_with_diagnostics(
 ) -> Tuple[List[float], Dict[str, Any]]:
     agent_scores = {agent.id: 0.0 for agent in population}
     agent_games = {agent.id: 0 for agent in population}
+    agent_wins = {agent.id: 0 for agent in population}
     include_incomplete = str(os.getenv("SELECTION_INCLUDE_INCOMPLETE_GAMES", "0")).strip().lower() in (
         "1",
         "true",
@@ -492,6 +511,9 @@ def calculate_selection_fitness_with_diagnostics(
         "yes",
         "on",
     )
+    win_rate_weight = max(0.0, _safe_env_float("SELECTION_WIN_RATE_WEIGHT", 120.0))
+    win_rate_exponent = max(1.0, _safe_env_float("SELECTION_WIN_RATE_EXPONENT", 1.4))
+    win_rate_min_games = max(1, _safe_env_int("SELECTION_WIN_RATE_MIN_GAMES", 12))
     main_games_counted = 0
     training_pool_games_counted = 0
 
@@ -516,24 +538,41 @@ def calculate_selection_fitness_with_diagnostics(
                 agent_id = player_result.get("agent_id")
                 if agent_id not in agent_scores:
                     continue
+                rank = int(player_result.get("rank", 4) or 4)
                 total_score = calculate_selection_score(
-                    rank=player_result.get("rank", 4),
+                    rank=rank,
                     victory_points=player_result.get("victory_points", 0),
                     completed=player_result.get("completed", False),
                     game_generation=game_generation,
                 )
                 agent_scores[agent_id] += total_score
                 agent_games[agent_id] += 1
+                if rank == 1:
+                    agent_wins[agent_id] += 1
 
     fitness_scores: List[float] = []
+    win_rate_bonuses: List[float] = []
+    win_rates: List[float] = []
     for agent in population:
         played = int(agent_games.get(agent.id, 0))
-        fitness_scores.append((agent_scores[agent.id] / played) if played > 0 else 0.0)
+        avg_selection_score = (agent_scores[agent.id] / played) if played > 0 else 0.0
+        wins = int(agent_wins.get(agent.id, 0))
+        win_rate = (float(wins) / float(played)) if played > 0 else 0.0
+        confidence = min(1.0, float(played) / float(win_rate_min_games)) if played > 0 else 0.0
+        win_rate_bonus = float((win_rate ** win_rate_exponent) * win_rate_weight * confidence)
+        fitness_scores.append(float(avg_selection_score + win_rate_bonus))
+        win_rate_bonuses.append(float(win_rate_bonus))
+        win_rates.append(float(win_rate))
 
     diagnostics = {
         "selection/include_training_pool": bool(include_training_pool),
         "selection/main_games_counted": int(main_games_counted),
         "selection/training_pool_games_counted": int(training_pool_games_counted),
+        "selection/win_rate_weight": float(win_rate_weight),
+        "selection/win_rate_exponent": float(win_rate_exponent),
+        "selection/win_rate_min_games": int(win_rate_min_games),
+        "selection/win_rate_bonus_mean": (sum(win_rate_bonuses) / len(win_rate_bonuses)) if win_rate_bonuses else 0.0,
+        "selection/win_rate_mean": (sum(win_rates) / len(win_rates)) if win_rates else 0.0,
     }
     return fitness_scores, diagnostics
 

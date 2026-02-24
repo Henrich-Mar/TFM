@@ -152,6 +152,78 @@ def _extra_mc_needed_to_afford(player: Dict[str, Any], card: Dict[str, Any], max
             return extra
     return None
 
+
+def _sell_patents_cap_for_generation(generation: int) -> int:
+    if generation <= 6:
+        return 1
+    if generation <= 10:
+        return 2
+    return 2
+
+
+def _is_engine_or_persistent_card(card: Dict[str, Any]) -> bool:
+    meta = _metadata_for_card(card)
+    if bool(card.get('hasAction', meta.get('hasAction', False))):
+        return True
+    vp = float(_card_vp(card))
+    if vp > 0.0:
+        return True
+    desc = str(card.get('description', meta.get('description', '')) or '').lower()
+    if 'production' in desc or 'ongoing' in desc or 'effect' in desc:
+        return True
+    tags = _card_tags(card)
+    if tags.get('Science') or tags.get('Earth'):
+        return True
+    return False
+
+
+def _should_offer_sell_patents(
+    cards: List[Dict[str, Any]],
+    waiting_for: Dict[str, Any],
+    player_state: Optional[Dict[str, Any]],
+    allow_mandatory_fallback: bool = True,
+) -> bool:
+    if not cards:
+        return False
+
+    min_cards = max(0, _safe_int(waiting_for.get('min', 1), 1))
+    can_pass = bool(waiting_for.get('canPass', False))
+    if allow_mandatory_fallback and min_cards > 0 and not can_pass:
+        # Mandatory sell flow: must keep action available.
+        return True
+
+    if not isinstance(player_state, dict):
+        return bool(min_cards > 0)
+    player = player_state.get('thisPlayer', {}) or {}
+    if not isinstance(player, dict):
+        return bool(min_cards > 0)
+    hand_cards = player_state.get('cardsInHand', []) or []
+    if not isinstance(hand_cards, list) or not hand_cards:
+        hand_cards = cards
+
+    game = player_state.get('game', {}) if isinstance(player_state.get('game', {}), dict) else {}
+    generation = _safe_int(game.get('generation', 1), 1)
+    sell_cap = min(len(cards), max(1, _sell_patents_cap_for_generation(generation)))
+    max_cards = max(min_cards, _safe_int(waiting_for.get('max', len(cards)), len(cards)))
+    sell_cap = min(sell_cap, max_cards)
+    if sell_cap <= 0:
+        return False
+
+    # Only offer selling when it unlocks at least one meaningful immediate play.
+    for hand_card in hand_cards:
+        if not isinstance(hand_card, dict):
+            continue
+        needed = _extra_mc_needed_to_afford(player, _with_metadata_tags(hand_card), sell_cap)
+        if needed is None or needed <= 0:
+            continue
+        if needed > sell_cap:
+            continue
+        if _is_engine_or_persistent_card(hand_card) or _card_cost(hand_card) >= 15:
+            return True
+
+    return bool(allow_mandatory_fallback and min_cards > 0 and not can_pass)
+
+
 def _select_patents_to_sell(
     cards: List[Dict[str, Any]],
     waiting_for: Dict[str, Any],
@@ -184,23 +256,46 @@ def _select_patents_to_sell(
         if len(selected_by_mask) >= min_cards:
             return selected_by_mask[:max_cards]
 
-    ranked_all = sorted(
-        cards,
-        key=lambda c: (_card_cost(c), str(c.get('name', '') or ''))
-    )
-
-    # Strategic sell: if possible, sell exactly enough cheap cards to afford
-    # the best reachable card in hand (prioritize VP gain).
     player = (player_state or {}).get('thisPlayer', {}) if isinstance(player_state, dict) else {}
+    game = (player_state or {}).get('game', {}) if isinstance(player_state, dict) else {}
+    generation = _safe_int(game.get('generation', 1), 1)
+    strategic_sell_cap = _sell_patents_cap_for_generation(generation)
+    can_pass = bool(waiting_for.get('canPass', False))
+
+    def _sell_priority(card: Dict[str, Any]) -> Tuple[float, int, str]:
+        """Lower tuple means more disposable in a sell-patents action."""
+        name = str(card.get('name', '') or '')
+        meta = _metadata_for_card(card)
+        tags = _card_tags(card)
+        has_action = bool(card.get('hasAction', meta.get('hasAction', False)))
+        vp = float(_card_vp(card))
+        keep_signal = 0.0
+        if has_action:
+            keep_signal += 2.8
+        if vp > 0:
+            keep_signal += min(vp, 3.0) * 1.4
+        if tags.get('Science'):
+            keep_signal += 0.8
+        if tags.get('Building') or tags.get('Space'):
+            keep_signal += 0.35
+        if player and _can_afford_card(player, card):
+            keep_signal += 1.1
+        return (keep_signal, _card_cost(card), name)
+
+    ranked_all = sorted(cards, key=_sell_priority)
+
+    # Strategic sell: only sell up to a small cap to unlock a high-value card.
     if player and len(cards) > 1:
         hand_cards = (player_state or {}).get('cardsInHand', []) if isinstance(player_state, dict) else []
         if not isinstance(hand_cards, list) or not hand_cards:
             hand_cards = cards
 
         max_sell_for_target = min(max_cards, len(cards) - 1)
+        max_sell_for_target = min(max_sell_for_target, strategic_sell_cap)
         best_target_name: Optional[str] = None
         best_needed: Optional[int] = None
         best_rank: Optional[Tuple[int, int, int]] = None
+        best_target_persistent = False
 
         for hand_card in hand_cards:
             candidate = _with_metadata_tags(hand_card)
@@ -212,16 +307,22 @@ def _select_patents_to_sell(
                 continue
             if needed > max_sell_for_target:
                 continue
+            target_persistent = _is_engine_or_persistent_card(candidate)
 
             # Higher VP first, then fewer sells, then higher impact/cost card.
-            rank = (_card_vp(candidate), -int(needed), _card_cost(candidate))
+            rank = (1 if target_persistent else 0, _card_vp(candidate), -int(needed), _card_cost(candidate))
             if best_rank is None or rank > best_rank:
                 best_rank = rank
                 best_target_name = name
                 best_needed = int(needed)
+                best_target_persistent = bool(target_persistent)
+
+        # If pass is legal, skip selling unless it unlocks a persistent/engine target.
+        if can_pass and (best_target_name is None or not best_target_persistent):
+            return []
 
         if best_target_name is not None and best_needed is not None:
-            sell_count = max(min_cards, min(max_cards, best_needed))
+            sell_count = max(min_cards, min(max_cards, best_needed, strategic_sell_cap))
             sell_pool = [c for c in ranked_all if str(c.get('name', '') or '') != best_target_name]
             if len(sell_pool) < sell_count:
                 sell_pool = ranked_all
@@ -237,7 +338,11 @@ def _select_patents_to_sell(
                 return selected_names[:max_cards]
 
     # Conservative default: sell the cheapest cards first.
+    if can_pass:
+        return []
     default_count = max(min_cards, 1)
+    default_count = min(default_count, strategic_sell_cap)
+    default_count = max(min_cards, min(default_count, max_cards))
     selected_default = []
     for card in ranked_all:
         name = str(card.get('name', '') or '')
@@ -2570,7 +2675,12 @@ class ActionDecoder:
                         else:
                             allow_select_option = False
                     elif option_type in ['selectCard', 'card'] and 'sell patents' in option_title_l:
-                        if option.get('cards', []):
+                        if _should_offer_sell_patents(
+                            option.get('cards', []),
+                            option,
+                            player_state,
+                            allow_mandatory_fallback=False,
+                        ):
                             available_actions.append(702)
                             added_concrete_action = True
                         else:
@@ -2626,7 +2736,7 @@ class ActionDecoder:
                     if not self._is_convert_heat_wasteful(player_state or {}):
                         available_actions.append(701)
                 elif 'sell patents' in title:
-                    if cards:
+                    if _should_offer_sell_patents(cards, waiting_for, player_state):
                         available_actions.append(702)
                 elif 'standard project' in title:
                     enabled_cards = [
@@ -2697,7 +2807,7 @@ class ActionDecoder:
                     if not self._is_convert_heat_wasteful(player_state or {}):
                         available_actions.append(701)
                 elif 'sell patents' in title:
-                    if cards:
+                    if _should_offer_sell_patents(cards, waiting_for, player_state):
                         available_actions.append(702)
                 else:
                     if _is_card_selection_prompt(waiting_for) and max_cards > 1:

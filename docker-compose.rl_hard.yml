@@ -293,9 +293,16 @@ services:
       - RL_CHECKPOINT_DIR=/app/rl-models/checkpoints
       - TM_CARD_METADATA_PATH=/app/card_metadata.json
       
-      # Agent Architecture (Hard Mode)
-      - AGENT_HIDDEN_SIZE=512
-      - AGENT_NUM_LAYERS=5
+      # Agent Architecture (Resource-pattern upgrade)
+      - AGENT_HIDDEN_SIZE=1024
+      - AGENT_NUM_LAYERS=8
+      - AGENT_CARD_TOKEN_DIM=20
+      - AGENT_TABLEAU_TOKEN_COUNT=10
+      - AGENT_HAND_TOKEN_COUNT=4
+      - AGENT_OPPONENT_TOKEN_COUNT=6
+      - AGENT_TRANSFORMER_EMBED_DIM=256
+      - AGENT_TRANSFORMER_HEADS=16
+      - AGENT_TRANSFORMER_LAYERS=4
       
       # Scoring Mode
       - SCORING_MODE=HARD
@@ -305,12 +312,12 @@ services:
       - SELECTION_RANK_4_POINTS=5
       - SELECTION_INCLUDE_TRAINING_POOL=0
       
-      # PPO Configuration (Aggressive)
+      # PPO Configuration (Aggressive, higher-capacity model)
       - PPO_ENABLE=true
-      - PPO_ROLLOUT_STEPS=24576 
+      - PPO_ROLLOUT_STEPS=49152
       - PPO_MIN_STEPS_PER_AGENT=2048
-      - PPO_EPOCHS=4
-      - PPO_MINIBATCH_SIZE=1024
+      - PPO_EPOCHS=10
+      - PPO_MINIBATCH_SIZE=1536
       - PPO_ENTROPY_COEF=0.010
       - PPO_VALUE_COEF=1.0
       - PPO_TARGET_KL=0.015
@@ -332,7 +339,7 @@ services:
       # Promotion Gates (stricter than defaults)
       - PROMOTION_GATE_ENABLED=true
       - GATE_MIN_CARD_PLAYS_PER_GAME=10.0
-      - GATE_MAX_STANDARD_PROJECT_RATIO=0.30
+      - GATE_MAX_STANDARD_PROJECT_RATIO=0.35
       - GATE_MIN_STEEL_SPENT_PER_GAME=4.0
       - GATE_MIN_TITANIUM_SPENT_PER_GAME=2.0
       - GATE_MIN_STEEL_CONVERSION_EFFICIENCY=0.08

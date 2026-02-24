@@ -42,6 +42,7 @@ def _tournament_result(source, players):
 def test_selection_excludes_training_pool_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SELECTION_INCLUDE_TRAINING_POOL", raising=False)
     monkeypatch.setenv("SELECTION_INCLUDE_INCOMPLETE_GAMES", "0")
+    monkeypatch.setenv("SELECTION_WIN_RATE_WEIGHT", "0")
 
     population = _population()
     main_result = _tournament_result(
@@ -76,6 +77,7 @@ def test_selection_excludes_training_pool_by_default(monkeypatch: pytest.MonkeyP
 def test_selection_includes_training_pool_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SELECTION_INCLUDE_TRAINING_POOL", "1")
     monkeypatch.setenv("SELECTION_INCLUDE_INCOMPLETE_GAMES", "0")
+    monkeypatch.setenv("SELECTION_WIN_RATE_WEIGHT", "0")
 
     population = _population()
     main_result = _tournament_result(
@@ -112,6 +114,7 @@ def test_selection_includes_training_pool_when_enabled(monkeypatch: pytest.Monke
 def test_selection_source_backward_compat_and_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SELECTION_INCLUDE_TRAINING_POOL", raising=False)
     monkeypatch.setenv("SELECTION_INCLUDE_INCOMPLETE_GAMES", "0")
+    monkeypatch.setenv("SELECTION_WIN_RATE_WEIGHT", "0")
 
     population = _population()
     missing_source_result = _tournament_result(
@@ -143,3 +146,43 @@ def test_selection_source_backward_compat_and_diagnostics(monkeypatch: pytest.Mo
     assert diagnostics["selection/training_pool_games_counted"] == 0
     assert fitness_scores[0] == pytest.approx(expected_a)
     assert fitness_scores[1] == pytest.approx(expected_b)
+
+
+def test_selection_win_rate_bonus_prioritizes_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SELECTION_INCLUDE_TRAINING_POOL", raising=False)
+    monkeypatch.setenv("SELECTION_INCLUDE_INCOMPLETE_GAMES", "0")
+    monkeypatch.setenv("SELECTION_WIN_RATE_MIN_GAMES", "1")
+    monkeypatch.setenv("SELECTION_WIN_RATE_EXPONENT", "1.0")
+
+    population = _population()
+    result_1 = _tournament_result(
+        "main",
+        [
+            _player("agent-a", rank=1, victory_points=90),
+            _player("agent-b", rank=2, victory_points=88),
+        ],
+    )
+    result_2 = _tournament_result(
+        "main",
+        [
+            _player("agent-a", rank=4, victory_points=70),
+            _player("agent-b", rank=2, victory_points=88),
+        ],
+    )
+
+    monkeypatch.setenv("SELECTION_WIN_RATE_WEIGHT", "0")
+    baseline_scores, _ = calculate_selection_fitness_with_diagnostics(
+        population=population,
+        tournament_results=[result_1, result_2],
+    )
+
+    monkeypatch.setenv("SELECTION_WIN_RATE_WEIGHT", "200")
+    boosted_scores, diagnostics = calculate_selection_fitness_with_diagnostics(
+        population=population,
+        tournament_results=[result_1, result_2],
+    )
+
+    delta_a = boosted_scores[0] - baseline_scores[0]
+    delta_b = boosted_scores[1] - baseline_scores[1]
+    assert delta_a > delta_b
+    assert diagnostics["selection/win_rate_weight"] == pytest.approx(200.0)

@@ -364,10 +364,40 @@ class StateEncoder:
             encoding[i] = min(encoding[i], 1.0)
         
         # Card resources (microbes, animals, etc.)
+        vp_resource_cards = 0.0
+        conversion_cards = 0.0
+        stealing_cards = 0.0
+        adding_cards = 0.0
+        conversion_ready = 0.0
+        vp_resource_value = 0.0
         for card in tableau:
-            resources = card.get('resources', 0)
+            resources = self._get_numeric_resource_count(card)
+            behavior = self._classify_card_resource_behavior(card)
+            vp_per_resource = self._extract_vp_per_resource(card)
             if resources > 0:
                 encoding[42] += min(resources / 10.0, 1.0)  # Normalized resource count
+            if behavior == 'vp_accumulation':
+                vp_resource_cards += 1.0
+                if vp_per_resource > 0.0 and resources > 0.0:
+                    vp_resource_value += min((resources * vp_per_resource) / 10.0, 1.0)
+            elif behavior == 'conversion':
+                conversion_cards += 1.0
+                threshold = self._get_conversion_threshold(card)
+                if threshold > 0.0 and resources >= threshold:
+                    conversion_ready += 1.0
+            elif behavior == 'stealing':
+                stealing_cards += 1.0
+            elif behavior == 'adding':
+                adding_cards += 1.0
+
+        total_cards = float(max(len(tableau), 1))
+        encoding[43] = min(vp_resource_cards / 6.0, 1.0)
+        encoding[44] = min(conversion_cards / 6.0, 1.0)
+        encoding[45] = min(stealing_cards / 6.0, 1.0)
+        encoding[46] = min(adding_cards / 6.0, 1.0)
+        encoding[47] = min(vp_resource_value / max(vp_resource_cards, 1.0), 1.0) if vp_resource_cards > 0 else 0.0
+        encoding[48] = min(conversion_ready / max(conversion_cards, 1.0), 1.0) if conversion_cards > 0 else 0.0
+        encoding[49] = min((vp_resource_cards + conversion_cards + stealing_cards + adding_cards) / total_cards, 1.0)
         
         return encoding
     
@@ -691,6 +721,171 @@ class StateEncoder:
             return 1.0
         return max(0.0, 1.0 - ((cost - purchasing_power) / 25.0))
 
+    def _get_card_metadata(self, card: Dict[str, Any]) -> Dict[str, Any]:
+        name = str(card.get('name', '') or '')
+        if not name:
+            return {}
+        return self.card_metadata_by_name.get(name, {}) or {}
+
+    def _get_numeric_resource_count(self, card: Dict[str, Any]) -> float:
+        try:
+            value = float(card.get('resources', 0) or 0)
+            return max(value, 0.0)
+        except Exception:
+            return 0.0
+
+    def _normalize_resource_type(self, value: Any) -> str:
+        raw = str(value or '').strip().lower().replace('-', '').replace('_', '').replace(' ', '')
+        if not raw:
+            return ''
+        alias = {
+            'microbe': 'microbe',
+            'microbes': 'microbe',
+            'animal': 'animal',
+            'animals': 'animal',
+            'floater': 'floater',
+            'floaters': 'floater',
+            'science': 'science',
+            'fighter': 'fighter',
+            'fighters': 'fighter',
+            'asteroid': 'asteroid',
+            'astro': 'asteroid',
+        }
+        return alias.get(raw, raw)
+
+    def _get_card_resource_type(self, card: Dict[str, Any]) -> str:
+        card_type = self._normalize_resource_type(card.get('resourceType', ''))
+        if card_type:
+            return card_type
+        meta = self._get_card_metadata(card)
+        return self._normalize_resource_type(meta.get('resourceType', ''))
+
+    def _extract_vp_per_resource(self, card: Dict[str, Any]) -> float:
+        meta = self._get_card_metadata(card)
+        raw_meta = meta.get('vpPerResource')
+        raw_card = card.get('vpPerResource')
+        for value in (raw_card, raw_meta):
+            try:
+                vp_per_resource = float(value)
+                if vp_per_resource > 0.0:
+                    return vp_per_resource
+            except Exception:
+                continue
+
+        dynamic_meta = meta.get('dynamicVictoryPoints') if isinstance(meta.get('dynamicVictoryPoints'), dict) else {}
+        dynamic_card = card.get('dynamicVictoryPoints') if isinstance(card.get('dynamicVictoryPoints'), dict) else {}
+        for dyn in (dynamic_card, dynamic_meta):
+            try:
+                points = float(dyn.get('points', 0) or 0)
+                target = float(dyn.get('target', 0) or 0)
+                if points > 0.0 and target > 0.0:
+                    return points / target
+            except Exception:
+                continue
+
+        for raw_vp in (card.get('victoryPoints', None), meta.get('victoryPoints', None)):
+            if isinstance(raw_vp, str) and '/' in raw_vp:
+                parts = raw_vp.split('/')
+                if len(parts) >= 2:
+                    try:
+                        points = float(parts[0])
+                        target = float(parts[1])
+                        if points > 0.0 and target > 0.0:
+                            return points / target
+                    except Exception:
+                        pass
+        return 0.0
+
+    def _get_conversion_threshold(self, card: Dict[str, Any]) -> float:
+        meta = self._get_card_metadata(card)
+        for value in (card.get('resourceConversionThreshold', None), meta.get('resourceConversionThreshold', None)):
+            try:
+                threshold = float(value)
+                if threshold > 0.0:
+                    return threshold
+            except Exception:
+                continue
+        return 0.0
+
+    def _classify_card_resource_behavior(self, card: Dict[str, Any]) -> str:
+        meta = self._get_card_metadata(card)
+        behavior_raw = str(card.get('resourceBehavior', meta.get('resourceBehavior', 'none')) or 'none').strip().lower()
+        known_behaviors = {'vp_accumulation', 'conversion', 'stealing', 'adding', 'none'}
+        behavior = behavior_raw if behavior_raw in known_behaviors else 'none'
+
+        adds_to_any = bool(card.get('resourceActionAddsToAnyCard', meta.get('resourceActionAddsToAnyCard', False)))
+        targets_opponent = bool(card.get('resourceActionTargetsOpponent', meta.get('resourceActionTargetsOpponent', False)))
+        removes_resources = bool(card.get('resourceActionRemovesResources', meta.get('resourceActionRemovesResources', False)))
+        vp_per_resource = self._extract_vp_per_resource(card)
+        has_resource_type = bool(self._get_card_resource_type(card))
+
+        # Prefer explicit action semantics first when available.
+        if targets_opponent and removes_resources:
+            return 'stealing'
+        if adds_to_any:
+            return 'adding'
+        if removes_resources:
+            return 'conversion'
+        if vp_per_resource > 0.0 and has_resource_type:
+            return 'vp_accumulation'
+        if behavior in known_behaviors:
+            return behavior
+        return 'none'
+
+    def _estimate_final_vp_from_resources(self, card: Dict[str, Any]) -> float:
+        vp_per_resource = self._extract_vp_per_resource(card)
+        if vp_per_resource <= 0.0:
+            return 0.0
+        return self._get_numeric_resource_count(card) * vp_per_resource
+
+    def _aggregate_resource_totals_by_type(self, cards: List[Dict[str, Any]]) -> Dict[str, float]:
+        totals: Dict[str, float] = {
+            'microbe': 0.0,
+            'animal': 0.0,
+            'floater': 0.0,
+            'science': 0.0,
+            'fighter': 0.0,
+            'asteroid': 0.0,
+        }
+        for card in cards or []:
+            if not isinstance(card, dict):
+                continue
+            resource_type = self._get_card_resource_type(card)
+            if resource_type not in totals:
+                continue
+            totals[resource_type] += self._get_numeric_resource_count(card)
+        return totals
+
+    def _aggregate_opponent_resource_totals(
+        self,
+        players: List[Dict[str, Any]],
+        own_id: str,
+        own_color: str,
+    ) -> Dict[str, float]:
+        totals: Dict[str, float] = {
+            'microbe': 0.0,
+            'animal': 0.0,
+            'floater': 0.0,
+            'science': 0.0,
+            'fighter': 0.0,
+            'asteroid': 0.0,
+        }
+        for rival in players or []:
+            if not isinstance(rival, dict):
+                continue
+            rival_id = str(rival.get('id', '') or '')
+            rival_color = str(rival.get('color', '') or '').strip().lower()
+            if own_id and rival_id == own_id:
+                continue
+            if own_color and rival_color and rival_color == own_color:
+                continue
+            rival_totals = self._aggregate_resource_totals_by_type(
+                [card for card in (rival.get('tableau', []) or []) if isinstance(card, dict)]
+            )
+            for key, value in rival_totals.items():
+                totals[key] = totals.get(key, 0.0) + float(value)
+        return totals
+
     def _build_card_token_features(
         self,
         card: Dict[str, Any],
@@ -698,6 +893,7 @@ class StateEncoder:
         own_tag_profile: Dict[str, int],
         opponent_tag_profile: Dict[str, int],
         card_group: str,
+        opponent_resource_totals: Optional[Dict[str, float]] = None,
     ) -> List[float]:
         name = str(card.get('name', '') or '')
         tags = self._get_card_tags(name, fallback=card.get('tags', {}))
@@ -731,10 +927,43 @@ class StateEncoder:
             float(final_slot),
         ]
 
-        if len(base_features) >= self.card_token_dim:
-            return base_features[:self.card_token_dim]
+        resource_type = self._get_card_resource_type(card)
+        behavior = self._classify_card_resource_behavior(card)
+        resources = self._get_numeric_resource_count(card)
+        vp_per_resource = self._extract_vp_per_resource(card)
+        estimated_vp = self._estimate_final_vp_from_resources(card)
+        threshold = self._get_conversion_threshold(card)
+        readiness = (resources / threshold) if threshold > 0.0 else 0.0
+        opponent_totals = opponent_resource_totals or {}
+        opponent_pressure = 0.0
+        if resource_type:
+            opponent_pressure = min(float(opponent_totals.get(resource_type, 0.0)) / 12.0, 1.0)
 
-        padded = list(base_features)
+        resource_features = [
+            min(resources / 20.0, 1.0),                                 # [8] resource count on card
+            1.0 if resource_type else 0.0,                               # [9] has resource type
+            1.0 if resource_type == 'microbe' else 0.0,                  # [10] resource type microbe
+            1.0 if resource_type == 'animal' else 0.0,                   # [11] resource type animal
+            1.0 if resource_type == 'floater' else 0.0,                  # [12] resource type floater
+            1.0 if behavior == 'vp_accumulation' else 0.0,               # [13] VP accumulation behavior
+            1.0 if behavior == 'conversion' else 0.0,                    # [14] conversion behavior
+            1.0 if behavior == 'stealing' else 0.0,                      # [15] stealing behavior
+            1.0 if behavior == 'adding' else 0.0,                        # [16] adding behavior
+            min(vp_per_resource / 2.0, 1.0),                             # [17] VP ratio signal
+            min(estimated_vp / 15.0, 1.0),                               # [18] expected VP at game end
+            min(readiness / 3.0, 1.0),                                   # [19] conversion readiness
+        ]
+        if behavior == 'stealing':
+            # Local indices are [0..11] for resource_features; slot 11 is readiness/pressure.
+            resource_features[11] = max(resource_features[11], opponent_pressure)
+        elif behavior == 'adding':
+            resource_features[11] = max(resource_features[11], opponent_pressure)
+
+        all_features = base_features + resource_features
+        if len(all_features) >= self.card_token_dim:
+            return all_features[:self.card_token_dim]
+
+        padded = list(all_features)
         while len(padded) < self.card_token_dim:
             padded.append(0.0)
         return padded
@@ -747,6 +976,7 @@ class StateEncoder:
         own_tag_profile: Dict[str, int],
         opponent_tag_profile: Dict[str, int],
         card_group: str,
+        opponent_resource_totals: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
         if count <= 0:
             return []
@@ -769,10 +999,44 @@ class StateEncoder:
             opp_overlap_norm = min(opp_overlap / 8.0, 1.0)
             hate_signal = max(0.0, opp_overlap_norm - own_overlap_norm)
 
+            behavior = self._classify_card_resource_behavior(card)
+            resource_type = self._get_card_resource_type(card)
+            resources_norm = min(self._get_numeric_resource_count(card) / 12.0, 1.0)
+            vp_per_resource = self._extract_vp_per_resource(card)
+            vp_resource_value = min((self._get_numeric_resource_count(card) * max(vp_per_resource, 0.0)) / 12.0, 1.0)
+            threshold = self._get_conversion_threshold(card)
+            conversion_ready = min((self._get_numeric_resource_count(card) / threshold), 2.0) / 2.0 if threshold > 0.0 else 0.0
+            opponent_pressure = 0.0
+            if resource_type and isinstance(opponent_resource_totals, dict):
+                opponent_pressure = min(float(opponent_resource_totals.get(resource_type, 0.0)) / 12.0, 1.0)
+
+            resource_score = 0.0
+            if behavior == 'vp_accumulation':
+                resource_score = (0.65 * vp_resource_value) + (0.35 * resources_norm)
+            elif behavior == 'conversion':
+                threshold_norm = min(threshold / 8.0, 1.0) if threshold > 0.0 else 0.0
+                resource_score = (0.55 * conversion_ready) + (0.25 * resources_norm) + (0.20 * (1.0 - threshold_norm))
+            elif behavior == 'stealing':
+                resource_score = (0.50 * opponent_pressure) + (0.25 * resources_norm) + (0.25 * hate_signal)
+            elif behavior == 'adding':
+                resource_score = (0.45 * resources_norm) + (0.35 * opponent_pressure)
+
             if card_group == 'tableau':
-                score = (1.10 * vp_proxy) + (0.80 * key_tag_density) + (0.75 * own_overlap_norm) - (0.20 * cost_norm)
+                score = (
+                    (1.10 * vp_proxy)
+                    + (0.80 * key_tag_density)
+                    + (0.75 * own_overlap_norm)
+                    + (0.80 * resource_score)
+                    - (0.20 * cost_norm)
+                )
             elif card_group == 'opponent':
-                score = (1.10 * vp_proxy) + (0.90 * key_tag_density) + (0.80 * opp_overlap_norm) + (0.15 * cost_norm)
+                score = (
+                    (1.10 * vp_proxy)
+                    + (0.90 * key_tag_density)
+                    + (0.80 * opp_overlap_norm)
+                    + (0.45 * resources_norm)
+                    + (0.15 * cost_norm)
+                )
             else:
                 score = (
                     (1.15 * affordability)
@@ -780,6 +1044,7 @@ class StateEncoder:
                     + (0.60 * key_tag_density)
                     + (0.55 * own_overlap_norm)
                     + (0.40 * hate_signal)
+                    + (0.55 * resource_score)
                     + (0.20 * (1.0 - cost_norm))
                 )
 
@@ -824,6 +1089,7 @@ class StateEncoder:
             opponent_tableau_cards.extend(
                 [card for card in (rival.get('tableau', []) or []) if isinstance(card, dict)]
             )
+        opponent_resource_totals = self._aggregate_opponent_resource_totals(players, own_id, own_color)
 
         own_tag_profile = self._build_tag_profile_from_cards(tableau_cards)
         opponent_tag_profile = self._build_tag_profile_from_cards(opponent_tableau_cards)
@@ -835,6 +1101,7 @@ class StateEncoder:
             own_tag_profile,
             opponent_tag_profile,
             card_group='tableau',
+            opponent_resource_totals=opponent_resource_totals,
         )
         remaining_slots = max(0, token_slots - len(selected_tableau))
         selected_hand = self._select_top_cards(
@@ -844,6 +1111,7 @@ class StateEncoder:
             own_tag_profile,
             opponent_tag_profile,
             card_group='hand',
+            opponent_resource_totals=opponent_resource_totals,
         )
         remaining_slots = max(0, remaining_slots - len(selected_hand))
         selected_opponent = self._select_top_cards(
@@ -853,6 +1121,7 @@ class StateEncoder:
             own_tag_profile,
             opponent_tag_profile,
             card_group='opponent',
+            opponent_resource_totals=opponent_resource_totals,
         )
 
         token_cards: List[Tuple[Dict[str, Any], str]] = []
@@ -868,6 +1137,7 @@ class StateEncoder:
                 own_tag_profile=own_tag_profile,
                 opponent_tag_profile=opponent_tag_profile,
                 card_group=card_group,
+                opponent_resource_totals=opponent_resource_totals,
             )
             token_vec = np.asarray(token_values[:self.card_token_dim], dtype=np.float32)
             base = idx * self.card_token_dim
@@ -1186,7 +1456,42 @@ class StateEncoder:
                 encoding[base_idx + 7] = min(player.get('plantProduction', 0) / 20.0, 1.0)
                 encoding[base_idx + 8] = min(player.get('energyProduction', 0) / 20.0, 1.0)
                 encoding[base_idx + 9] = min(player.get('heatProduction', 0) / 20.0, 1.0)
-                
+
+                # Opponent card-resource detail (slots 10-19 of each opponent block).
+                tableau_cards = [card for card in (player.get('tableau', []) or []) if isinstance(card, dict)]
+                resource_totals = self._aggregate_resource_totals_by_type(tableau_cards)
+                total_resource_tokens = 0.0
+                resource_holders = 0.0
+                highest_stack = 0.0
+                for card in tableau_cards:
+                    resources = self._get_numeric_resource_count(card)
+                    if resources <= 0.0:
+                        continue
+                    resource_type = self._get_card_resource_type(card)
+                    if resource_type:
+                        resource_holders += 1.0
+                    total_resource_tokens += resources
+                    highest_stack = max(highest_stack, resources)
+
+                stealable_total = (
+                    resource_totals.get('microbe', 0.0)
+                    + resource_totals.get('animal', 0.0)
+                    + resource_totals.get('floater', 0.0)
+                    + resource_totals.get('science', 0.0)
+                    + resource_totals.get('fighter', 0.0)
+                )
+
+                encoding[base_idx + 10] = min(total_resource_tokens / 20.0, 1.0)
+                encoding[base_idx + 11] = min(resource_holders / 8.0, 1.0)
+                encoding[base_idx + 12] = min(resource_totals.get('microbe', 0.0) / 10.0, 1.0)
+                encoding[base_idx + 13] = min(resource_totals.get('animal', 0.0) / 10.0, 1.0)
+                encoding[base_idx + 14] = min(resource_totals.get('floater', 0.0) / 10.0, 1.0)
+                encoding[base_idx + 15] = min(resource_totals.get('science', 0.0) / 10.0, 1.0)
+                encoding[base_idx + 16] = min(resource_totals.get('fighter', 0.0) / 10.0, 1.0)
+                encoding[base_idx + 17] = min(resource_totals.get('asteroid', 0.0) / 10.0, 1.0)
+                encoding[base_idx + 18] = min(highest_stack / 8.0, 1.0)
+                encoding[base_idx + 19] = min(stealable_total / 15.0, 1.0)
+                 
                 opponent_idx += 1
         
         return encoding

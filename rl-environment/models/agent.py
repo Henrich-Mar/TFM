@@ -1904,6 +1904,116 @@ class RLAgent:
             return 'sell_patents'
         return 'other'
 
+    def _describe_action(self, action_index: int, player_state: Dict[str, Any]) -> str:
+        """Provide a human-readable description for an action index based on current state."""
+        waiting_for = player_state.get('waitingFor', {})
+        input_type = waiting_for.get('type', '')
+        
+        # Base components from action_decoder
+        pass_base = int(self.action_decoder.action_types.get('PASS', 900))
+        mask_base = int(self.action_decoder.action_types.get('SELECT_CARD_MASK', -1))
+        mask_limit = int(getattr(self.action_decoder, 'card_selection_mask_limit', 0) or 0)
+        startup_base = int(self.action_decoder.action_types.get('STARTUP_PLAN', -1))
+        startup_limit = int(getattr(self.action_decoder, 'startup_plan_limit', 0) or 0)
+
+        if action_index >= pass_base:
+            return "PASS"
+        
+        # PLAY_CARD range (0-99)
+        if action_index < 100:
+            cards = waiting_for.get('cards', [])
+            if 0 <= action_index < len(cards):
+                card_name = cards[action_index].get('name', f"idx:{action_index}")
+                return f"PLAY_CARD({card_name})"
+            # Fallback for nested OR menus
+            if input_type == 'or':
+                for opt in waiting_for.get('options', []):
+                    if opt.get('type') in ['projectCard', 'selectProjectCardToPlay', 'card', 'selectCard']:
+                        opt_cards = opt.get('cards', [])
+                        if 0 <= action_index < len(opt_cards):
+                            return f"PLAY_CARD({opt_cards[action_index].get('name')})"
+            return f"PLAY_CARD({action_index})"
+
+        # STANDARD_PROJECT range (100-199)
+        if action_index < 200:
+            idx = action_index - 100
+            sp_names = getattr(self.action_decoder, 'standard_projects', [])
+            if 0 <= idx < len(sp_names):
+                return f"STANDARD_PROJECT({sp_names[idx]})"
+            sp_cards = waiting_for.get('cards', [])
+            if 0 <= idx < len(sp_cards):
+                return f"STANDARD_PROJECT({sp_cards[idx].get('name')})"
+            return f"STANDARD_PROJECT({idx})"
+
+        # SELECT_OPTION range (200-299)
+        if 200 <= action_index < 300:
+            idx = action_index - 200
+            options = waiting_for.get('options', [])
+            if 0 <= idx < len(options):
+                title = options[idx].get('title', '')
+                if isinstance(title, dict): title = title.get('message', '')
+                title = str(title).strip()
+                if not title: title = options[idx].get('type', f"idx:{idx}")
+                return f"SELECT_OPTION({title})"
+            return f"SELECT_OPTION({idx})"
+
+        # Specialized indices (700+)
+        if action_index == 700:
+            if input_type == 'selectResources': return "SELECT_RESOURCES"
+            return "CONVERT_PLANTS"
+        if action_index == 701: return "CONVERT_HEAT"
+        if action_index == 702: return "SELL_PATENTS"
+        if action_index == 710: return "PROD_TO_LOSE"
+        if 720 <= action_index < 730: return f"SELECT_COLONY({action_index-720})"
+        if 730 <= action_index < 740: return f"SELECT_PARTY({action_index-730})"
+        if 740 <= action_index < 750: return f"SELECT_DELEGATE({action_index-740})"
+        if 750 <= action_index < 760: return f"SELECT_GLOBAL_EVENT({action_index-750})"
+        if 760 <= action_index < 770: return f"SELECT_UNDERGROUND_TOKEN({action_index-760})"
+        if action_index == 800: return "STARTUP_FALLBACK"
+        if action_index == 810: return "ARES_GLOBAL_PARAMS"
+        if 820 <= action_index < 830: return f"SELECT_RESOURCE_TYPE({action_index-820})"
+        if action_index == 830: return "AND_CHOICE"
+        if 840 <= action_index < 850: return f"SELECT_POLICY({action_index-840})"
+        
+        # STARTUP_PLAN range
+        if startup_base >= 0 and startup_limit > 0 and startup_base <= action_index < (startup_base + startup_limit):
+            return f"STARTUP_PLAN({action_index - startup_base})"
+
+        # SELECT_CARD_MASK range
+        if mask_base >= 0 and mask_limit > 0 and mask_base <= action_index < (mask_base + mask_limit):
+            return f"CARD_SELECTION_MASK({action_index - mask_base})"
+
+        # AWARD / PLAYER selection (600+)
+        if 600 <= action_index < 700:
+            if input_type == 'selectPlayer':
+                players = waiting_for.get('players', [])
+                idx = action_index - 600
+                if 0 <= idx < len(players):
+                    name = players[idx].get('name', players[idx].get('color', f"idx:{idx}"))
+                    return f"PLAYER({name})"
+            if input_type == 'or':
+                idx = action_index - 600
+                for opt in waiting_for.get('options', []):
+                    opt_title = opt.get('title', '')
+                    if isinstance(opt_title, dict): opt_title = opt_title.get('message', '')
+                    if 'award' in str(opt_title).lower():
+                        award_opts = opt.get('options', [])
+                        if 0 <= idx < len(award_opts):
+                            title = award_opts[idx].get('title', '')
+                            if isinstance(title, dict): title = title.get('message', '')
+                            return f"AWARD({title})"
+            return f"OTHER({action_index})"
+
+        # AMOUNT selection (500+)
+        if 500 <= action_index < 600:
+            return f"SELECT_AMOUNT({action_index - 500})"
+
+        # SPACE selection (300+)
+        if 300 <= action_index < 500:
+            return f"SELECT_SPACE({action_index - 300})"
+
+        return f"OTHER({action_index})"
+
     def _extract_standard_project_name(
         self,
         action_index: int,
@@ -2113,34 +2223,7 @@ class RLAgent:
             startup_base = int(self.action_decoder.action_types.get('STARTUP_PLAN', -1))
             startup_limit = int(getattr(self.action_decoder, 'startup_plan_limit', 0) or 0)
             for action_idx in available_actions:
-                if action_idx < 100:
-                    action_types.append(f"PLAY_CARD({action_idx})")
-                elif action_idx < 200:
-                    action_types.append(f"STANDARD_PROJECT({action_idx-100})")
-                elif startup_base >= 0 and startup_limit > 0 and startup_base <= action_idx < (startup_base + startup_limit):
-                    action_types.append(f"STARTUP_PLAN({action_idx - startup_base})")
-                elif action_idx >= 200 and action_idx < 300:  # SELECT_OPTION range
-                    option_idx = action_idx - 200
-                    option_name = str(option_idx)
-                    if option_idx < len(option_titles):
-                        title = option_titles[option_idx].get('title', '')
-                        if isinstance(title, dict):
-                            title = title.get('message', '')
-                        title = str(title).strip()
-                        option_name = title if title else option_titles[option_idx].get('type', option_name)
-                    action_types.append(f"SELECT_OPTION_{option_name}({action_idx})")
-                elif card_mask_base >= 0 and card_mask_limit > 0 and card_mask_base <= action_idx < (card_mask_base + card_mask_limit):
-                    action_types.append(f"CARD_SELECTION_MASK({action_idx - card_mask_base})")
-                elif action_idx == 700:
-                    action_types.append("CONVERT_PLANTS")
-                elif action_idx == 701:
-                    action_types.append("CONVERT_HEAT")
-                elif action_idx == 702:
-                    action_types.append("SELL_PATENTS")
-                elif action_idx >= 900:
-                    action_types.append("PASS")
-                else:
-                    action_types.append(f"OTHER({action_idx})")
+                action_types.append(self._describe_action(action_idx, player_state))
             
             logger.info(f"Available actions: {action_types}")
              

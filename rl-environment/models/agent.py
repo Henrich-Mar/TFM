@@ -526,8 +526,8 @@ class RLAgent:
             "PPO_LR_MAX",
             max(float(self.ppo_lr_min), float(self.ppo_learning_rate) * 5.0),
         )
-        self.ppo_lr_adapt_up = self._safe_env_float("PPO_LR_ADAPT_UP", 1.03)
-        self.ppo_lr_adapt_down = self._safe_env_float("PPO_LR_ADAPT_DOWN", 0.85)
+        self.ppo_lr_adapt_up = self._safe_env_float("PPO_LR_ADAPT_UP", 1.08)
+        self.ppo_lr_adapt_down = self._safe_env_float("PPO_LR_ADAPT_DOWN", 0.75)
         
         # Neural network
         self.network = TerraformingMarsNetwork(self.config)
@@ -561,7 +561,7 @@ class RLAgent:
         self.policy_epsilon_floor = max(0.0, self._safe_env_float("POLICY_EPSILON_FLOOR", 0.001))
         self.policy_temperature_cap = max(1e-3, self._safe_env_float("POLICY_TEMPERATURE_CAP", 1.0))
         self.policy_temperature_floor = max(1e-3, self._safe_env_float("POLICY_TEMPERATURE_FLOOR", 0.75))
-        self.project_card_priority_weight = max(0.1, self._safe_env_float("PLAY_CARD_PRIORITY_WEIGHT", 1.2))
+        self.project_card_priority_weight = max(0.1, self._safe_env_float("PLAY_CARD_PRIORITY_WEIGHT", 1.6))
         self.max_fallback_attempts = max(1, self._safe_env_int("MAX_FALLBACK_ACTION_ATTEMPTS", 6))
         self.max_fallback_random_retries_per_prompt = max(1, self._safe_env_int("MAX_FALLBACK_RANDOM_RETRIES_PER_PROMPT", 10))
         self.rejected_action_memory_size = max(64, self._safe_env_int("REJECTED_ACTION_MEMORY_SIZE", 2048))
@@ -573,10 +573,10 @@ class RLAgent:
             epochs=self._safe_env_int("PPO_EPOCHS", 4),
             minibatch_size=self._safe_env_int("PPO_MINIBATCH_SIZE", 1024),
             entropy_coef=self._safe_env_float("PPO_ENTROPY_COEF", 0.01),
-            value_coef=self._safe_env_float("PPO_VALUE_COEF", 0.5),
+            value_coef=self._safe_env_float("PPO_VALUE_COEF", 0.7),
             aux_coef=self._safe_env_float("PPO_AUX_COEF", 0.1),
             max_grad_norm=self._safe_env_float("PPO_MAX_GRAD_NORM", 1.0),
-            target_kl=self._safe_env_float("PPO_TARGET_KL", 0.02),
+            target_kl=self._safe_env_float("PPO_TARGET_KL", 0.01),
         )
         self.ppo_entropy_coef_start = max(
             0.0,
@@ -588,17 +588,17 @@ class RLAgent:
         )
         self.ppo_entropy_coef_anneal_games = max(
             1,
-            self._safe_env_int("PPO_ENTROPY_COEF_ANNEAL_GAMES", 1000),
+            self._safe_env_int("PPO_ENTROPY_COEF_ANNEAL_GAMES", 1500),
         )
         self.reward_shaping_initial_coef = max(0.0, self._safe_env_float("PPO_SHAPING_INITIAL_COEF", 1.0))
         self.reward_shaping_final_coef = max(0.0, self._safe_env_float("PPO_SHAPING_FINAL_COEF", 0.0))
-        self.reward_shaping_anneal_games = max(1, self._safe_env_int("PPO_SHAPING_ANNEAL_GAMES", 1200))
+        self.reward_shaping_anneal_games = max(1, self._safe_env_int("PPO_SHAPING_ANNEAL_GAMES", 2500))
         self.rare_state_priority_bonus = max(0.0, self._safe_env_float("PPO_RARE_STATE_PRIORITY_BONUS", 0.9))
         self.rare_high_cost_payment_threshold = max(1.0, self._safe_env_float("PPO_RARE_HIGH_COST_PAYMENT_THRESHOLD", 20.0))
-        self.reward_tr_weight = self._safe_env_float("PPO_SHAPING_TR_WEIGHT", 1.0)
-        self.reward_cards_vp_weight = self._safe_env_float("PPO_SHAPING_CARDS_VP_WEIGHT", 1.0)
-        self.reward_city_greenery_weight = self._safe_env_float("PPO_SHAPING_CITY_GREENERY_WEIGHT", 1.0)
-        self.reward_milestones_awards_weight = self._safe_env_float("PPO_SHAPING_MILESTONES_AWARDS_WEIGHT", 1.0)
+        self.reward_tr_weight = self._safe_env_float("PPO_SHAPING_TR_WEIGHT", 3.3)
+        self.reward_cards_vp_weight = self._safe_env_float("PPO_SHAPING_CARDS_VP_WEIGHT", 2.7)
+        self.reward_city_greenery_weight = self._safe_env_float("PPO_SHAPING_CITY_GREENERY_WEIGHT", 2.4)
+        self.reward_milestones_awards_weight = self._safe_env_float("PPO_SHAPING_MILESTONES_AWARDS_WEIGHT", 2.3)
         self.reward_other_weight = self._safe_env_float("PPO_SHAPING_OTHER_WEIGHT", 0.5)
         self.reward_debug_enabled = str(os.getenv("PPO_REWARD_DEBUG_ENABLED", "0")).strip().lower() not in ("0", "false", "no", "off")
         self.reward_debug_threshold = max(0.0, self._safe_env_float("PPO_REWARD_DEBUG_THRESHOLD", 0.001))

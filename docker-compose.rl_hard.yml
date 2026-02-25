@@ -354,9 +354,9 @@ services:
       - EVOLUTION_IMMIGRANT_RATIO=0.1
       
       # League - momentalne vypnuto aby sme najpr generizovali
-      - LEAGUE_ENABLE=false
+      - LEAGUE_ENABLE=true
       - TRAINING_POOL_GENERATION_WINDOW=20
-      - TRAINING_POOL_GAMES_PER_AGENT=1
+      - TRAINING_POOL_GAMES_PER_AGENT=3
       - FIXED_BENCHMARK_INTERVAL=3
       
       # System

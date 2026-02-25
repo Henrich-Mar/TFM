@@ -94,20 +94,26 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 
 _CARD_METADATA_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+_CARD_METADATA_LOWER_INDEX: Optional[Dict[str, str]] = None  # lower_name -> canonical key
 
 
 def _load_card_metadata() -> Dict[str, Dict[str, Any]]:
-    global _CARD_METADATA_CACHE
+    global _CARD_METADATA_CACHE, _CARD_METADATA_LOWER_INDEX
     if _CARD_METADATA_CACHE is not None:
         return _CARD_METADATA_CACHE
 
     module_dir = os.path.abspath(os.path.dirname(__file__))
     repo_root = os.path.abspath(os.path.join(module_dir, '..'))
+    two_up = os.path.abspath(os.path.join(module_dir, '..', '..'))
+    cwd = os.getcwd()
     candidate_paths = [
         os.getenv('TM_CARD_METADATA_PATH', ''),
         os.path.join(repo_root, 'card_metadata.json'),
         os.path.join(repo_root, 'terraforming-mars', 'card_metadata.json'),
         os.path.join(module_dir, 'card_metadata.json'),
+        os.path.join(two_up, 'card_metadata.json'),
+        os.path.join(cwd, 'card_metadata.json'),
+        '/app/card_metadata.json',
     ]
     for path in candidate_paths:
         if not path:
@@ -120,22 +126,37 @@ def _load_card_metadata() -> Dict[str, Dict[str, Any]]:
                 data = json.load(handle)
             if isinstance(data, dict):
                 normalized: Dict[str, Dict[str, Any]] = {}
+                lower_index: Dict[str, str] = {}
                 for name, meta in data.items():
-                    normalized[str(name or '')] = dict(meta or {})
+                    key = str(name or '').strip()
+                    if key:
+                        normalized[key] = dict(meta or {})
+                        lower_index[key.lower()] = key
                 _CARD_METADATA_CACHE = normalized
+                _CARD_METADATA_LOWER_INDEX = lower_index
                 return _CARD_METADATA_CACHE
         except Exception:
             continue
     _CARD_METADATA_CACHE = {}
+    _CARD_METADATA_LOWER_INDEX = {}
     return _CARD_METADATA_CACHE
 
 
 def _card_metadata_by_name(card_name: Any) -> Dict[str, Any]:
+    """Look up card metadata by name. Uses case-insensitive fallback for game API variants."""
     name = str(card_name or '').strip()
     if not name:
         return {}
     metadata = _load_card_metadata()
-    return metadata.get(name, {}) or {}
+    meta = metadata.get(name) or {}
+    if meta:
+        return meta
+    # Case-insensitive fallback: game API may send different casing
+    if _CARD_METADATA_LOWER_INDEX is not None:
+        canonical = _CARD_METADATA_LOWER_INDEX.get(name.lower())
+        if canonical:
+            return metadata.get(canonical, {}) or {}
+    return {}
 
 
 def _normalize_resource_type(value: Any) -> str:
@@ -318,17 +339,73 @@ def _extract_hand(state: Optional[Dict[str, Any]], player: Dict[str, Any]) -> Li
 
 
 def _extract_tags(card: Dict[str, Any]) -> Dict[str, int]:
+    """Extract tags from card with proper list/dict handling and TitleCase normalization."""
     out: Dict[str, int] = {}
+    
+    if not isinstance(card, dict):
+        return out
+    
     tags = card.get('tags')
+    
+    # Handle list format (most common from card_metadata.json)
+    if isinstance(tags, list):
+        for item in tags:
+            if item:
+                # Normalize to TitleCase for consistency with hate-draft profiles
+                tag_name = str(item).strip()
+                if tag_name and tag_name[0].islower():
+                    tag_name = tag_name.capitalize()
+                out[tag_name] = 1
+        if out:
+            return out
+    
+    # Handle dict format (legacy)
     if isinstance(tags, dict):
         for key, value in tags.items():
             if value:
-                out[str(key)] = 1
-        return out
-    if isinstance(tags, list):
-        for item in tags:
-            out[str(item)] = 1
+                tag_name = str(key).strip()
+                if tag_name and tag_name[0].islower():
+                    tag_name = tag_name.capitalize()
+                out[tag_name] = 1
+        if out:
+            return out
+    
+    # Fallback: try metadata lookup if card has name
+    card_name = str(card.get('name', '') or '').strip()
+    if card_name:
+        metadata = _card_metadata_by_name(card_name)
+        meta_tags = metadata.get('tags', [])
+        if isinstance(meta_tags, list):
+            for item in meta_tags:
+                if item:
+                    tag_name = str(item).strip()
+                    if tag_name and tag_name[0].islower():
+                        tag_name = tag_name.capitalize()
+                    out[tag_name] = 1
+    
     return out
+
+
+def _build_tag_profile_from_player_tags(player: Dict[str, Any]) -> Dict[str, int]:
+    """Build tag profile from game's player.tags dict (e.g. {'building': 2, 'space': 0, 'jovian': 1})."""
+    profile: Dict[str, int] = {}
+    tags_raw = player.get('tags') if isinstance(player, dict) else None
+    if not isinstance(tags_raw, dict):
+        return profile
+    for key, value in tags_raw.items():
+        if not key or value is None:
+            continue
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if count <= 0:
+            continue
+        tag_name = str(key).strip()
+        if tag_name and tag_name[0].islower():
+            tag_name = tag_name.capitalize()
+        profile[tag_name] = profile.get(tag_name, 0) + count
+    return profile
 
 
 def _build_tag_profile_from_cards(cards: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -337,10 +414,23 @@ def _build_tag_profile_from_cards(cards: List[Dict[str, Any]]) -> Dict[str, int]
     for card in cards or []:
         if not isinstance(card, dict):
             continue
-        for tag_name, count in _extract_tags(card).items():
+        tags = _extract_tags(card)
+        for tag_name, count in tags.items():
             if count:
+                # Ensure TitleCase consistency
+                if tag_name and tag_name[0].islower():
+                    tag_name = tag_name.capitalize()
                 profile[tag_name] = profile.get(tag_name, 0) + count
     return profile
+
+
+def _merge_tag_profiles(primary: Dict[str, int], fallback: Dict[str, int]) -> Dict[str, int]:
+    """Merge two profiles; primary wins for each tag, fallback fills gaps."""
+    out: Dict[str, int] = dict(primary)
+    for tag_name, count in (fallback or {}).items():
+        if count and tag_name not in out:
+            out[tag_name] = count
+    return out
 
 
 def _tag_overlap_for_card(card: Dict[str, Any], profile: Dict[str, int]) -> float:
@@ -364,20 +454,31 @@ def _hate_draft_adjustment(
     before_player = _extract_player(before_state)
     own_color = _normalize_token(before_player.get('color'))
     own_id = str(before_player.get('id', '') or '')
+    own_name = _normalize_token(before_player.get('name'))
     players = before_state.get('players', []) or []
+    if not isinstance(players, list) or not players:
+        game = before_state.get('game') or {}
+        players = (game.get('players', []) or []) if isinstance(game, dict) else []
     if not isinstance(players, list):
         return 0.0, False
 
     opponent_tableau: List[Dict[str, Any]] = []
+    opponent_tags_aggregate: Dict[str, int] = {}
     for p in players:
         if not isinstance(p, dict):
             continue
-        if str(p.get('id', '')) == own_id or _normalize_token(p.get('color')) == own_color:
+        if (own_id and str(p.get('id', '')) == own_id) or (own_color and _normalize_token(p.get('color')) == own_color) or (own_name and _normalize_token(p.get('name')) == own_name):
             continue
         opponent_tableau.extend([c for c in (p.get('tableau', []) or []) if isinstance(c, dict)])
+        ptags = _build_tag_profile_from_player_tags(p)
+        for k, v in ptags.items():
+            opponent_tags_aggregate[k] = opponent_tags_aggregate.get(k, 0) + v
     own_tableau = [c for c in (before_player.get('tableau', []) or []) if isinstance(c, dict)]
-    opponent_profile = _build_tag_profile_from_cards(opponent_tableau)
-    own_profile = _build_tag_profile_from_cards(own_tableau)
+    own_profile_from_tags = _build_tag_profile_from_player_tags(before_player)
+    own_profile_from_tableau = _build_tag_profile_from_cards(own_tableau)
+    own_profile = _merge_tag_profiles(own_profile_from_tags, own_profile_from_tableau)
+    opponent_profile_from_tableau = _build_tag_profile_from_cards(opponent_tableau)
+    opponent_profile = _merge_tag_profiles(opponent_tags_aggregate, opponent_profile_from_tableau)
 
     selected_cards: List[Dict[str, Any]] = []
     if action_type == 'initialcards':
@@ -428,10 +529,16 @@ def _hate_draft_adjustment(
         hate_signals.append(max(0.0, opp_overlap - own_overlap))
 
     avg_hate = sum(hate_signals) / len(hate_signals) if hate_signals else 0.0
-    if avg_hate < 0.2:
-        return 0.0, False
-    bonus = min(0.08, 0.03 * avg_hate + 0.02)
-    return float(bonus), True
+    # Lower threshold AND add gradual bonus even below threshold
+    if avg_hate < 0.12:  # 0.2 → 0.12 (much lower)
+        # Still give small bonus for any hate signal
+        bonus = min(0.04, 0.02 * avg_hate + 0.01)
+        applied = avg_hate > 0.05  # Only flag as applied if there's some signal
+    else:
+        bonus = min(0.25, 0.10 * avg_hate + 0.05)  # Much stronger bonus
+        applied = True
+
+    return float(bonus), applied
 
 
 def _card_quality(card: Dict[str, Any], player: Dict[str, Any]) -> float:
@@ -1145,22 +1252,21 @@ def calculate_step_reward_decomposition(
 
     # Decomposed VP-driven shaping buckets.
     terraforming_delta = _vp_component(after_player, 'terraforming') - _vp_component(before_player, 'terraforming')
-    tr_component += max(-0.08, min(0.16, 0.045 * terraforming_delta))
+    tr_component += max(-0.15, min(0.30, 0.15 * terraforming_delta))      # 0.045 → 0.15 (3.3x)
 
     milestone_delta = _vp_component(after_player, 'milestones') - _vp_component(before_player, 'milestones')
-    milestones_awards_component += max(-0.06, min(0.20, 0.035 * milestone_delta))
+    milestones_awards_component += max(-0.12, min(0.35, 0.08 * milestone_delta))    # 0.035 → 0.08 (2.3x)
 
     award_delta = _vp_component(after_player, 'awards') - _vp_component(before_player, 'awards')
-    milestones_awards_component += max(-0.08, min(0.18, 0.030 * award_delta))
+    milestones_awards_component += max(-0.15, min(0.40, 0.06 * award_delta))        # 0.030 → 0.06 (2x)
 
     city_combo_delta = _vp_component(after_player, 'city') - _vp_component(before_player, 'city')
     greenery_delta = _vp_component(after_player, 'greenery') - _vp_component(before_player, 'greenery')
     combo_delta = city_combo_delta + (0.25 * greenery_delta)
-    city_greenery_component += max(-0.10, min(0.15, 0.05 * combo_delta))
+    city_greenery_component += max(-0.20, min(0.30, 0.12 * combo_delta))   # 0.05 → 0.12 (2.4x)
 
     cards_vp_delta = _vp_component(after_player, 'cards') - _vp_component(before_player, 'cards')
-    cards_vp_component += max(-0.10, min(0.18, 0.045 * cards_vp_delta))
-
+    cards_vp_component += max(-0.20, min(0.35, 0.12 * cards_vp_delta))     # 0.045 → 0.12 (2.7x)
     # Reward card quality improvements in hand.
     before_hand = _extract_hand(before_state, before_player)
     after_hand = _extract_hand(after_state, after_player)
@@ -1284,8 +1390,8 @@ def calculate_step_reward_decomposition(
             milestone_claim_reward += 0.04 * float(milestone_claim_delta) * early_factor
         milestones_awards_component += min(0.30, milestone_claim_reward)
         # Sniping bonus: reward claiming in late game (denying opponents).
-        if generation_progress > 0.6:
-            milestones_awards_component += min(0.05, 0.025 * float(milestone_claim_delta))
+        if generation_progress > 0.55:
+            milestones_awards_component += min(0.12, 0.06 * float(milestone_claim_delta))
             sniping_milestone_applied = True
 
     # Milestone Regret Penalty: if this player could have claimed a milestone
@@ -1345,8 +1451,8 @@ def calculate_step_reward_decomposition(
             if expected_net_vp > 0.0:
                 milestones_awards_component += min(0.14, (0.015 + (0.028 * expected_net_vp)) * positive_timing_factor)
                 # Sniping bonus: late-game award funding when we're ahead (positive EV).
-                if generation_progress > 0.65 and projected_points >= 5.0 and projection_confidence >= 0.75:
-                    milestones_awards_component += min(0.04, 0.02 * expected_net_vp)
+                if generation_progress > 0.55 and projected_points >= 3.0 and projection_confidence >= 0.55:
+                    milestones_awards_component += min(0.12, 0.06 * expected_net_vp) # 0.04→0.10, 0.02→0.05
                     sniping_award_applied = True
             else:
                 milestones_awards_component -= min(0.24, (0.04 + (0.045 * abs(expected_net_vp))) * negative_timing_factor)

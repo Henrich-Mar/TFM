@@ -2087,7 +2087,8 @@ def _calculate_card_payment(player_state: Dict[str, Any], card: Dict[str, Any]) 
     if tags.get('Building') and player_steel > 0:
         usable_steel_value = player_steel * steel_value
         steel_to_pay = min(cost_remaining, usable_steel_value)
-        steel_units = steel_to_pay // steel_value
+        # Use ceiling division to spend MORE steel (not less)
+        steel_units = min(player_steel, (steel_to_pay + steel_value - 1) // steel_value)
         payment['steel'] = steel_units
         cost_remaining -= steel_units * steel_value
 
@@ -2095,7 +2096,8 @@ def _calculate_card_payment(player_state: Dict[str, Any], card: Dict[str, Any]) 
     if tags.get('Space') and player_titanium > 0:
         usable_titanium_value = player_titanium * titanium_value
         titanium_to_pay = min(cost_remaining, usable_titanium_value)
-        titanium_units = titanium_to_pay // titanium_value
+        # Use ceiling division to spend MORE titanium (not less)
+        titanium_units = min(player_titanium, (titanium_to_pay + titanium_value - 1) // titanium_value)
         payment['titanium'] = titanium_units
         cost_remaining -= titanium_units * titanium_value
 
@@ -2224,7 +2226,8 @@ def _build_payment_with_options(
     if can_use_steel and player_steel > 0:
         usable_steel_value = player_steel * steel_value
         steel_to_pay = min(cost_remaining, usable_steel_value)
-        steel_units = steel_to_pay // steel_value
+        # Use ceiling division to spend MORE steel
+        steel_units = min(player_steel, (steel_to_pay + steel_value - 1) // steel_value)
         payment['steel'] = int(steel_units)
         cost_remaining -= steel_units * steel_value
 
@@ -2232,7 +2235,8 @@ def _build_payment_with_options(
     if can_use_titanium and player_titanium > 0:
         usable_titanium_value = player_titanium * titanium_value
         titanium_to_pay = min(cost_remaining, usable_titanium_value)
-        titanium_units = titanium_to_pay // titanium_value
+        # Use ceiling division to spend MORE titanium
+        titanium_units = min(player_titanium, (titanium_to_pay + titanium_value - 1) // titanium_value)
         payment['titanium'] = int(titanium_units)
         cost_remaining -= titanium_units * titanium_value
 

@@ -156,6 +156,10 @@ def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
         "card_play_actions": 0,
         "steel_spent": 0,
         "titanium_spent": 0,
+        "draft_decisions_total": 0,
+        "draft_decisions_low_hand_ev": 0,
+        "hate_draft_picks": 0,
+        "hate_draft_picks_low_hand_ev": 0,
     }
     action_counts: Dict[str, int] = {}
     standard_project_counts: Dict[str, int] = {}
@@ -209,6 +213,11 @@ def _aggregate_behavior_stats(population: List[Any]) -> Dict[str, Any]:
             totals["fallback_random_successes"], totals["fallback_random_attempts"]
         ),
         "fallback_pass_rate": _safe_ratio(totals["fallback_passes"], totals["total_decisions"]),
+        "hate_draft_rate": _safe_ratio(totals["hate_draft_picks"], totals["draft_decisions_total"]),
+        "hate_draft_rate_low_hand_ev": _safe_ratio(
+            totals["hate_draft_picks_low_hand_ev"],
+            totals["draft_decisions_low_hand_ev"],
+        ),
         "avg_available_actions": _safe_mean(avg_available_actions_samples),
         "card_plays_per_game": _safe_ratio(totals["card_play_actions"], sum(max(0, int(getattr(a, "games_played", 0))) for a in population)),
         "standard_project_ratio": _safe_ratio(total_standard_project_actions, totals["card_play_actions"] + total_standard_project_actions),

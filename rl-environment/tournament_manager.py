@@ -55,6 +55,26 @@ class TournamentManager:
             f"A{idx + 1}_{cls._agent_name_token(getattr(agent, 'id', ''))}"
             for idx, agent in enumerate(agents)
         ]
+
+    @staticmethod
+    def _normalize_agent_game_telemetry(agent_result: Any) -> Dict[str, Any]:
+        if not isinstance(agent_result, dict):
+            return {
+                "draft_decisions": 0,
+                "draft_decisions_low_hand_ev": 0,
+                "hate_draft_picks": 0,
+                "hate_draft_picks_low_hand_ev": 0,
+                "hate_draft_rate": 0.0,
+                "hate_draft_rate_low_hand_ev": 0.0,
+            }
+        return {
+            "draft_decisions": int(agent_result.get("draft_decisions", 0) or 0),
+            "draft_decisions_low_hand_ev": int(agent_result.get("draft_decisions_low_hand_ev", 0) or 0),
+            "hate_draft_picks": int(agent_result.get("hate_draft_picks", 0) or 0),
+            "hate_draft_picks_low_hand_ev": int(agent_result.get("hate_draft_picks_low_hand_ev", 0) or 0),
+            "hate_draft_rate": float(agent_result.get("hate_draft_rate", 0.0) or 0.0),
+            "hate_draft_rate_low_hand_ev": float(agent_result.get("hate_draft_rate_low_hand_ev", 0.0) or 0.0),
+        }
         
     def create_tournaments(self, 
                          population: List[RLAgent], 
@@ -314,7 +334,13 @@ class TournamentManager:
                 raise RuntimeError(
                     f"{len(task_errors)} agent task(s) failed; first error: {task_errors[0]!r}"
                 )
-             
+            agent_telemetry_by_id: Dict[str, Dict[str, Any]] = {}
+            for agent, agent_result in zip(agents, agent_results):
+                telemetry = self._normalize_agent_game_telemetry(agent_result)
+                reported_agent_id = str((agent_result or {}).get("agent_id", "") or "") if isinstance(agent_result, dict) else ""
+                key = reported_agent_id if reported_agent_id else str(agent.id)
+                agent_telemetry_by_id[key] = telemetry
+              
             # Get final game state and results
             game_state = await game_instance.get_final_state()
             
@@ -439,6 +465,7 @@ class TournamentManager:
                     )
 
             for entry in scored_list:
+                telemetry = agent_telemetry_by_id.get(entry['agent_id'], self._normalize_agent_game_telemetry(None))
                 players.append({
                     'agent_id': entry['agent_id'],
                     'rank': rank_map.get(entry['agent_id'], 4),
@@ -454,6 +481,12 @@ class TournamentManager:
                     'town_placements': entry.get('town_placements', 0),
                     'greenery_placements': entry.get('greenery_placements', 0),
                     'completed': True,
+                    'draft_decisions': int(telemetry.get('draft_decisions', 0) or 0),
+                    'draft_decisions_low_hand_ev': int(telemetry.get('draft_decisions_low_hand_ev', 0) or 0),
+                    'hate_draft_picks': int(telemetry.get('hate_draft_picks', 0) or 0),
+                    'hate_draft_picks_low_hand_ev': int(telemetry.get('hate_draft_picks_low_hand_ev', 0) or 0),
+                    'hate_draft_rate': float(telemetry.get('hate_draft_rate', 0.0) or 0.0),
+                    'hate_draft_rate_low_hand_ev': float(telemetry.get('hate_draft_rate_low_hand_ev', 0.0) or 0.0),
                 })
 
             actual_game_id = game_instance.game_id
@@ -525,7 +558,13 @@ class TournamentManager:
                     'agent_id': agent.id,
                     'rank': 4,
                     'victory_points': 0,
-                    'completed': False
+                    'completed': False,
+                    'draft_decisions': 0,
+                    'draft_decisions_low_hand_ev': 0,
+                    'hate_draft_picks': 0,
+                    'hate_draft_picks_low_hand_ev': 0,
+                    'hate_draft_rate': 0.0,
+                    'hate_draft_rate_low_hand_ev': 0.0,
                 } for agent in agents],
                 duration_seconds=(datetime.now() - start_time).total_seconds(),
                 completed=False,
@@ -558,7 +597,13 @@ class TournamentManager:
                     'agent_id': agent.id,
                     'rank': 4,
                     'victory_points': 0,
-                    'completed': False
+                    'completed': False,
+                    'draft_decisions': 0,
+                    'draft_decisions_low_hand_ev': 0,
+                    'hate_draft_picks': 0,
+                    'hate_draft_picks_low_hand_ev': 0,
+                    'hate_draft_rate': 0.0,
+                    'hate_draft_rate_low_hand_ev': 0.0,
                 } for agent in agents],
                 duration_seconds=(datetime.now() - start_time).total_seconds(),
                 completed=False,

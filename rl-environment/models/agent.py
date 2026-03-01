@@ -477,11 +477,13 @@ def _normalize_network_output(raw_output: Any) -> Dict[str, Optional[torch.Tenso
         value = raw_output.get("value")
         recurrent_state = raw_output.get("recurrent_state")
         aux_predictions = raw_output.get("aux_predictions")
+        aux_milestone_logits = raw_output.get("aux_milestone_logits")
     elif isinstance(raw_output, (tuple, list)) and len(raw_output) >= 2:
         policy_logits = raw_output[0]
         value = raw_output[1]
         recurrent_state = raw_output[2] if len(raw_output) > 2 else None
         aux_predictions = raw_output[3] if len(raw_output) > 3 else None
+        aux_milestone_logits = raw_output[4] if len(raw_output) > 4 else None
     else:
         raise ValueError("Unsupported network output format")
 
@@ -493,6 +495,7 @@ def _normalize_network_output(raw_output: Any) -> Dict[str, Optional[torch.Tenso
         "value": value,
         "recurrent_state": recurrent_state,
         "aux_predictions": aux_predictions,
+        "aux_milestone_logits": aux_milestone_logits,
     }
 # Removed conflicting Agent class - using RLAgent instead
         
@@ -671,6 +674,9 @@ class RLAgent:
             'rare_draft_keep_buy': 0,
             'rare_high_cost_payment': 0,
             'hate_draft_picks': 0,
+            'draft_decisions_total': 0,
+            'draft_decisions_low_hand_ev': 0,
+            'hate_draft_picks_low_hand_ev': 0,
             'milestone_snipes': 0,
             'award_snipes': 0,
         }
@@ -972,6 +978,12 @@ class RLAgent:
         floor = min(capped, max(1e-3, float(self.policy_temperature_floor)))
         progress = self._exploration_progress()
         decayed = floor + ((capped - floor) * (1.0 - progress))
+        # When PPO is active with strict on-policy sampling, always use
+        # temperature=1.0 so the log-probs stored at collection time match
+        # the temperature used during PPO optimization.  This mirrors the
+        # epsilon=0.0 override in _effective_policy_epsilon().
+        if self.strict_on_policy_sampling and self.ppo_enable:
+            return 1.0
         return max(1e-3, float(decayed))
 
     def _build_prompt_signature(self, player_state: Dict[str, Any]) -> str:
@@ -1136,10 +1148,61 @@ class RLAgent:
             self._fallback_random_retries_by_prompt.pop(oldest_key, None)
         while len(self._fallback_retry_prompt_order) > (max_entries * 2):
             self._fallback_retry_prompt_order.popleft()
-        
-    async def play_game(self, game_instance: GameInstance, player_name: str):
+
+    def _snapshot_hate_draft_counters(self) -> Dict[str, int]:
+        return {
+            "draft_decisions_total": int(self.decision_stats.get("draft_decisions_total", 0) or 0),
+            "draft_decisions_low_hand_ev": int(self.decision_stats.get("draft_decisions_low_hand_ev", 0) or 0),
+            "hate_draft_picks": int(self.decision_stats.get("hate_draft_picks", 0) or 0),
+            "hate_draft_picks_low_hand_ev": int(self.decision_stats.get("hate_draft_picks_low_hand_ev", 0) or 0),
+        }
+
+    def _build_play_game_telemetry(
+        self,
+        game_outcome: Dict[str, Any],
+        counter_snapshot_before: Dict[str, int],
+    ) -> Dict[str, Any]:
+        counters_after = self._snapshot_hate_draft_counters()
+        draft_decisions = max(
+            0,
+            int(counters_after.get("draft_decisions_total", 0)) - int(counter_snapshot_before.get("draft_decisions_total", 0)),
+        )
+        draft_decisions_low_hand_ev = max(
+            0,
+            int(counters_after.get("draft_decisions_low_hand_ev", 0)) - int(counter_snapshot_before.get("draft_decisions_low_hand_ev", 0)),
+        )
+        hate_draft_picks = max(
+            0,
+            int(counters_after.get("hate_draft_picks", 0)) - int(counter_snapshot_before.get("hate_draft_picks", 0)),
+        )
+        hate_draft_picks_low_hand_ev = max(
+            0,
+            int(counters_after.get("hate_draft_picks_low_hand_ev", 0)) - int(counter_snapshot_before.get("hate_draft_picks_low_hand_ev", 0)),
+        )
+        hate_draft_rate = (float(hate_draft_picks) / float(draft_decisions)) if draft_decisions > 0 else 0.0
+        hate_draft_rate_low_hand_ev = (
+            float(hate_draft_picks_low_hand_ev) / float(draft_decisions_low_hand_ev)
+            if draft_decisions_low_hand_ev > 0
+            else 0.0
+        )
+        return {
+            "agent_id": self.id,
+            "completed": bool(game_outcome.get("completed", False)),
+            "rank": int(game_outcome.get("rank", 4) or 4),
+            "vp": int(game_outcome.get("vp", 0) or 0),
+            "draft_decisions": int(draft_decisions),
+            "draft_decisions_low_hand_ev": int(draft_decisions_low_hand_ev),
+            "hate_draft_picks": int(hate_draft_picks),
+            "hate_draft_picks_low_hand_ev": int(hate_draft_picks_low_hand_ev),
+            "hate_draft_rate": float(hate_draft_rate),
+            "hate_draft_rate_low_hand_ev": float(hate_draft_rate_low_hand_ev),
+        }
+
+    async def play_game(self, game_instance: GameInstance, player_name: str) -> Dict[str, Any]:
         """Play a complete game"""
-        episode_steps: List[Dict[str, Any]] = []
+        episode_steps: deque = deque(maxlen=self.config.max_episode_steps)
+        counter_snapshot_before = self._snapshot_hate_draft_counters()
+        game_outcome: Dict[str, Any] = {"completed": False, "rank": 4, "vp": 0}
         max_transport_retries = max(1, self._safe_env_int("AGENT_TRANSPORT_RETRY_LIMIT", 6))
         transport_retry_backoff_sec = max(0.5, self._safe_env_float("AGENT_TRANSPORT_RETRY_BACKOFF_SEC", 3.0))
         try:
@@ -1241,6 +1304,7 @@ class RLAgent:
                     await self._queue_episode_rollout(episode_steps, reward)
                 else:
                     await self._train_from_episode(episode_steps, reward)
+            return self._build_play_game_telemetry(game_outcome, counter_snapshot_before)
             
         except asyncio.CancelledError:
             logger.warning("Agent %s play_game task cancelled", self.id[:8])
@@ -1437,100 +1501,108 @@ class RLAgent:
                                 self._bump_decision_stat('rare_draft_keep_buy')
                             if rare_high_cost > 0.0:
                                 self._bump_decision_stat('rare_high_cost_payment')
-                        if len(episode_steps) < self.config.max_episode_steps:
-                            step_reward = 0.0
-                            reward_tr_component = 0.0
-                            reward_cards_vp_component = 0.0
-                            reward_city_greenery_component = 0.0
-                            reward_milestones_awards_component = 0.0
-                            reward_other_component = 0.0
-                            reward_shaping_coef = self._current_reward_shaping_coef()
-                            if self.train_from_self_play:
-                                try:
-                                    post_action_state = await game_instance.get_player_state(player_id)
-                                except Exception:
-                                    post_action_state = None
-                                reward_breakdown = calculate_step_reward_decomposition(
-                                    before_state=player_state,
-                                    after_state=post_action_state,
-                                    action_input=policy_action,
+                        # Always record steps; the deque(maxlen=max_episode_steps)
+                        # automatically evicts the oldest entries so we keep the
+                        # last N steps (including the true terminal step).
+                        step_reward = 0.0
+                        reward_tr_component = 0.0
+                        reward_cards_vp_component = 0.0
+                        reward_city_greenery_component = 0.0
+                        reward_milestones_awards_component = 0.0
+                        reward_other_component = 0.0
+                        reward_shaping_coef = self._current_reward_shaping_coef()
+                        if self.train_from_self_play:
+                            try:
+                                post_action_state = await game_instance.get_player_state(player_id)
+                            except Exception:
+                                post_action_state = None
+                            reward_breakdown = calculate_step_reward_decomposition(
+                                before_state=player_state,
+                                after_state=post_action_state,
+                                action_input=policy_action,
+                            )
+                            step_reward_scale = float(reward_breakdown.get("step_reward_scale", 1.0))
+                            weighted_tr = float(self.reward_tr_weight) * float(reward_breakdown.get("tr_component", 0.0))
+                            weighted_cards_vp = float(self.reward_cards_vp_weight) * float(reward_breakdown.get("cards_vp_component", 0.0))
+                            weighted_city_greenery = float(self.reward_city_greenery_weight) * float(reward_breakdown.get("city_greenery_component", 0.0))
+                            weighted_milestones_awards = float(self.reward_milestones_awards_weight) * float(reward_breakdown.get("milestones_awards_component", 0.0))
+                            weighted_other = float(self.reward_other_weight) * float(reward_breakdown.get("other_component", 0.0))
+                            weighted_raw = (
+                                weighted_tr
+                                + weighted_cards_vp
+                                + weighted_city_greenery
+                                + weighted_milestones_awards
+                                + weighted_other
+                            )
+                            weighted_scaled = max(-0.35, min(0.35, weighted_raw)) * step_reward_scale
+                            step_reward = float(reward_shaping_coef * weighted_scaled)
+                            reward_tr_component = float(weighted_tr * step_reward_scale)
+                            reward_cards_vp_component = float(weighted_cards_vp * step_reward_scale)
+                            reward_city_greenery_component = float(weighted_city_greenery * step_reward_scale)
+                            reward_milestones_awards_component = float(weighted_milestones_awards * step_reward_scale)
+                            reward_other_component = float(weighted_other * step_reward_scale)
+                            if self.reward_debug_enabled:
+                                self._reward_debug_counter += 1
+                                shaped_l1 = (
+                                    abs(reward_tr_component)
+                                    + abs(reward_cards_vp_component)
+                                    + abs(reward_city_greenery_component)
+                                    + abs(reward_milestones_awards_component)
                                 )
-                                step_reward_scale = float(reward_breakdown.get("step_reward_scale", 1.0))
-                                weighted_tr = float(self.reward_tr_weight) * float(reward_breakdown.get("tr_component", 0.0))
-                                weighted_cards_vp = float(self.reward_cards_vp_weight) * float(reward_breakdown.get("cards_vp_component", 0.0))
-                                weighted_city_greenery = float(self.reward_city_greenery_weight) * float(reward_breakdown.get("city_greenery_component", 0.0))
-                                weighted_milestones_awards = float(self.reward_milestones_awards_weight) * float(reward_breakdown.get("milestones_awards_component", 0.0))
-                                weighted_other = float(self.reward_other_weight) * float(reward_breakdown.get("other_component", 0.0))
-                                weighted_raw = (
-                                    weighted_tr
-                                    + weighted_cards_vp
-                                    + weighted_city_greenery
-                                    + weighted_milestones_awards
-                                    + weighted_other
-                                )
-                                weighted_scaled = max(-0.35, min(0.35, weighted_raw)) * step_reward_scale
-                                step_reward = float(reward_shaping_coef * weighted_scaled)
-                                reward_tr_component = float(weighted_tr * step_reward_scale)
-                                reward_cards_vp_component = float(weighted_cards_vp * step_reward_scale)
-                                reward_city_greenery_component = float(weighted_city_greenery * step_reward_scale)
-                                reward_milestones_awards_component = float(weighted_milestones_awards * step_reward_scale)
-                                reward_other_component = float(weighted_other * step_reward_scale)
-                                if self.reward_debug_enabled:
-                                    self._reward_debug_counter += 1
-                                    shaped_l1 = (
-                                        abs(reward_tr_component)
-                                        + abs(reward_cards_vp_component)
-                                        + abs(reward_city_greenery_component)
-                                        + abs(reward_milestones_awards_component)
+                                if (
+                                    self.games_played > 10
+                                    and shaped_l1 < float(self.reward_debug_threshold)
+                                    and (self._reward_debug_counter % int(self.reward_debug_log_every)) == 0
+                                ):
+                                    logger.warning(
+                                        "Low VP shaping components: tr=%.5f cards=%.5f city_greenery=%.5f milestones_awards=%.5f other=%.5f coef=%.3f scaled=%.5f raw=%.5f",
+                                        reward_tr_component,
+                                        reward_cards_vp_component,
+                                        reward_city_greenery_component,
+                                        reward_milestones_awards_component,
+                                        reward_other_component,
+                                        reward_shaping_coef,
+                                        float(reward_breakdown.get("scaled_total", 0.0)),
+                                        float(reward_breakdown.get("raw_total", 0.0)),
                                     )
-                                    if (
-                                        self.games_played > 10
-                                        and shaped_l1 < float(self.reward_debug_threshold)
-                                        and (self._reward_debug_counter % int(self.reward_debug_log_every)) == 0
-                                    ):
-                                        logger.warning(
-                                            "Low VP shaping components: tr=%.5f cards=%.5f city_greenery=%.5f milestones_awards=%.5f other=%.5f coef=%.3f scaled=%.5f raw=%.5f",
-                                            reward_tr_component,
-                                            reward_cards_vp_component,
-                                            reward_city_greenery_component,
-                                            reward_milestones_awards_component,
-                                            reward_other_component,
-                                            reward_shaping_coef,
-                                            float(reward_breakdown.get("scaled_total", 0.0)),
-                                            float(reward_breakdown.get("raw_total", 0.0)),
-                                        )
-                                if reward_breakdown.get("hate_draft_bonus_applied"):
-                                    self._bump_decision_stat("hate_draft_picks")
-                                if reward_breakdown.get("sniping_milestone_applied"):
-                                    self._bump_decision_stat("milestone_snipes")
-                                if reward_breakdown.get("sniping_award_applied"):
-                                    self._bump_decision_stat("award_snipes")
-                            if action_meta is not None:
-                                episode_steps.append(
-                                    {
-                                        "state": state_vector.astype(np.float32),
-                                        "action": int(policy_action_idx),
-                                        "reward": float(step_reward),
-                                        "logp_old": float(action_meta.get("logp_old", 0.0)),
-                                        "value_old": float(action_meta.get("value_old", 0.0)),
-                                        "legal_actions": list(action_meta.get("legal_actions", [])),
-                                        "phase_index": int(action_meta.get("phase_index", 0)),
-                                        "recurrent_state": list(action_meta.get("recurrent_state", [])),
-                                        "aux_targets": dict(action_meta.get("aux_targets", {})),
-                                        "aux_predictions": list(action_meta.get("aux_predictions", [])),
-                                        "rare_state_weight": float(action_meta.get("rare_state_weight", 1.0)),
-                                        "rare_award_funding": float(action_meta.get("rare_award_funding", 0.0)),
-                                        "rare_milestone_timing": float(action_meta.get("rare_milestone_timing", 0.0)),
-                                        "rare_draft_keep_buy": float(action_meta.get("rare_draft_keep_buy", 0.0)),
-                                        "rare_high_cost_payment": float(action_meta.get("rare_high_cost_payment", 0.0)),
-                                        "reward_tr_component": float(reward_tr_component),
-                                        "reward_cards_vp_component": float(reward_cards_vp_component),
-                                        "reward_city_greenery_component": float(reward_city_greenery_component),
-                                        "reward_milestones_awards_component": float(reward_milestones_awards_component),
-                                        "reward_other_component": float(reward_other_component),
-                                        "reward_shaping_coef": float(reward_shaping_coef),
-                                    }
-                                )
+                            if float(reward_breakdown.get("hate_draft_decision", 0.0)) > 0.0:
+                                self._bump_decision_stat("draft_decisions_total")
+                            if float(reward_breakdown.get("hate_draft_low_hand_ev", 0.0)) > 0.0:
+                                self._bump_decision_stat("draft_decisions_low_hand_ev")
+                            if reward_breakdown.get("hate_draft_bonus_applied"):
+                                self._bump_decision_stat("hate_draft_picks")
+                                if float(reward_breakdown.get("hate_draft_low_hand_ev", 0.0)) > 0.0:
+                                    self._bump_decision_stat("hate_draft_picks_low_hand_ev")
+                            if reward_breakdown.get("sniping_milestone_applied"):
+                                self._bump_decision_stat("milestone_snipes")
+                            if reward_breakdown.get("sniping_award_applied"):
+                                self._bump_decision_stat("award_snipes")
+                        if action_meta is not None:
+                            episode_steps.append(
+                                {
+                                    "state": state_vector.astype(np.float32),
+                                    "action": int(policy_action_idx),
+                                    "reward": float(step_reward),
+                                    "logp_old": float(action_meta.get("logp_old", 0.0)),
+                                    "value_old": float(action_meta.get("value_old", 0.0)),
+                                    "legal_actions": list(action_meta.get("legal_actions", [])),
+                                    "phase_index": int(action_meta.get("phase_index", 0)),
+                                    "recurrent_state": list(action_meta.get("recurrent_state", [])),
+                                    "aux_targets": dict(action_meta.get("aux_targets", {})),
+                                    "aux_predictions": list(action_meta.get("aux_predictions", [])),
+                                    "rare_state_weight": float(action_meta.get("rare_state_weight", 1.0)),
+                                    "rare_award_funding": float(action_meta.get("rare_award_funding", 0.0)),
+                                    "rare_milestone_timing": float(action_meta.get("rare_milestone_timing", 0.0)),
+                                    "rare_draft_keep_buy": float(action_meta.get("rare_draft_keep_buy", 0.0)),
+                                    "rare_high_cost_payment": float(action_meta.get("rare_high_cost_payment", 0.0)),
+                                    "reward_tr_component": float(reward_tr_component),
+                                    "reward_cards_vp_component": float(reward_cards_vp_component),
+                                    "reward_city_greenery_component": float(reward_city_greenery_component),
+                                    "reward_milestones_awards_component": float(reward_milestones_awards_component),
+                                    "reward_other_component": float(reward_other_component),
+                                    "reward_shaping_coef": float(reward_shaping_coef),
+                                }
+                            )
                     await self._sleep_if_needed(self.post_move_sleep_sec)
                     return True
                 else:
@@ -2227,9 +2299,19 @@ class RLAgent:
             
             logger.info(f"Available actions: {action_types}")
              
-            # Optional: adjust weights for OR menus based on option titles to avoid passing
+            # Optional: adjust weights for OR menus based on option titles to avoid passing.
+            # When PPO is enabled, these heuristic probability reweightings are
+            # disabled because they create a mismatch between the behavior policy
+            # (used to sample actions) and the policy PPO reconstructs from raw
+            # masked logits during optimization.  The network's learnable
+            # action_type_bias already handles general category preferences.
             action_weight_adjustments = None
-            if waiting_for and waiting_for.get('type') == 'or':
+            if self.ppo_enable:
+                # Disable heuristic reweighting under PPO to preserve on-policy
+                # consistency.  The network learns its own biases via
+                # action_type_bias in the forward pass.
+                prefer_project_cards = False
+            elif waiting_for and waiting_for.get('type') == 'or':
                 options = waiting_for.get('options', [])
                 adjustments = {}
                 select_option_base = 200
@@ -2456,7 +2538,7 @@ class RLAgent:
         if not episode_steps:
             return
 
-        steps = episode_steps[-max(1, self.config.max_episode_steps):]
+        steps = list(episode_steps)  # deque already capped at max_episode_steps
         rollout_steps: List[PPORolloutStep] = []
         for idx, step in enumerate(steps):
             try:
@@ -2652,7 +2734,7 @@ class RLAgent:
 
         # Protect optimizer/network updates when the same agent appears in concurrent games.
         async with self.training_lock:
-            steps = episode_steps[-max(1, self.config.max_episode_steps):]
+            steps = list(episode_steps)  # deque already capped at max_episode_steps
             states = torch.from_numpy(np.stack([np.asarray(step.get("state"), dtype=np.float32) for step in steps], axis=0)).float()
             actions = torch.tensor([int(step.get("action", 0)) for step in steps], dtype=torch.long)
             phase_indices = torch.tensor([int(step.get("phase_index", 0)) for step in steps], dtype=torch.long)
@@ -2807,6 +2889,9 @@ class RLAgent:
         rare_draft_keep_buy = int(self.decision_stats.get('rare_draft_keep_buy', 0))
         rare_high_cost_payment = int(self.decision_stats.get('rare_high_cost_payment', 0))
         hate_draft_picks = int(self.decision_stats.get('hate_draft_picks', 0))
+        draft_decisions_total = int(self.decision_stats.get('draft_decisions_total', 0))
+        draft_decisions_low_hand_ev = int(self.decision_stats.get('draft_decisions_low_hand_ev', 0))
+        hate_draft_picks_low_hand_ev = int(self.decision_stats.get('hate_draft_picks_low_hand_ev', 0))
         milestone_snipes = int(self.decision_stats.get('milestone_snipes', 0))
         award_snipes = int(self.decision_stats.get('award_snipes', 0))
         action_mask_observations = int(self.decision_stats.get('action_mask_observations', 0))
@@ -2869,6 +2954,11 @@ class RLAgent:
             'rare_draft_keep_buy': rare_draft_keep_buy,
             'rare_high_cost_payment': rare_high_cost_payment,
             'hate_draft_picks': hate_draft_picks,
+            'draft_decisions_total': draft_decisions_total,
+            'draft_decisions_low_hand_ev': draft_decisions_low_hand_ev,
+            'hate_draft_picks_low_hand_ev': hate_draft_picks_low_hand_ev,
+            'hate_draft_rate': _ratio(hate_draft_picks, draft_decisions_total),
+            'hate_draft_rate_low_hand_ev': _ratio(hate_draft_picks_low_hand_ev, draft_decisions_low_hand_ev),
             'milestone_snipes': milestone_snipes,
             'award_snipes': award_snipes,
             'action_legal_count_mean': _ratio(action_legal_count_total, action_mask_observations),

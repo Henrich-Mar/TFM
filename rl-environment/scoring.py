@@ -440,97 +440,160 @@ def _tag_overlap_for_card(card: Dict[str, Any], profile: Dict[str, int]) -> floa
     return min(overlap / 8.0, 1.0)
 
 
+def _coerce_card_payload(card_payload: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(card_payload, dict):
+        return card_payload
+    if isinstance(card_payload, str):
+        name = str(card_payload).strip()
+        if name:
+            return {"name": name}
+    return None
+
+
+def _coerce_card_list(cards_raw: Any) -> List[Dict[str, Any]]:
+    if isinstance(cards_raw, list):
+        return [card for card in (_coerce_card_payload(item) for item in cards_raw) if isinstance(card, dict)]
+    card = _coerce_card_payload(cards_raw)
+    return [card] if isinstance(card, dict) else []
+
+
+def _compute_hate_draft_diagnostics(
+    before_state: Dict[str, Any],
+    action_input: Dict[str, Any],
+) -> Dict[str, float]:
+    diagnostics: Dict[str, float] = {
+        "hate_draft_decision": 0.0,
+        "hate_draft_best_keep_ev": 0.0,
+        "hate_draft_low_hand_ev": 0.0,
+        "hate_draft_opp_overlap_mean": 0.0,
+        "hate_draft_own_overlap_mean": 0.0,
+        "hate_draft_deny_self_gap": 0.0,
+        "selected_card_count": 0.0,
+    }
+    if not isinstance(action_input, dict):
+        return diagnostics
+
+    action_type = str(action_input.get("type", "") or "").lower()
+    before_player = _extract_player(before_state)
+    own_color = _normalize_token(before_player.get("color"))
+    own_id = str(before_player.get("id", "") or "")
+    own_name = _normalize_token(before_player.get("name"))
+    players = before_state.get("players", []) or []
+    if not isinstance(players, list) or not players:
+        game = before_state.get("game") or {}
+        players = (game.get("players", []) or []) if isinstance(game, dict) else []
+    if not isinstance(players, list):
+        players = []
+
+    opponent_tableau: List[Dict[str, Any]] = []
+    opponent_tags_aggregate: Dict[str, int] = {}
+    for player_payload in players:
+        if not isinstance(player_payload, dict):
+            continue
+        if (
+            (own_id and str(player_payload.get("id", "")) == own_id)
+            or (own_color and _normalize_token(player_payload.get("color")) == own_color)
+            or (own_name and _normalize_token(player_payload.get("name")) == own_name)
+        ):
+            continue
+        opponent_tableau.extend(
+            card for card in (player_payload.get("tableau", []) or []) if isinstance(card, dict)
+        )
+        for tag_name, tag_count in _build_tag_profile_from_player_tags(player_payload).items():
+            opponent_tags_aggregate[tag_name] = opponent_tags_aggregate.get(tag_name, 0) + tag_count
+
+    own_tableau = [card for card in (before_player.get("tableau", []) or []) if isinstance(card, dict)]
+    own_profile = _merge_tag_profiles(
+        _build_tag_profile_from_player_tags(before_player),
+        _build_tag_profile_from_cards(own_tableau),
+    )
+    opponent_profile = _merge_tag_profiles(
+        opponent_tags_aggregate,
+        _build_tag_profile_from_cards(opponent_tableau),
+    )
+
+    waiting = before_state.get("waitingFor", {}) or {}
+    if not isinstance(waiting, dict):
+        waiting = {}
+    wait_type = _normalize_token(waiting.get("type"))
+    waiting_title = _title_text(waiting.get("title", "")).lower()
+    prompt_cards = _coerce_card_list(waiting.get("cards", []))
+    selected_cards: List[Dict[str, Any]] = []
+    is_draft_decision = False
+
+    if action_type == "initialcards":
+        is_draft_decision = bool(prompt_cards)
+        for response in (action_input.get("responses", []) or []):
+            if not isinstance(response, dict):
+                continue
+            selected_cards.extend(_coerce_card_list(response.get("cards", [])))
+        if not prompt_cards:
+            prompt_cards = list(selected_cards)
+            is_draft_decision = bool(prompt_cards)
+    elif action_type == "card":
+        card_names_raw = action_input.get("cards", []) or []
+        card_names = card_names_raw if isinstance(card_names_raw, list) else [card_names_raw]
+        is_draft = (
+            wait_type in ("card", "selectcard", "draft", "draftcards")
+            or "draft" in waiting_title
+            or ("keep" in waiting_title and "card" in waiting_title)
+        )
+        is_draft_decision = bool(is_draft and (prompt_cards or card_names))
+        if is_draft and card_names:
+            for card_name in card_names:
+                name = str(card_name or "").strip()
+                if not name:
+                    continue
+                selected = None
+                for prompt_card in prompt_cards:
+                    if str(prompt_card.get("name", "")).strip() == name:
+                        selected = prompt_card
+                        break
+                selected_cards.append(selected if isinstance(selected, dict) else {"name": name})
+
+    diagnostics["hate_draft_decision"] = 1.0 if is_draft_decision else 0.0
+    diagnostics["selected_card_count"] = float(len(selected_cards))
+
+    if is_draft_decision:
+        candidate_cards = prompt_cards if prompt_cards else selected_cards
+        if candidate_cards:
+            best_keep_ev = max(_card_quality(card, before_player) for card in candidate_cards)
+            diagnostics["hate_draft_best_keep_ev"] = float(best_keep_ev)
+            diagnostics["hate_draft_low_hand_ev"] = 1.0 if best_keep_ev < float(HATE_DRAFT_LOW_HAND_EV_THRESHOLD) else 0.0
+
+    if selected_cards:
+        opp_overlaps: List[float] = []
+        own_overlaps: List[float] = []
+        for card in selected_cards:
+            opp_overlaps.append(_tag_overlap_for_card(card, opponent_profile))
+            own_overlaps.append(_tag_overlap_for_card(card, own_profile))
+        opp_mean = sum(opp_overlaps) / len(opp_overlaps)
+        own_mean = sum(own_overlaps) / len(own_overlaps)
+        diagnostics["hate_draft_opp_overlap_mean"] = float(opp_mean)
+        diagnostics["hate_draft_own_overlap_mean"] = float(own_mean)
+        diagnostics["hate_draft_deny_self_gap"] = float(opp_mean - own_mean)
+
+    return diagnostics
+
+
 def _hate_draft_adjustment(
     before_state: Dict[str, Any],
     action_input: Dict[str, Any],
+    diagnostics: Optional[Dict[str, float]] = None,
 ) -> Tuple[float, bool]:
     """
     Bonus when the agent drafts/keeps cards that hurt opponents (high opp overlap, low own overlap).
     Returns (adjustment, applied).
     """
-    if not isinstance(action_input, dict):
-        return 0.0, False
-    action_type = str(action_input.get('type', '') or '').lower()
-    before_player = _extract_player(before_state)
-    own_color = _normalize_token(before_player.get('color'))
-    own_id = str(before_player.get('id', '') or '')
-    own_name = _normalize_token(before_player.get('name'))
-    players = before_state.get('players', []) or []
-    if not isinstance(players, list) or not players:
-        game = before_state.get('game') or {}
-        players = (game.get('players', []) or []) if isinstance(game, dict) else []
-    if not isinstance(players, list):
+    diag = diagnostics if isinstance(diagnostics, dict) else _compute_hate_draft_diagnostics(before_state, action_input)
+    if float(diag.get("selected_card_count", 0.0)) <= 0.0:
         return 0.0, False
 
-    opponent_tableau: List[Dict[str, Any]] = []
-    opponent_tags_aggregate: Dict[str, int] = {}
-    for p in players:
-        if not isinstance(p, dict):
-            continue
-        if (own_id and str(p.get('id', '')) == own_id) or (own_color and _normalize_token(p.get('color')) == own_color) or (own_name and _normalize_token(p.get('name')) == own_name):
-            continue
-        opponent_tableau.extend([c for c in (p.get('tableau', []) or []) if isinstance(c, dict)])
-        ptags = _build_tag_profile_from_player_tags(p)
-        for k, v in ptags.items():
-            opponent_tags_aggregate[k] = opponent_tags_aggregate.get(k, 0) + v
-    own_tableau = [c for c in (before_player.get('tableau', []) or []) if isinstance(c, dict)]
-    own_profile_from_tags = _build_tag_profile_from_player_tags(before_player)
-    own_profile_from_tableau = _build_tag_profile_from_cards(own_tableau)
-    own_profile = _merge_tag_profiles(own_profile_from_tags, own_profile_from_tableau)
-    opponent_profile_from_tableau = _build_tag_profile_from_cards(opponent_tableau)
-    opponent_profile = _merge_tag_profiles(opponent_tags_aggregate, opponent_profile_from_tableau)
-
-    selected_cards: List[Dict[str, Any]] = []
-    if action_type == 'initialcards':
-        for resp in (action_input.get('responses', []) or []):
-            if not isinstance(resp, dict):
-                continue
-            cards_raw = resp.get('cards', [])
-            if isinstance(cards_raw, list):
-                for c in cards_raw:
-                    if isinstance(c, dict):
-                        selected_cards.append(c)
-                    elif isinstance(c, str):
-                        selected_cards.append({'name': c})
-            elif isinstance(cards_raw, str):
-                selected_cards.append({'name': cards_raw})
-    elif action_type == 'card':
-        card_names = action_input.get('cards', []) or []
-        if not isinstance(card_names, list):
-            card_names = [card_names] if card_names else []
-        waiting = (before_state.get('waitingFor', {}) or {})
-        if not isinstance(waiting, dict):
-            waiting = {}
-        wait_type = _normalize_token(waiting.get('type'))
-        prompt_cards = waiting.get('cards', []) or []
-        title = _title_text(waiting.get('title', '')).lower()
-        is_draft = (
-            wait_type in ('card', 'selectcard', 'draft', 'draftcards')
-            or 'draft' in title
-            or ('keep' in title and 'card' in title)
-        )
-        if is_draft and prompt_cards and card_names:
-            for name in card_names:
-                n = str(name).strip()
-                for pc in prompt_cards:
-                    if isinstance(pc, dict) and str(pc.get('name', '')).strip() == n:
-                        selected_cards.append(pc)
-                        break
-                else:
-                    selected_cards.append({'name': n})
-
-    if not selected_cards:
-        return 0.0, False
-
-    hate_signals: List[float] = []
-    for card in selected_cards:
-        opp_overlap = _tag_overlap_for_card(card, opponent_profile)
-        own_overlap = _tag_overlap_for_card(card, own_profile)
-        hate_signals.append(max(0.0, opp_overlap - own_overlap))
-
-    avg_hate = sum(hate_signals) / len(hate_signals) if hate_signals else 0.0
+    avg_hate = max(0.0, float(diag.get("hate_draft_deny_self_gap", 0.0)))
+    # Future hardening spec (disabled in this metrics-only pass): apply a deny-self
+    # margin gate with phase scaling before granting bonus.
     # Lower threshold AND add gradual bonus even below threshold
-    if avg_hate < 0.12:  # 0.2 → 0.12 (much lower)
+    if avg_hate < 0.12:  # 0.2 -> 0.12 (much lower)
         # Still give small bonus for any hate signal
         bonus = min(0.04, 0.02 * avg_hate + 0.01)
         applied = avg_hate > 0.05  # Only flag as applied if there's some signal
@@ -1181,6 +1244,7 @@ IS_HARD_MODE = SCORING_MODE == "HARD"
 # Reward Scaling
 STEP_REWARD_SCALE = 0.3 if IS_HARD_MODE else 1.0
 TERMINAL_REWARD_SCALE = 2.0 if IS_HARD_MODE else 1.0
+HATE_DRAFT_LOW_HAND_EV_THRESHOLD = _env_float("HATE_DRAFT_LOW_HAND_EV_THRESHOLD", 0.35)
 
 def calculate_step_reward_decomposition(
     before_state: Dict[str, Any],
@@ -1199,6 +1263,12 @@ def calculate_step_reward_decomposition(
             "other_component": 0.0,
             "raw_total": 0.0,
             "scaled_total": 0.0,
+            "hate_draft_decision": 0.0,
+            "hate_draft_best_keep_ev": 0.0,
+            "hate_draft_low_hand_ev": 0.0,
+            "hate_draft_opp_overlap_mean": 0.0,
+            "hate_draft_own_overlap_mean": 0.0,
+            "hate_draft_deny_self_gap": 0.0,
             "hate_draft_bonus_applied": False,
             "sniping_milestone_applied": False,
             "sniping_award_applied": False,
@@ -1217,6 +1287,12 @@ def calculate_step_reward_decomposition(
             "other_component": 0.0,
             "raw_total": 0.0,
             "scaled_total": 0.0,
+            "hate_draft_decision": 0.0,
+            "hate_draft_best_keep_ev": 0.0,
+            "hate_draft_low_hand_ev": 0.0,
+            "hate_draft_opp_overlap_mean": 0.0,
+            "hate_draft_own_overlap_mean": 0.0,
+            "hate_draft_deny_self_gap": 0.0,
             "hate_draft_bonus_applied": False,
             "sniping_milestone_applied": False,
             "sniping_award_applied": False,
@@ -1252,21 +1328,21 @@ def calculate_step_reward_decomposition(
 
     # Decomposed VP-driven shaping buckets.
     terraforming_delta = _vp_component(after_player, 'terraforming') - _vp_component(before_player, 'terraforming')
-    tr_component += max(-0.15, min(0.30, 0.15 * terraforming_delta))      # 0.045 → 0.15 (3.3x)
+    tr_component += max(-0.15, min(0.30, 0.15 * terraforming_delta))      # 0.045 â†’ 0.15 (3.3x)
 
     milestone_delta = _vp_component(after_player, 'milestones') - _vp_component(before_player, 'milestones')
-    milestones_awards_component += max(-0.12, min(0.35, 0.08 * milestone_delta))    # 0.035 → 0.08 (2.3x)
+    milestones_awards_component += max(-0.12, min(0.35, 0.08 * milestone_delta))    # 0.035 â†’ 0.08 (2.3x)
 
     award_delta = _vp_component(after_player, 'awards') - _vp_component(before_player, 'awards')
-    milestones_awards_component += max(-0.15, min(0.40, 0.06 * award_delta))        # 0.030 → 0.06 (2x)
+    milestones_awards_component += max(-0.15, min(0.40, 0.06 * award_delta))        # 0.030 â†’ 0.06 (2x)
 
     city_combo_delta = _vp_component(after_player, 'city') - _vp_component(before_player, 'city')
     greenery_delta = _vp_component(after_player, 'greenery') - _vp_component(before_player, 'greenery')
     combo_delta = city_combo_delta + (0.25 * greenery_delta)
-    city_greenery_component += max(-0.20, min(0.30, 0.12 * combo_delta))   # 0.05 → 0.12 (2.4x)
+    city_greenery_component += max(-0.20, min(0.30, 0.12 * combo_delta))   # 0.05 â†’ 0.12 (2.4x)
 
     cards_vp_delta = _vp_component(after_player, 'cards') - _vp_component(before_player, 'cards')
-    cards_vp_component += max(-0.20, min(0.35, 0.12 * cards_vp_delta))     # 0.045 → 0.12 (2.7x)
+    cards_vp_component += max(-0.20, min(0.35, 0.12 * cards_vp_delta))     # 0.045 â†’ 0.12 (2.7x)
     # Reward card quality improvements in hand.
     before_hand = _extract_hand(before_state, before_player)
     after_hand = _extract_hand(after_state, after_player)
@@ -1309,7 +1385,12 @@ def calculate_step_reward_decomposition(
     other_component += _space_placement_adjustment(before_state, after_state, action_input)
 
     # Hate-draft bonus: reward keeping/drafting cards that hurt opponents (high opp tag overlap, low own).
-    hate_draft_adj, hate_draft_bonus_applied = _hate_draft_adjustment(before_state, action_input)
+    hate_draft_diag = _compute_hate_draft_diagnostics(before_state, action_input)
+    hate_draft_adj, hate_draft_bonus_applied = _hate_draft_adjustment(
+        before_state,
+        action_input,
+        diagnostics=hate_draft_diag,
+    )
     other_component += hate_draft_adj
 
     # Penalize routine sell-patents behavior, especially when playable cards were already affordable.
@@ -1378,7 +1459,7 @@ def calculate_step_reward_decomposition(
     endgame_pressure = max(0.0, min((generation_progress - 0.60) / 0.40, 1.0))
 
     # Milestone closing pressure: reward milestone claims more when they happen earlier.
-    # Base reward raised from 0.09 → 0.20 so a claim clearly outweighs a card-play bonus.
+    # Base reward raised from 0.09 â†’ 0.20 so a claim clearly outweighs a card-play bonus.
     before_owned_milestones = _owned_milestone_count(before_game, before_player)
     after_owned_milestones = _owned_milestone_count(after_game, after_player)
     milestone_claim_delta = max(0, after_owned_milestones - before_owned_milestones)
@@ -1419,7 +1500,7 @@ def calculate_step_reward_decomposition(
                 or (after_player_name and claimer_name == after_player_name)
             )
             if not own_claimed:
-                # An opponent stole a milestone we could have claimed → regret penalty
+                # An opponent stole a milestone we could have claimed â†’ regret penalty
                 milestones_awards_component -= 0.20
 
     # Awards closing pressure: reinforce positive EV funding and discourage poor-value funding.
@@ -1452,7 +1533,7 @@ def calculate_step_reward_decomposition(
                 milestones_awards_component += min(0.14, (0.015 + (0.028 * expected_net_vp)) * positive_timing_factor)
                 # Sniping bonus: late-game award funding when we're ahead (positive EV).
                 if generation_progress > 0.55 and projected_points >= 3.0 and projection_confidence >= 0.55:
-                    milestones_awards_component += min(0.12, 0.06 * expected_net_vp) # 0.04→0.10, 0.02→0.05
+                    milestones_awards_component += min(0.12, 0.06 * expected_net_vp) # 0.04â†’0.10, 0.02â†’0.05
                     sniping_award_applied = True
             else:
                 milestones_awards_component -= min(0.24, (0.04 + (0.045 * abs(expected_net_vp))) * negative_timing_factor)
@@ -1496,6 +1577,12 @@ def calculate_step_reward_decomposition(
         "clamped_total": float(clamped_total),
         "step_reward_scale": float(STEP_REWARD_SCALE),
         "scaled_total": float(scaled_total),
+        "hate_draft_decision": float(hate_draft_diag.get("hate_draft_decision", 0.0)),
+        "hate_draft_best_keep_ev": float(hate_draft_diag.get("hate_draft_best_keep_ev", 0.0)),
+        "hate_draft_low_hand_ev": float(hate_draft_diag.get("hate_draft_low_hand_ev", 0.0)),
+        "hate_draft_opp_overlap_mean": float(hate_draft_diag.get("hate_draft_opp_overlap_mean", 0.0)),
+        "hate_draft_own_overlap_mean": float(hate_draft_diag.get("hate_draft_own_overlap_mean", 0.0)),
+        "hate_draft_deny_self_gap": float(hate_draft_diag.get("hate_draft_deny_self_gap", 0.0)),
         "hate_draft_bonus_applied": bool(hate_draft_bonus_applied),
         "sniping_milestone_applied": bool(sniping_milestone_applied),
         "sniping_award_applied": bool(sniping_award_applied),
@@ -1511,3 +1598,6 @@ def calculate_step_reward(
     Backward-compatible scalar step reward wrapper.
     """
     return float(calculate_step_reward_decomposition(before_state, after_state, action_input).get("scaled_total", 0.0))
+
+
+

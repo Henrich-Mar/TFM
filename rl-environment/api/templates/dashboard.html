@@ -783,6 +783,11 @@
           ["Reward city/greenery component", f4(gm["rollout/reward_city_greenery_component_mean"])],
           ["Reward milestones/awards component", f4(gm["rollout/reward_milestones_awards_component_mean"])],
           ["Reward shaping coef", f4(gm["rollout/reward_shaping_coef_mean"])],
+          ["Hate-draft corr valid", gm["hate_draft_corr_valid"] ? "yes" : "no"],
+          ["Hate-draft corr samples", fmt(gm["hate_draft_corr_sample_count"])],
+          ["corr(rate, VP)", f4(gm["hate_draft_rate_vs_vp_corr"])],
+          ["corr(rate, rank)", f4(gm["hate_draft_rate_vs_rank_corr"])],
+          ["corr(rate, win)", f4(gm["hate_draft_rate_vs_win_corr"])],
         ]);
 
         renderKV(document.getElementById("utilization"), [
@@ -792,6 +797,12 @@
           ["Titanium spent per game", f2(gm["titanium_spent_per_game"])],
           ["Steel spent (gen)", fmt(gm["steel_spent"])],
           ["Titanium spent (gen)", fmt(gm["titanium_spent"])],
+          ["Draft decisions (gen)", fmt(gm["draft_decisions_total"])],
+          ["Draft low-hand decisions", fmt(gm["draft_decisions_low_hand_ev"])],
+          ["Hate-draft picks (gen)", fmt(gm["hate_draft_picks"])],
+          ["Hate-draft picks low-hand", fmt(gm["hate_draft_picks_low_hand_ev"])],
+          ["Hate-draft rate", pct(gm["hate_draft_rate"])],
+          ["Hate-draft rate (low-hand)", pct(gm["hate_draft_rate_low_hand_ev"])],
         ]);
 
         const spCounts = stats.behavior?.standard_project_counts || {};

@@ -76,11 +76,13 @@ def _normalize_network_output(raw_output: Any) -> Dict[str, Optional[torch.Tenso
         value = raw_output.get("value")
         recurrent_state = raw_output.get("recurrent_state")
         aux_predictions = raw_output.get("aux_predictions")
+        aux_milestone_logits = raw_output.get("aux_milestone_logits")
     elif isinstance(raw_output, (tuple, list)) and len(raw_output) >= 2:
         policy_logits = raw_output[0]
         value = raw_output[1]
         recurrent_state = raw_output[2] if len(raw_output) > 2 else None
         aux_predictions = raw_output[3] if len(raw_output) > 3 else None
+        aux_milestone_logits = raw_output[4] if len(raw_output) > 4 else None
     else:
         raise ValueError("Unsupported network output format")
 
@@ -91,6 +93,7 @@ def _normalize_network_output(raw_output: Any) -> Dict[str, Optional[torch.Tenso
         "value": value,
         "recurrent_state": recurrent_state,
         "aux_predictions": aux_predictions,
+        "aux_milestone_logits": aux_milestone_logits,
     }
 
 

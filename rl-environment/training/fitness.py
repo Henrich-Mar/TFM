@@ -3,6 +3,7 @@ Shared fitness, behavior metrics, and gating logic.
 """
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple
@@ -26,6 +27,20 @@ def _safe_env_int(name: str, default: int) -> int:
     except Exception:
         value = int(default)
     return int(value)
+
+
+def _pearson_corr(xs: Sequence[float], ys: Sequence[float]) -> float | None:
+    if len(xs) != len(ys) or len(xs) < 2:
+        return None
+    n = float(len(xs))
+    mean_x = sum(float(x) for x in xs) / n
+    mean_y = sum(float(y) for y in ys) / n
+    var_x = sum((float(x) - mean_x) ** 2 for x in xs)
+    var_y = sum((float(y) - mean_y) ** 2 for y in ys)
+    if var_x <= 1e-12 or var_y <= 1e-12:
+        return None
+    cov = sum((float(x) - mean_x) * (float(y) - mean_y) for x, y in zip(xs, ys))
+    return float(cov / math.sqrt(var_x * var_y))
 
 
 def _sum_moon_type(counts: Dict[str, Any], pattern: str) -> int:
@@ -52,6 +67,9 @@ def snapshot_population_behavior(population: Sequence[Any]) -> Dict[str, Dict[st
             "steel_payment_value_total": float(stats.get("steel_payment_value_total", 0.0) or 0.0),
             "titanium_payment_value_total": float(stats.get("titanium_payment_value_total", 0.0) or 0.0),
             "hate_draft_picks": float(stats.get("hate_draft_picks", 0) or 0),
+            "draft_decisions_total": float(stats.get("draft_decisions_total", 0) or 0),
+            "draft_decisions_low_hand_ev": float(stats.get("draft_decisions_low_hand_ev", 0) or 0),
+            "hate_draft_picks_low_hand_ev": float(stats.get("hate_draft_picks_low_hand_ev", 0) or 0),
             "milestone_snipes": float(stats.get("milestone_snipes", 0) or 0),
             "award_snipes": float(stats.get("award_snipes", 0) or 0),
             "standard_project_counts": dict(stats.get("standard_project_counts", {}) or {}),
@@ -91,6 +109,9 @@ def compute_generation_behavior_metrics(
         "town_placements": 0.0,
         "greenery_placements": 0.0,
         "hate_draft_picks": 0.0,
+        "draft_decisions_total": 0.0,
+        "draft_decisions_low_hand_ev": 0.0,
+        "hate_draft_picks_low_hand_ev": 0.0,
         "milestone_snipes": 0.0,
         "award_snipes": 0.0,
         "moon_mines": 0.0,
@@ -99,6 +120,8 @@ def compute_generation_behavior_metrics(
     }
 
     per_agent_endscreen: Dict[str, Dict[str, float]] = {}
+    per_agent_tournament: Dict[str, Dict[str, float]] = {}
+    hate_draft_corr_samples: List[Dict[str, float]] = []
     for tournament_result in (tournament_results or []):
         if not isinstance(tournament_result, dict):
             continue
@@ -111,6 +134,17 @@ def compute_generation_behavior_metrics(
                 agent_id = str(player_result.get("agent_id", "") or "")
                 if not agent_id:
                     continue
+                telemetry_bucket = per_agent_tournament.setdefault(
+                    agent_id,
+                    {
+                        "draft_decisions": 0.0,
+                        "draft_decisions_low_hand_ev": 0.0,
+                        "hate_draft_picks": 0.0,
+                        "hate_draft_picks_low_hand_ev": 0.0,
+                        "telemetry_rows": 0.0,
+                        "telemetry_present_rows": 0.0,
+                    },
+                )
                 bucket = per_agent_endscreen.setdefault(
                     agent_id,
                     {
@@ -137,6 +171,37 @@ def compute_generation_behavior_metrics(
                 bucket["town_placements"] += float(player_result.get("town_placements", 0) or 0)
                 bucket["greenery_placements"] += float(player_result.get("greenery_placements", 0) or 0)
 
+                draft_decisions = max(0.0, float(player_result.get("draft_decisions", 0) or 0))
+                draft_decisions_low_hand_ev = max(0.0, float(player_result.get("draft_decisions_low_hand_ev", 0) or 0))
+                hate_draft_picks = max(0.0, float(player_result.get("hate_draft_picks", 0) or 0))
+                hate_draft_picks_low_hand_ev = max(0.0, float(player_result.get("hate_draft_picks_low_hand_ev", 0) or 0))
+                telemetry_bucket["draft_decisions"] += draft_decisions
+                telemetry_bucket["draft_decisions_low_hand_ev"] += draft_decisions_low_hand_ev
+                telemetry_bucket["hate_draft_picks"] += hate_draft_picks
+                telemetry_bucket["hate_draft_picks_low_hand_ev"] += hate_draft_picks_low_hand_ev
+                telemetry_bucket["telemetry_rows"] += 1.0
+                telemetry_keys = (
+                    "draft_decisions",
+                    "draft_decisions_low_hand_ev",
+                    "hate_draft_picks",
+                    "hate_draft_picks_low_hand_ev",
+                    "hate_draft_rate",
+                    "hate_draft_rate_low_hand_ev",
+                )
+                if any(key in player_result for key in telemetry_keys):
+                    telemetry_bucket["telemetry_present_rows"] += 1.0
+
+                completed = bool(player_result.get("completed", game_result.get("completed", False)))
+                if completed and draft_decisions > 0.0:
+                    hate_draft_corr_samples.append(
+                        {
+                            "rate": float(hate_draft_picks / draft_decisions),
+                            "vp": float(player_result.get("victory_points", 0) or 0),
+                            "rank": float(player_result.get("rank", 0) or 0),
+                            "win": 1.0 if int(player_result.get("rank", 0) or 0) == 1 else 0.0,
+                        }
+                    )
+
     for agent in population:
         agent_id = agent.id
         prev = before.get(agent_id, {})
@@ -152,9 +217,48 @@ def compute_generation_behavior_metrics(
         metal_payment_value_delta = max(0.0, float(curr.get("metal_payment_value_total", 0.0)) - float(prev.get("metal_payment_value_total", 0.0)))
         steel_payment_value_delta = max(0.0, float(curr.get("steel_payment_value_total", 0.0)) - float(prev.get("steel_payment_value_total", 0.0)))
         titanium_payment_value_delta = max(0.0, float(curr.get("titanium_payment_value_total", 0.0)) - float(prev.get("titanium_payment_value_total", 0.0)))
+        draft_decisions_delta_snapshot = max(0.0, float(curr.get("draft_decisions_total", 0.0)) - float(prev.get("draft_decisions_total", 0.0)))
+        draft_decisions_low_hand_delta_snapshot = max(
+            0.0,
+            float(curr.get("draft_decisions_low_hand_ev", 0.0)) - float(prev.get("draft_decisions_low_hand_ev", 0.0)),
+        )
         hate_draft_delta = max(0.0, float(curr.get("hate_draft_picks", 0.0)) - float(prev.get("hate_draft_picks", 0.0)))
+        hate_draft_low_hand_delta_snapshot = max(
+            0.0,
+            float(curr.get("hate_draft_picks_low_hand_ev", 0.0)) - float(prev.get("hate_draft_picks_low_hand_ev", 0.0)),
+        )
         milestone_snipes_delta = max(0.0, float(curr.get("milestone_snipes", 0.0)) - float(prev.get("milestone_snipes", 0.0)))
         award_snipes_delta = max(0.0, float(curr.get("award_snipes", 0.0)) - float(prev.get("award_snipes", 0.0)))
+        tournament_telemetry = per_agent_tournament.get(agent_id, {})
+        telemetry_rows = max(0.0, float(tournament_telemetry.get("telemetry_rows", 0.0)))
+        telemetry_present_rows = max(0.0, float(tournament_telemetry.get("telemetry_present_rows", 0.0)))
+        has_tournament_telemetry = telemetry_rows > 0.0 and telemetry_present_rows > 0.0
+        draft_decisions_total = max(
+            0.0,
+            float(tournament_telemetry.get("draft_decisions", 0.0)) if has_tournament_telemetry else draft_decisions_delta_snapshot,
+        )
+        draft_decisions_low_hand_ev = max(
+            0.0,
+            float(tournament_telemetry.get("draft_decisions_low_hand_ev", 0.0))
+            if has_tournament_telemetry
+            else draft_decisions_low_hand_delta_snapshot,
+        )
+        hate_draft_picks = max(
+            0.0,
+            float(tournament_telemetry.get("hate_draft_picks", 0.0)) if has_tournament_telemetry else hate_draft_delta,
+        )
+        hate_draft_picks_low_hand_ev = max(
+            0.0,
+            float(tournament_telemetry.get("hate_draft_picks_low_hand_ev", 0.0))
+            if has_tournament_telemetry
+            else hate_draft_low_hand_delta_snapshot,
+        )
+        hate_draft_rate = (hate_draft_picks / draft_decisions_total) if draft_decisions_total > 0.0 else 0.0
+        hate_draft_rate_low_hand_ev = (
+            hate_draft_picks_low_hand_ev / draft_decisions_low_hand_ev
+            if draft_decisions_low_hand_ev > 0.0
+            else 0.0
+        )
         endscreen_games = max(0.0, float(endscreen.get("games", 0.0)))
         vp_terraforming = max(0.0, float(endscreen.get("vp_terraforming", 0.0)))
         vp_milestones = max(0.0, float(endscreen.get("vp_milestones", 0.0)))
@@ -186,7 +290,10 @@ def compute_generation_behavior_metrics(
         totals["vp_total"] += vp_total
         totals["town_placements"] += town_placements
         totals["greenery_placements"] += greenery_placements
-        totals["hate_draft_picks"] += hate_draft_delta
+        totals["draft_decisions_total"] += draft_decisions_total
+        totals["draft_decisions_low_hand_ev"] += draft_decisions_low_hand_ev
+        totals["hate_draft_picks"] += hate_draft_picks
+        totals["hate_draft_picks_low_hand_ev"] += hate_draft_picks_low_hand_ev
         totals["milestone_snipes"] += milestone_snipes_delta
         totals["award_snipes"] += award_snipes_delta
 
@@ -221,7 +328,12 @@ def compute_generation_behavior_metrics(
             "vp_total": vp_total,
             "town_placements": town_placements,
             "greenery_placements": greenery_placements,
-            "hate_draft_picks": hate_draft_delta,
+            "draft_decisions_total": draft_decisions_total,
+            "draft_decisions_low_hand_ev": draft_decisions_low_hand_ev,
+            "hate_draft_picks": hate_draft_picks,
+            "hate_draft_picks_low_hand_ev": hate_draft_picks_low_hand_ev,
+            "hate_draft_rate": hate_draft_rate,
+            "hate_draft_rate_low_hand_ev": hate_draft_rate_low_hand_ev,
             "milestone_snipes": milestone_snipes_delta,
             "award_snipes": award_snipes_delta,
             "card_plays_per_game": (card_plays_delta / games_delta) if games_delta > 0 else 0.0,
@@ -263,6 +375,17 @@ def compute_generation_behavior_metrics(
     card_actions_total = totals["card_play_actions"] + totals["standard_project_actions"]
     games_total = totals["games_played"]
     payment_reject_delta = max(0, int(payment_reject_after) - int(payment_reject_before))
+    corr_rates = [float(row.get("rate", 0.0)) for row in hate_draft_corr_samples]
+    corr_vps = [float(row.get("vp", 0.0)) for row in hate_draft_corr_samples]
+    corr_ranks = [float(row.get("rank", 0.0)) for row in hate_draft_corr_samples]
+    corr_wins = [float(row.get("win", 0.0)) for row in hate_draft_corr_samples]
+    hate_draft_rate_vs_vp_corr = _pearson_corr(corr_rates, corr_vps)
+    hate_draft_rate_vs_rank_corr = _pearson_corr(corr_rates, corr_ranks)
+    hate_draft_rate_vs_win_corr = _pearson_corr(corr_rates, corr_wins)
+    hate_draft_corr_valid = all(
+        corr is not None
+        for corr in (hate_draft_rate_vs_vp_corr, hate_draft_rate_vs_rank_corr, hate_draft_rate_vs_win_corr)
+    )
     generation_metrics: Dict[str, Any] = {
         "generation": int(current_generation),
         "total_games_evaluated": int(games_total),
@@ -311,7 +434,21 @@ def compute_generation_behavior_metrics(
         "vp_total_per_game": (float(totals["vp_total"]) / games_total) if games_total > 0 else 0.0,
         "town_placements_per_game": (float(totals["town_placements"]) / games_total) if games_total > 0 else 0.0,
         "greenery_placements_per_game": (float(totals["greenery_placements"]) / games_total) if games_total > 0 else 0.0,
+        "draft_decisions_total": float(totals["draft_decisions_total"]),
+        "draft_decisions_low_hand_ev": float(totals["draft_decisions_low_hand_ev"]),
         "hate_draft_picks": float(totals["hate_draft_picks"]),
+        "hate_draft_picks_low_hand_ev": float(totals["hate_draft_picks_low_hand_ev"]),
+        "hate_draft_rate": (
+            float(totals["hate_draft_picks"]) / float(totals["draft_decisions_total"])
+        ) if float(totals["draft_decisions_total"]) > 0.0 else 0.0,
+        "hate_draft_rate_low_hand_ev": (
+            float(totals["hate_draft_picks_low_hand_ev"]) / float(totals["draft_decisions_low_hand_ev"])
+        ) if float(totals["draft_decisions_low_hand_ev"]) > 0.0 else 0.0,
+        "hate_draft_rate_vs_vp_corr": float(hate_draft_rate_vs_vp_corr) if hate_draft_rate_vs_vp_corr is not None else 0.0,
+        "hate_draft_rate_vs_rank_corr": float(hate_draft_rate_vs_rank_corr) if hate_draft_rate_vs_rank_corr is not None else 0.0,
+        "hate_draft_rate_vs_win_corr": float(hate_draft_rate_vs_win_corr) if hate_draft_rate_vs_win_corr is not None else 0.0,
+        "hate_draft_corr_sample_count": int(len(hate_draft_corr_samples)),
+        "hate_draft_corr_valid": bool(hate_draft_corr_valid),
         "milestone_snipes": float(totals["milestone_snipes"]),
         "award_snipes": float(totals["award_snipes"]),
         "payment_reject_count": int(payment_reject_delta),

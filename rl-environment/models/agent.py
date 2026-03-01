@@ -269,9 +269,9 @@ class TerraformingMarsNetwork(nn.Module):
             for _ in range(self.phase_head_count)
         ])
 
-        # Partially separate value path to reduce policy/value interference.
-        value_hidden_1 = max(32, int(config.hidden_size // 2))
-        value_hidden_2 = max(16, int(config.hidden_size // 4))
+        # Wider value path for better return prediction with large models.
+        value_hidden_1 = max(64, int(config.hidden_size))
+        value_hidden_2 = max(32, int(config.hidden_size // 2))
         self.value_trunk = nn.Sequential(
             nn.Linear(config.hidden_size, value_hidden_1),
             nn.ReLU(),

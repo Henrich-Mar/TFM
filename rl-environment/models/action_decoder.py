@@ -1860,9 +1860,11 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
 
         # For projectCard, action_index should be the card index directly
         card_idx = normalize_index(action_index, 0) if action_index is not None else 0
-        affordable_indices: List[int] = []
         payment_options = waiting_for.get('paymentOptions', {})
+        candidate_indices: List[int] = []
+
         if player_state:
+            affordable_indices: List[int] = []
             for i, candidate in enumerate(cards):
                 reserve_units = _merge_reserve_units(waiting_for, candidate)
                 if _can_afford_card_with_payment_options(
@@ -1870,33 +1872,41 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                     candidate,
                     payment_options,
                     reserve_units=reserve_units,
+                    waiting_for=waiting_for,
                 ):
                     affordable_indices.append(i)
 
-        if affordable_indices:
-            if card_idx in affordable_indices:
-                chosen_idx = card_idx
-            elif 0 <= card_idx < len(affordable_indices):
-                chosen_idx = affordable_indices[card_idx]
-            else:
-                chosen_idx = affordable_indices[0]
-            card = cards[chosen_idx]
-        elif 0 <= card_idx < len(cards):
-            card = cards[card_idx]
+            if affordable_indices:
+                if card_idx in affordable_indices:
+                    candidate_indices.append(card_idx)
+                elif 0 <= card_idx < len(affordable_indices):
+                    candidate_indices.append(int(affordable_indices[card_idx]))
+                for i in affordable_indices:
+                    if i not in candidate_indices:
+                        candidate_indices.append(i)
+            elif 0 <= card_idx < len(cards):
+                candidate_indices.append(card_idx)
         else:
-            card = cards[0]
+            if 0 <= card_idx < len(cards):
+                candidate_indices.append(card_idx)
+            for i in range(len(cards)):
+                if i not in candidate_indices:
+                    candidate_indices.append(i)
 
-        # Build inline payment respecting paymentOptions
-        payment = _build_payment_with_options(
-            player_state,
-            card,
-            payment_options,
-            reserve_units=_merge_reserve_units(waiting_for, card),
-            waiting_for=waiting_for,
-        )
-        if payment is None:
-            payment = _payment_empty()
-        return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
+        for idx in candidate_indices:
+            card = cards[idx]
+            payment = _build_payment_with_options(
+                player_state,
+                card,
+                payment_options,
+                reserve_units=_merge_reserve_units(waiting_for, card),
+                waiting_for=waiting_for,
+            )
+            if payment is not None:
+                return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
+
+        # No valid payment candidate for this prompt/card state.
+        return {'type': 'option'}
     elif input_type in ['space', 'selectSpace']:
         # Prefer explicit availableSpaces with IDs; fallback to 'spaces'
         spaces = waiting_for.get('availableSpaces') or waiting_for.get('spaces', [])
@@ -1950,9 +1960,10 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             return {'type': 'option'}  # No cards - cannot produce valid response
              
         card_idx = normalize_index(action_index, 0) if action_index is not None else 0
-        affordable_indices: List[int] = []
         payment_options = waiting_for.get('paymentOptions', {}) if isinstance(waiting_for, dict) else {}
+        candidate_indices: List[int] = []
         if player_state:
+            affordable_indices: List[int] = []
             for i, candidate in enumerate(cards):
                 reserve_units = _merge_reserve_units(waiting_for, candidate)
                 if _can_afford_card_with_payment_options(
@@ -1963,14 +1974,26 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                     waiting_for=waiting_for,
                 ):
                     affordable_indices.append(i)
-        if affordable_indices:
-            if card_idx in affordable_indices:
-                chosen_idx = card_idx
-            elif 0 <= card_idx < len(affordable_indices):
-                chosen_idx = affordable_indices[card_idx]
-            else:
-                chosen_idx = affordable_indices[0]
-            card = cards[chosen_idx]
+
+            if affordable_indices:
+                if card_idx in affordable_indices:
+                    candidate_indices.append(card_idx)
+                elif 0 <= card_idx < len(affordable_indices):
+                    candidate_indices.append(int(affordable_indices[card_idx]))
+                for i in affordable_indices:
+                    if i not in candidate_indices:
+                        candidate_indices.append(i)
+            elif 0 <= card_idx < len(cards):
+                candidate_indices.append(card_idx)
+        else:
+            if 0 <= card_idx < len(cards):
+                candidate_indices.append(card_idx)
+            for i in range(len(cards)):
+                if i not in candidate_indices:
+                    candidate_indices.append(i)
+
+        for idx in candidate_indices:
+            card = cards[idx]
             payment = _build_payment_with_options(
                 player_state,
                 card,
@@ -1980,22 +2003,9 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
             )
             if payment is not None:
                 return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
-            # Payment build failed - try default/zero payment
-            payment = _payment_empty()
-        # No affordable cards or payment failed: try first card with best-effort payment
-        idx = affordable_indices[0] if affordable_indices else (card_idx if 0 <= card_idx < len(cards) else 0)
-        idx = min(idx, len(cards) - 1)
-        card = cards[idx]
-        payment = _build_payment_with_options(
-            player_state,
-            card,
-            payment_options,
-            reserve_units=_merge_reserve_units(waiting_for, card),
-            waiting_for=waiting_for,
-        )
-        if payment is None:
-            payment = _payment_empty()
-        return {'type': 'projectCard', 'card': card['name'], 'payment': payment}
+
+        # No valid payment candidate for this prompt/card state.
+        return {'type': 'option'}
     elif input_type == 'selectCard' and 'standard project' in _title_text(waiting_for.get('title', '')).lower():
         # Handle standard project selection
         cards = waiting_for.get('cards', [])
@@ -2076,7 +2086,7 @@ def _calculate_card_payment(player_state: Dict[str, Any], card: Dict[str, Any]) 
         tags = {}
     card_name_l = str(card.get('name', '') or '').lower()
     card_type_l = str(card.get('type', '') or '').lower()
-    
+
     payment = {
         'megaCredits': 0, 'steel': 0, 'titanium': 0, 'heat': 0, 'plants': 0
     }
@@ -2177,6 +2187,11 @@ def _build_payment_with_options(
         tags = {}
     card_name_l = str(card.get('name', '') or '').lower()
     card_type_l = str(card.get('type', '') or '').lower()
+
+    # Stratospheric Birds requires spending a floater from a card as an extra
+    # condition; keep one floater reserved even when reserveUnits is absent.
+    if 'stratospheric birds' in card_name_l:
+        reserve['floaters'] = max(int(reserve.get('floaters', 0) or 0), 1)
 
     # Default zeroes for all known keys the server may accept
     payment = {
@@ -2855,12 +2870,10 @@ class ActionDecoder:
                         # If no player state, assume all cards are affordable
                         affordable_cards.append(i)
                 
-                # Include playable cards; when none are affordable, still include all cards
-                # so the agent can attempt - server will reject with a clearer error if invalid.
                 if affordable_cards:
                     for i in affordable_cards:
                         available_actions.append(self.action_types['PLAY_CARD'] + i)
-                else:
+                elif not player_state:
                     for i in range(len(cards)):
                         available_actions.append(self.action_types['PLAY_CARD'] + i)
             elif input_type == 'selectSpace' or input_type == 'space':

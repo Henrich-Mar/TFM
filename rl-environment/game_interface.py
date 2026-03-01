@@ -47,6 +47,9 @@ class GameInstance:
         self.base_url = f"http://{server.host}:{server.port}"
         self.spectator_id: Optional[str] = None
         self._latest_run_id_by_player: Dict[str, str] = {}
+        # Cache: send_player_input stores the response body here so the next
+        # get_player_state call can return it without a network round-trip.
+        self._cached_player_state: Dict[str, Dict[str, Any]] = {}  # player_id -> state
 
     @staticmethod
     def _env_flag(name: str, default: bool = False) -> bool:
@@ -386,7 +389,18 @@ class GameInstance:
             raise
     
     async def get_player_state(self, player_id: str) -> Dict[str, Any]:
-        """Get current state for a specific player with retry on transient errors."""
+        """Get current state for a specific player with retry on transient errors.
+
+        If ``send_player_input`` previously cached a response for this player,
+        the cached value is returned immediately (one-shot: the cache entry is
+        consumed).  This eliminates one full HTTP round-trip per successful
+        action, cutting network I/O roughly in half during gameplay.
+        """
+        # Fast path: use cached state from the last send_player_input response.
+        cached = self._cached_player_state.pop(str(player_id), None)
+        if cached is not None:
+            return cached
+
         try:
             max_retries = max(1, int(os.getenv("TM_GET_STATE_RETRY_ATTEMPTS", "3")))
         except Exception:
@@ -446,7 +460,12 @@ class GameInstance:
         raise RuntimeError("get_player_state: unexpected fall-through")
     
     async def send_player_input(self, player_id: str, input_data: Dict[str, Any]) -> bool:
-        """Send player input to the game"""
+        """Send player input to the game.
+
+        On success the TM server response (full PlayerViewModel JSON) is cached
+        in ``_cached_player_state[player_id]`` so the next ``get_player_state``
+        call returns instantly without a network round-trip.
+        """
         prepared_input_data = self._with_run_id(player_id, input_data)
         try:
             payload_full = json.dumps(prepared_input_data, ensure_ascii=True, separators=(',', ':'))
@@ -514,6 +533,19 @@ class GameInstance:
                                            json=prepared_input_data,
                                            headers={'Content-Type': 'application/json'}) as response:
                     if response.status == 200:
+                        # The TM server returns the full PlayerViewModel JSON
+                        # on every successful input.  Cache it so the next
+                        # get_player_state() call returns instantly without a
+                        # network round-trip.
+                        try:
+                            body = await response.json()
+                            if isinstance(body, dict):
+                                run_id = self._extract_run_id_from_state(body)
+                                if run_id:
+                                    self._latest_run_id_by_player[str(player_id)] = run_id
+                                self._cached_player_state[str(player_id)] = body
+                        except Exception:
+                            pass
                         return True
                     else:
                         response_text = await response.text()

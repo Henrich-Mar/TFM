@@ -584,21 +584,22 @@ def _hate_draft_adjustment(
     """
     Bonus when the agent drafts/keeps cards that hurt opponents (high opp overlap, low own overlap).
     Returns (adjustment, applied).
+
+    Reduced magnitude to prevent over-hate-drafting: empirical data shows hate draft
+    rates above ~55% negatively correlate with VP and rank.
     """
     diag = diagnostics if isinstance(diagnostics, dict) else _compute_hate_draft_diagnostics(before_state, action_input)
     if float(diag.get("selected_card_count", 0.0)) <= 0.0:
         return 0.0, False
 
     avg_hate = max(0.0, float(diag.get("hate_draft_deny_self_gap", 0.0)))
-    # Future hardening spec (disabled in this metrics-only pass): apply a deny-self
-    # margin gate with phase scaling before granting bonus.
-    # Lower threshold AND add gradual bonus even below threshold
-    if avg_hate < 0.12:  # 0.2 -> 0.12 (much lower)
-        # Still give small bonus for any hate signal
-        bonus = min(0.04, 0.02 * avg_hate + 0.01)
-        applied = avg_hate > 0.05  # Only flag as applied if there's some signal
+    # Reduced bonuses (~40% lower) to prevent over-hate-drafting.
+    if avg_hate < 0.12:
+        # Small bonus for any hate signal
+        bonus = min(0.025, 0.012 * avg_hate + 0.006)
+        applied = avg_hate > 0.05
     else:
-        bonus = min(0.25, 0.10 * avg_hate + 0.05)  # Much stronger bonus
+        bonus = min(0.15, 0.06 * avg_hate + 0.03)
         applied = True
 
     return float(bonus), applied

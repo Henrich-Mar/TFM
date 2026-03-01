@@ -1,5 +1,8 @@
 services:
-  # Game Server Cluster (8 instances for parallel training)
+  # Game Server Cluster (6 instances — fewer servers with more memory each)
+  # With 9.4GB total Docker memory, 6×1.3GB = 7.8GB for servers + ~1.6GB for
+  # redis/postgres/coordinator.  Each server comfortably handles 3 concurrent
+  # games with 896MB V8 heap.
   tfm-server-1:
     build:
       context: ./terraforming-mars
@@ -10,7 +13,7 @@ services:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
       - SERVER_ID=tfm-server-1
-      - NODE_OPTIONS=--max-old-space-size=512
+      - NODE_OPTIONS=--max-old-space-size=896
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     labels:
@@ -19,11 +22,11 @@ services:
       test:
         - CMD-SHELL
         - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-      interval: 20s
-      timeout: 5s
+      interval: 15s
+      timeout: 8s
       retries: 3
       start_period: 45s
-    mem_limit: 768m
+    mem_limit: 1300m
     restart: unless-stopped
 
   tfm-server-2:
@@ -36,7 +39,7 @@ services:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
       - SERVER_ID=tfm-server-2
-      - NODE_OPTIONS=--max-old-space-size=512
+      - NODE_OPTIONS=--max-old-space-size=896
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     labels:
@@ -45,11 +48,11 @@ services:
       test:
         - CMD-SHELL
         - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-      interval: 20s
-      timeout: 5s
+      interval: 15s
+      timeout: 8s
       retries: 3
       start_period: 45s
-    mem_limit: 768m
+    mem_limit: 1300m
     restart: unless-stopped
 
   tfm-server-3:
@@ -62,7 +65,7 @@ services:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
       - SERVER_ID=tfm-server-3
-      - NODE_OPTIONS=--max-old-space-size=512
+      - NODE_OPTIONS=--max-old-space-size=896
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     labels:
@@ -71,11 +74,11 @@ services:
       test:
         - CMD-SHELL
         - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-      interval: 20s
-      timeout: 5s
+      interval: 15s
+      timeout: 8s
       retries: 3
       start_period: 45s
-    mem_limit: 768m
+    mem_limit: 1300m
     restart: unless-stopped
     
   tfm-server-4:
@@ -88,7 +91,7 @@ services:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
       - SERVER_ID=tfm-server-4
-      - NODE_OPTIONS=--max-old-space-size=512
+      - NODE_OPTIONS=--max-old-space-size=896
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     labels:
@@ -97,11 +100,11 @@ services:
       test:
         - CMD-SHELL
         - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-      interval: 20s
-      timeout: 5s
+      interval: 15s
+      timeout: 8s
       retries: 3
       start_period: 45s
-    mem_limit: 768m
+    mem_limit: 1300m
     restart: unless-stopped
     
   tfm-server-5:
@@ -114,7 +117,7 @@ services:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
       - SERVER_ID=tfm-server-5
-      - NODE_OPTIONS=--max-old-space-size=512
+      - NODE_OPTIONS=--max-old-space-size=896
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     labels:
@@ -123,11 +126,11 @@ services:
       test:
         - CMD-SHELL
         - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-      interval: 20s
-      timeout: 5s
+      interval: 15s
+      timeout: 8s
       retries: 3
       start_period: 45s
-    mem_limit: 768m
+    mem_limit: 1300m
     restart: unless-stopped
     
   tfm-server-6:
@@ -140,7 +143,7 @@ services:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
       - SERVER_ID=tfm-server-6
-      - NODE_OPTIONS=--max-old-space-size=512
+      - NODE_OPTIONS=--max-old-space-size=896
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     labels:
@@ -149,63 +152,11 @@ services:
       test:
         - CMD-SHELL
         - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-      interval: 20s
-      timeout: 5s
+      interval: 15s
+      timeout: 8s
       retries: 3
       start_period: 45s
-    mem_limit: 768m
-    restart: unless-stopped
-
-  tfm-server-7:
-    build:
-      context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
-    ports:
-      - "8087:8080"
-    environment:
-      - NODE_ENV=production
-      - COMPRESS_COMPLETED_GAMES_DAYS=0
-      - SERVER_ID=tfm-server-7
-      - NODE_OPTIONS=--max-old-space-size=512
-    tmpfs:
-      - /usr/src/app/db:uid=100,gid=65533,mode=0775
-    labels:
-      - autoheal=true
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-      interval: 20s
-      timeout: 5s
-      retries: 3
-      start_period: 45s
-    mem_limit: 768m
-    restart: unless-stopped
-
-  tfm-server-8:
-    build:
-      context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
-    ports:
-      - "8088:8080"
-    environment:
-      - NODE_ENV=production
-      - COMPRESS_COMPLETED_GAMES_DAYS=0
-      - SERVER_ID=tfm-server-8
-      - NODE_OPTIONS=--max-old-space-size=512
-    tmpfs:
-      - /usr/src/app/db:uid=100,gid=65533,mode=0775
-    labels:
-      - autoheal=true
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-      interval: 20s
-      timeout: 5s
-      retries: 3
-      start_period: 45s
-    mem_limit: 768m
+    mem_limit: 1300m
     restart: unless-stopped
 
   # Automatically restart unhealthy tfm-server containers
@@ -226,8 +177,7 @@ services:
       - tfm-server-4
       - tfm-server-5
       - tfm-server-6
-      - tfm-server-7
-      - tfm-server-8
+
   # Redis for job queue and caching
   redis:
     image: redis:alpine
@@ -248,12 +198,22 @@ services:
     volumes:
       - postgres_data_hard:/var/lib/postgresql/data
 
-  # RL Coordinator - Manages training loop
+  # RL Coordinator - Manages training loop (GPU-accelerated PPO)
   rl-coordinator:
     build:
       context: ./rl-environment
       dockerfile: Dockerfile.training
     restart: unless-stopped
+    # GPU passthrough for PPO training on NVIDIA RTX 3060.
+    # Requires: NVIDIA Container Toolkit (nvidia-ctk) installed on host.
+    # Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     volumes:
       - ./rl-environment:/app
       - ./rl-models:/app/rl-models
@@ -262,32 +222,37 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - POSTGRES_URL=postgresql://tfm:tfm_password@postgres:5432/tfm_rl
-      - GAME_SERVERS=tfm-server-1:8080,tfm-server-2:8080,tfm-server-3:8080,tfm-server-4:8080,tfm-server-5:8080,tfm-server-6:8080,tfm-server-7:8080,tfm-server-8:8080
-      - PUBLIC_TM_MAP=tfm-server-1:8080=http://localhost:8081,tfm-server-2:8080=http://localhost:8082,tfm-server-3:8080=http://localhost:8083,tfm-server-4:8080=http://localhost:8084,tfm-server-5:8080=http://localhost:8085,tfm-server-6:8080=http://localhost:8086,tfm-server-7:8080=http://localhost:8087,tfm-server-8:8080=http://localhost:8088
-      - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4,tfm-server-5:8080=tfm-server-5,tfm-server-6:8080=tfm-server-6,tfm-server-7:8080=tfm-server-7,tfm-server-8:8080=tfm-server-8
-      - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084,http://localhost:8085,http://localhost:8086,http://localhost:8087,http://localhost:8088
-      - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080,http://tfm-server-7:8080,http://tfm-server-8:8080
+      # 6 game servers (down from 8 — more memory per server)
+      - GAME_SERVERS=tfm-server-1:8080,tfm-server-2:8080,tfm-server-3:8080,tfm-server-4:8080,tfm-server-5:8080,tfm-server-6:8080
+      - PUBLIC_TM_MAP=tfm-server-1:8080=http://localhost:8081,tfm-server-2:8080=http://localhost:8082,tfm-server-3:8080=http://localhost:8083,tfm-server-4:8080=http://localhost:8084,tfm-server-5:8080=http://localhost:8085,tfm-server-6:8080=http://localhost:8086
+      - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4,tfm-server-5:8080=tfm-server-5,tfm-server-6:8080=tfm-server-6
+      - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084,http://localhost:8085,http://localhost:8086
+      - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080
       - POPULATION_SIZE=16
       - GENERATIONS=5000
-      - GAMES_PER_EVAL=4
-      - TOURNAMENT_CONCURRENCY=6
-      - GLOBAL_GAME_CONCURRENCY=24
+      - GAMES_PER_EVAL=6
+      # Concurrency: 6 servers × 3 games/server = 18 max capacity
+      # GLOBAL_GAME_CONCURRENCY=18 uses full capacity; set to 18 for headroom
+      - TOURNAMENT_CONCURRENCY=4
+      - GLOBAL_GAME_CONCURRENCY=20
       - MAX_ACTIVE_GAMES_PER_SERVER=3
-      - TM_GAME_TIMEOUT_SEC=360
-      - TM_HTTP_CONNECTOR_LIMIT=720
-      - TM_HTTP_CONNECTOR_LIMIT_PER_HOST=52
+      # Timeouts & transport
+      - TM_GAME_TIMEOUT_SEC=420
+      - TM_HTTP_CONNECTOR_LIMIT=160
+      - TM_HTTP_CONNECTOR_LIMIT_PER_HOST=30
       - TM_HTTP_FORCE_CLOSE_CONNECTIONS=1
-      - TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS=3
-      - TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=4
+      - TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS=4
+      - TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=5
       - TM_SEND_INPUT_INITIAL_CARDS_JITTER_MS=1200
       - TM_VALIDATE_INITIAL_CARDS_BEFORE_SEND=1
       - TM_SKIP_STALE_INITIAL_CARDS_SEND=1
       - TM_RECYCLE_SESSION_ON_DISCONNECT=1
-      - TM_CREATE_GAME_RETRY_ATTEMPTS=4
-      - TM_CREATE_GAME_RETRY_BACKOFF_SEC=0.50
-      - TM_SERVER_FAILURE_COOLDOWN_SEC=20
-      - TM_HEALTH_CHECK_INTERVAL_SEC=20
-      - TM_SERVER_HEALTH_TIMEOUT_SEC=3
+      - TM_CREATE_GAME_RETRY_ATTEMPTS=5
+      - TM_CREATE_GAME_RETRY_BACKOFF_SEC=1.0
+      - TM_SERVER_FAILURE_COOLDOWN_SEC=30
+      - TM_HEALTH_CHECK_INTERVAL_SEC=15
+      - TM_SERVER_HEALTH_TIMEOUT_SEC=5
+      - TM_SERVER_SLOT_WAIT_TIMEOUT_SEC=60
       - TM_FAST_MODE_OPTION=1
       - RL_MODELS_DIR=/app/rl-models
       - RL_CHECKPOINT_DIR=/app/rl-models/checkpoints
@@ -312,26 +277,42 @@ services:
       - SELECTION_RANK_4_POINTS=5
       - SELECTION_INCLUDE_TRAINING_POOL=0
       
-      # PPO Configuration (Aggressive, higher-capacity model)
+      # PPO Core
       - PPO_ENABLE=true
-      - PPO_ROLLOUT_STEPS=49152
-      - PPO_MIN_STEPS_PER_AGENT=2048
+      - PPO_ROLLOUT_STEPS=65536
+      - PPO_MIN_STEPS_PER_AGENT=1024
       - PPO_EPOCHS=10
-      - PPO_MINIBATCH_SIZE=1536
-      - PPO_ENTROPY_COEF=0.010
+      - PPO_MINIBATCH_SIZE=2048
+      - PPO_ENTROPY_COEF=0.015
       - PPO_VALUE_COEF=1.0
-      - PPO_TARGET_KL=0.015
-      - PPO_ENTROPY_COEF_START=0.018
-      - PPO_ENTROPY_COEF_END=0.006
-      - PPO_ENTROPY_COEF_ANNEAL_GAMES=4000
-      - PPO_LEARNING_RATE=0.00008
-      - PPO_LR_MIN=0.00001
-      - PPO_LR_MAX=0.00030
-      - PPO_LR_ADAPT_UP=1.02
-      - PPO_LR_ADAPT_DOWN=0.90
-      - PPO_CLIP_EPS=0.12
+      - PPO_TARGET_KL=0.020
+      - PPO_CLIP_EPS=0.15
+      - PPO_BUFFER_MAX_STEPS=600000
+      - PPO_LEARNING_RATE=0.00012
+      - PPO_LR_MIN=0.00003
+      - PPO_LR_MAX=0.00035
+      - PPO_LR_ADAPT_UP=1.05
+      - PPO_LR_ADAPT_DOWN=0.95
       - PPO_RARE_STATE_PRIORITY_ALPHA=1.2
-      - PPO_BUFFER_MAX_STEPS=400000
+
+      # PPO Entropy (more exploration, slower decay)
+      - PPO_ENTROPY_COEF_START=0.030
+      - PPO_ENTROPY_COEF_END=0.012
+      - PPO_ENTROPY_COEF_ANNEAL_GAMES=6000
+
+      # Reward Shaping (faster annealing, keep residual)
+      - PPO_SHAPING_INITIAL_COEF=0.7
+      - PPO_SHAPING_FINAL_COEF=0.15
+      - PPO_SHAPING_ANNEAL_GAMES=600
+
+      # Reward Component Weights (rebalanced)
+      - PPO_SHAPING_TR_WEIGHT=2.0
+      - PPO_SHAPING_CARDS_VP_WEIGHT=4.0
+      - PPO_SHAPING_CITY_GREENERY_WEIGHT=3.5
+      - PPO_SHAPING_MILESTONES_AWARDS_WEIGHT=3.0
+      - PPO_SHAPING_OTHER_WEIGHT=0.3
+
+      # Reward Debug
       - PPO_REWARD_DEBUG_ENABLED=1
       - PPO_REWARD_DEBUG_THRESHOLD=0.001
       - PPO_REWARD_DEBUG_LOG_EVERY=2000
@@ -348,10 +329,10 @@ services:
       - GATE_PENALTY_POINTS=4.0
       - GATE_GLOBAL_PAYMENT_PENALTY_POINTS=2.0
       
-      # Evolution
+      # Evolution (higher diversity for fresh start)
       - EVOLUTION_ELITE_PERCENTAGE=0.1
-      - EVOLUTION_MUTATION_RATE=0.1
-      - EVOLUTION_IMMIGRANT_RATIO=0.1
+      - EVOLUTION_MUTATION_RATE=0.20
+      - EVOLUTION_IMMIGRANT_RATIO=0.15
       
       # League - momentalne vypnuto aby sme najpr generizovali
       - LEAGUE_ENABLE=true
@@ -379,8 +360,6 @@ services:
       - tfm-server-4
       - tfm-server-5
       - tfm-server-6
-      - tfm-server-7
-      - tfm-server-8
       - redis
       - postgres
       

@@ -536,7 +536,7 @@ def _render_compose(
                 "      - NODE_ENV=production",
                 "      - COMPRESS_COMPLETED_GAMES_DAYS=0",
                 f"      - SERVER_ID=tfm-server-{i}",
-                f"      - NODE_OPTIONS=--max-old-space-size={plan.node_heap_mb} --max-semi-space-size=64",
+                f"      - NODE_OPTIONS=--max-old-space-size={plan.node_heap_mb}",
                 "      - UV_THREADPOOL_SIZE=16",
                 "    tmpfs:",
                 "      - /usr/src/app/db:uid=100,gid=65533,mode=0775",

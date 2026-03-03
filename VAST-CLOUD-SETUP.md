@@ -9,7 +9,7 @@ sudo apt-get update
 sudo apt-get install -y ca-certificates curl git python3 python3-venv
 
 sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg -o /etc/apt/keyrings/docker.gpg
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
 echo \
@@ -41,7 +41,7 @@ sudo systemctl restart docker
 
 ```bash
 mkdir -p ~/tfm-cloud && cd ~/tfm-cloud
-git clone -b Vast-cloud <YOUR_TFM_RL_REPO_URL> TFM
+git clone -b Vast-cloud https://github.com/Henrich-Mar/TFM.git TFM
 cd TFM
 git clone https://github.com/terraforming-mars/terraforming-mars.git
 ```
@@ -98,6 +98,8 @@ export RL_CPU_SERVER_RATIO=1.0
 export RL_SERVER_MEM_MB=1400
 export RL_NODE_HEAP_MB=1050
 export RL_GAMES_PER_SERVER=4
+export RL_HTTP_CONNECTOR_LIMIT_PER_HOST=96
+export RL_HTTP_CONNECTOR_LIMIT=3072
 
 # Optional hard overrides (leave unset for auto from profile)
 # export RL_GAMES_PER_EVAL=60

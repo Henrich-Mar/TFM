@@ -138,8 +138,17 @@ def build_capacity_plan(args: argparse.Namespace) -> CapacityPlan:
     global_game_concurrency = max(1, server_count * games_per_server)
     tournament_concurrency = max(1, min(global_game_concurrency, cpu_count * 2))
 
-    http_limit_per_host = max(24, games_per_server * 10)
-    http_limit = _clamp(server_count * http_limit_per_host, 256, 4096)
+    default_http_limit_per_host = max(32, games_per_server * 12)
+    configured_http_limit_per_host = max(0, int(args.http_connector_limit_per_host))
+    http_limit_per_host = (
+        configured_http_limit_per_host
+        if configured_http_limit_per_host > 0
+        else default_http_limit_per_host
+    )
+
+    default_http_limit = _clamp(server_count * http_limit_per_host, 512, 8192)
+    configured_http_limit = max(0, int(args.http_connector_limit))
+    http_limit = configured_http_limit if configured_http_limit > 0 else default_http_limit
 
     return CapacityPlan(
         total_ram_mb=total_ram_mb,
@@ -486,6 +495,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--server-mem-mb", type=int, default=int(os.getenv("RL_SERVER_MEM_MB", "1400")))
     parser.add_argument("--node-heap-mb", type=int, default=int(os.getenv("RL_NODE_HEAP_MB", "0")))
     parser.add_argument("--games-per-server", type=int, default=int(os.getenv("RL_GAMES_PER_SERVER", "0")))
+    parser.add_argument(
+        "--http-connector-limit",
+        type=int,
+        default=int(os.getenv("RL_HTTP_CONNECTOR_LIMIT", "0")),
+    )
+    parser.add_argument(
+        "--http-connector-limit-per-host",
+        type=int,
+        default=int(os.getenv("RL_HTTP_CONNECTOR_LIMIT_PER_HOST", "0")),
+    )
     parser.add_argument("--reserve-mb", type=int, default=int(os.getenv("RL_RESERVE_MB", "0")))
     parser.add_argument("--infra-overhead-mb", type=int, default=int(os.getenv("RL_INFRA_OVERHEAD_MB", "4096")))
     parser.add_argument("--cpu-server-ratio", type=float, default=float(os.getenv("RL_CPU_SERVER_RATIO", "2.0")))

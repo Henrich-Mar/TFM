@@ -122,9 +122,11 @@ docker compose -f docker-compose.rl_cloud.generated.yml ps
 docker compose -f docker-compose.rl_cloud.generated.yml logs -f rl-coordinator
 ```
 
-Dashboard:
-- `http://<vm-ip>:5000/dashboard`
-- `http://<vm-ip>:5000/stats`
+Dashboard (use 127.0.0.1 when accessing via SSH port forwarding, e.g. Vast.ai):
+- `http://127.0.0.1:5000/dashboard`
+- `http://127.0.0.1:5000/stats`
+
+For port forwarding: forward ports 5000 and 8081–8098 (or 8081–8098 for 18 game servers), then use the 127.0.0.1 URLs. Set `PUBLIC_HOST=localhost` when running so game links in the dashboard work.
 
 ## 6) Troubleshooting / Games Dropped
 

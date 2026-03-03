@@ -27,10 +27,11 @@ python3 scripts/generate_rl_cloud_compose.py \
 
 docker compose -f "$COMPOSE_FILE" up -d --build
 
+DASHBOARD_HOST="${DASHBOARD_ACCESS_HOST:-127.0.0.1}"
 echo
 echo "Training stack started with: $COMPOSE_FILE"
-echo "Dashboard: http://${PUBLIC_HOST}:5000/dashboard"
-echo "Stats:     http://${PUBLIC_HOST}:5000/stats"
+echo "Dashboard: http://${DASHBOARD_HOST}:5000/dashboard"
+echo "Stats:     http://${DASHBOARD_HOST}:5000/stats"
 echo
 echo "Useful commands:"
 echo "  docker compose -f $COMPOSE_FILE ps"

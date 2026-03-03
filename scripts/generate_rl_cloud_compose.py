@@ -440,6 +440,10 @@ def _build_dynamic_env(
     elif training.profile == "saturate":
         env_items.append("TM_GET_STATE_RETRY_ATTEMPTS=5")
 
+    tm_game_timeout = int(args.tm_game_timeout_sec)
+    if tm_game_timeout > 0:
+        env_items.append(f"TM_GAME_TIMEOUT_SEC={tm_game_timeout}")
+
     if rl_models_subdir != "rl-models":
         env_items.append(f"RL_MODELS_DIR=/app/{rl_models_subdir}")
         env_items.append(f"RL_CHECKPOINT_DIR=/app/{rl_models_subdir}/checkpoints")
@@ -746,6 +750,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.getenv("RL_TM_GET_STATE_RETRY_ATTEMPTS", "0")),
         help="get_player_state retries (0 = use base/saturate default)",
+    )
+    parser.add_argument(
+        "--tm-game-timeout-sec",
+        type=int,
+        default=int(os.getenv("RL_TM_GAME_TIMEOUT_SEC", "0")),
+        help="Game timeout in seconds (0 = use default 420); increase if games cancelled unexpectedly",
     )
     parser.add_argument(
         "--num-coordinators",

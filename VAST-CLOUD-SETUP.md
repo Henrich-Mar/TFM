@@ -106,6 +106,7 @@ export RL_INITIAL_CARDS_JITTER_MS=250
 # Optional hard overrides (leave unset for auto from profile)
 export RL_GAMES_PER_EVAL=30
 # export RL_PPO_ROLLOUT_STEPS=131072
+# export RL_TM_GAME_TIMEOUT_SEC=600   # if games cancelled unexpectedly
 
 ./start-rl-cloud-training.sh
 ```
@@ -148,6 +149,16 @@ If the coordinator cannot keep up with many game servers and games are dropped (
 | `RL_TM_GET_STATE_RETRY_ATTEMPTS=5` | 5 | More retries for get_player_state |
 | `RL_NUM_COORDINATORS=2` or `3` | 2–3 | Multi-coordinator: each gets a subset of servers |
 | `RL_COORDINATORS_SHARE_GPU=1` | 1 | When using 2+ coordinators: share one GPU (for pipeline bottleneck, single-GPU hosts) |
+| `RL_TM_GAME_TIMEOUT_SEC=600` | 600 | Game timeout in seconds (default 420); increase if games are slow or "cancelled unexpectedly" |
+
+### "Game task cancelled unexpectedly" / "play_game task cancelled"
+
+These appear when game tasks are cancelled before completion. Common causes:
+- **Game timeout**: Games run longer than `TM_GAME_TIMEOUT_SEC`. Increase it (e.g. 600) for high-concurrency saturate mode.
+- **Event-loop blocking**: With multi-coordinator GPU sharing, ensure PPO runs in a thread pool and does not block the event loop.
+- **Process signal**: Container or host interrupting the process.
+
+Try: `export RL_TM_GAME_TIMEOUT_SEC=600` (add to saturate env) and ensure `TM_GAME_TIMEOUT_SEC` is passed into the coordinator container.
 
 ### Multi-coordinator (if single coordinator still times out)
 

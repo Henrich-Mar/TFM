@@ -30,7 +30,8 @@ python3 scripts/generate_rl_cloud_compose.py \
   --public-host "$PUBLIC_HOST" \
   --num-coordinators "${RL_NUM_COORDINATORS:-1}" \
   --coordinators-share-gpu "${RL_COORDINATORS_SHARE_GPU:-0}" \
-  --gpu-index "${RL_GPU_INDEX:-0}"
+  --gpu-index "${RL_GPU_INDEX:-0}" \
+  --tm-game-timeout-sec "${RL_TM_GAME_TIMEOUT_SEC:-0}"
 
 docker compose -f "$COMPOSE_FILE" up -d --build
 

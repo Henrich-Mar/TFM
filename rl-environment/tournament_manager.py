@@ -184,9 +184,11 @@ class TournamentManager:
                         raise
                     failed_games += 1
                     logger.error(
-                        "Game task in tournament %s was cancelled unexpectedly; counting as failed: %s",
+                        "Game task in tournament %s was cancelled unexpectedly; counting as failed. "
+                        "Possible causes: TM_GAME_TIMEOUT_SEC too low, GPU/event-loop blocking, or process signal. %s",
                         tournament.id,
                         e,
+                        exc_info=False,
                     )
                 except Exception as e:
                     failed_games += 1
@@ -519,7 +521,7 @@ class TournamentManager:
                 logger.warning("Failed adding recent game/end screen to coordinator")
             return result
             
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
             # Ensure all in-flight agent tasks are cancelled and awaited so gather
             # does not emit "exception was never retrieved" warnings.
             with suppress(Exception):

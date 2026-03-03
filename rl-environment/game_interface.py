@@ -20,6 +20,14 @@ class ServerTransportError(RuntimeError):
     """Raised when transport-level communication with a TM server fails."""
 
 
+def _exc_summary(exc: Exception) -> str:
+    """Return stable exception detail even when str(exc) is empty."""
+    try:
+        return f"{type(exc).__name__}: {exc!r}"
+    except Exception:
+        return f"{type(exc).__name__}: <unprintable>"
+
+
 @dataclass
 class GameServer:
     host: str
@@ -447,7 +455,7 @@ class GameInstance:
                             "get_player_state attempt %d/%d transport error on %s:%s. "
                             "Backing off %.2fs: %s",
                             attempt_no, max_retries,
-                            self.server.host, self.server.port, backoff, e,
+                            self.server.host, self.server.port, backoff, _exc_summary(e),
                         )
                         await asyncio.sleep(backoff)
                         continue
@@ -592,7 +600,7 @@ class GameInstance:
                         attempt_no,
                         retry_attempts,
                         input_type,
-                        e,
+                        _exc_summary(e),
                     )
                     try:
                         await asyncio.sleep(backoff)
@@ -627,7 +635,7 @@ class GameInstance:
                             self.server.host,
                             self.server.port,
                             backoff,
-                            e,
+                            _exc_summary(e),
                         )
                         if (
                             self._env_flag("TM_RECYCLE_SESSION_ON_DISCONNECT", default=False)
@@ -1032,7 +1040,7 @@ class GameServerCluster:
             if healthy:
                 self._server_backoff_until.pop(key, None)
             elif failure is not None:
-                logger.warning(f"Health check failed for {key}: {failure}")
+                logger.warning("Health check failed for %s: %s", key, _exc_summary(failure))
 
         await asyncio.gather(*(_check_server(server) for server in self.servers))
         
@@ -1201,7 +1209,7 @@ class GameServerCluster:
                         attempt_idx + 1,
                         attempts,
                         server_key,
-                        e,
+                        _exc_summary(e),
                         backoff_sec,
                     )
                     if backoff_sec > 0.0:

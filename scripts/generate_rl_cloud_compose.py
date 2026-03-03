@@ -35,6 +35,10 @@ DYNAMIC_ENV_KEYS = {
     "PPO_ROLLOUT_STEPS",
     "PPO_MIN_STEPS_PER_AGENT",
     "PPO_BUFFER_MAX_STEPS",
+    "AGENT_POLL_INTERVAL_SEC",
+    "AGENT_FAILURE_PAUSE_SEC",
+    "AGENT_POST_MOVE_SLEEP_SEC",
+    "TM_SEND_INPUT_INITIAL_CARDS_JITTER_MS",
 }
 
 
@@ -320,6 +324,7 @@ def build_training_plan(
 def _build_dynamic_env(
     capacity: CapacityPlan,
     training: TrainingPlan,
+    args: argparse.Namespace,
     public_host: str,
     base_port: int,
 ) -> List[str]:
@@ -341,7 +346,7 @@ def _build_dynamic_env(
         for i in range(1, capacity.server_count + 1)
     )
 
-    return [
+    env_items = [
         f"GAME_SERVERS={game_servers}",
         f"PUBLIC_TM_MAP={public_tm_map}",
         f"PUBLIC_TM_SERVER_ID_MAP={public_tm_server_id_map}",
@@ -359,6 +364,32 @@ def _build_dynamic_env(
         f"PPO_MIN_STEPS_PER_AGENT={training.ppo_min_steps_per_agent}",
         f"PPO_BUFFER_MAX_STEPS={training.ppo_buffer_max_steps}",
     ]
+
+    poll_interval = float(args.agent_poll_interval_sec)
+    if poll_interval < 0:
+        poll_interval = 0.08 if training.profile == "saturate" else -1.0
+    if poll_interval >= 0:
+        env_items.append(f"AGENT_POLL_INTERVAL_SEC={poll_interval:.3f}")
+
+    failure_pause = float(args.agent_failure_pause_sec)
+    if failure_pause < 0:
+        failure_pause = 0.05 if training.profile == "saturate" else -1.0
+    if failure_pause >= 0:
+        env_items.append(f"AGENT_FAILURE_PAUSE_SEC={failure_pause:.3f}")
+
+    post_move_sleep = float(args.agent_post_move_sleep_sec)
+    if post_move_sleep < 0:
+        post_move_sleep = 0.0 if training.profile == "saturate" else -1.0
+    if post_move_sleep >= 0:
+        env_items.append(f"AGENT_POST_MOVE_SLEEP_SEC={post_move_sleep:.3f}")
+
+    initial_cards_jitter_ms = int(args.initial_cards_jitter_ms)
+    if initial_cards_jitter_ms < 0:
+        initial_cards_jitter_ms = 250 if training.profile == "saturate" else -1
+    if initial_cards_jitter_ms >= 0:
+        env_items.append(f"TM_SEND_INPUT_INITIAL_CARDS_JITTER_MS={initial_cards_jitter_ms}")
+
+    return env_items
 
 
 def _render_compose(plan: CapacityPlan, env_items: List[str], base_port: int) -> str:
@@ -530,6 +561,26 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.getenv("RL_PPO_BUFFER_MAX_STEPS", "0")),
     )
+    parser.add_argument(
+        "--agent-poll-interval-sec",
+        type=float,
+        default=float(os.getenv("RL_AGENT_POLL_INTERVAL_SEC", "-1")),
+    )
+    parser.add_argument(
+        "--agent-failure-pause-sec",
+        type=float,
+        default=float(os.getenv("RL_AGENT_FAILURE_PAUSE_SEC", "-1")),
+    )
+    parser.add_argument(
+        "--agent-post-move-sleep-sec",
+        type=float,
+        default=float(os.getenv("RL_AGENT_POST_MOVE_SLEEP_SEC", "-1")),
+    )
+    parser.add_argument(
+        "--initial-cards-jitter-ms",
+        type=int,
+        default=int(os.getenv("RL_INITIAL_CARDS_JITTER_MS", "-1")),
+    )
     return parser.parse_args()
 
 
@@ -548,6 +599,7 @@ def main() -> int:
     dynamic_env = _build_dynamic_env(
         capacity=capacity,
         training=training,
+        args=args,
         public_host=args.public_host,
         base_port=args.base_port,
     )

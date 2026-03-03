@@ -88,18 +88,19 @@ With the current hard base (`GAMES_PER_EVAL=6`), saturate mode targets `~10x` (`
 
 ```bash
 export PUBLIC_HOST=$(curl -s ifconfig.me)
-export RL_TRAINING_PROFILE=saturate
-
 # Capacity controls for 40 vCPU, 387 GB RAM
 export RL_TRAINING_PROFILE=saturate
-export RL_MIN_SERVERS=16
-export RL_MAX_SERVERS=28
+export RL_MIN_SERVERS=6
+export RL_MAX_SERVERS=6
 export RL_CPU_SERVER_RATIO=1.0
 export RL_SERVER_MEM_MB=1400
 export RL_NODE_HEAP_MB=1050
 export RL_GAMES_PER_SERVER=4
 export RL_HTTP_CONNECTOR_LIMIT_PER_HOST=96
 export RL_HTTP_CONNECTOR_LIMIT=3072
+export RL_AGENT_POLL_INTERVAL_SEC=0.08
+export RL_AGENT_FAILURE_PAUSE_SEC=0.05
+export RL_INITIAL_CARDS_JITTER_MS=250
 
 # Optional hard overrides (leave unset for auto from profile)
 # export RL_GAMES_PER_EVAL=60

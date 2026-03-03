@@ -29,6 +29,7 @@ DYNAMIC_ENV_KEYS = {
     "MAX_ACTIVE_GAMES_PER_SERVER",
     "TM_HTTP_CONNECTOR_LIMIT",
     "TM_HTTP_CONNECTOR_LIMIT_PER_HOST",
+    "TM_HTTP_DNS_CACHE_TTL_SEC",
     "POPULATION_SIZE",
     "TOURNAMENT_SIZE",
     "GAMES_PER_EVAL",
@@ -107,6 +108,22 @@ def _read_cpu_count() -> int:
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
+
+def _auto_num_coordinators(
+    global_game_concurrency: int,
+    profile: str,
+    coordinator_games_target: int,
+) -> int:
+    """
+    Pick how many coordinator replicas to run so each one handles at most
+    coordinator_games_target concurrent games.
+
+    A single Python async event loop saturates at ~600-800 HTTP req/s.
+    With poll_interval=0.08s, target=20 gives ≤250 req/s per coordinator.
+    """
+    if coordinator_games_target <= 0:
+        coordinator_games_target = 20 if profile == "saturate" else 28
+    return max(1, math.ceil(global_game_concurrency / coordinator_games_target))
 
 
 def _pick_games_per_server(total_ram_mb: int, cpu_count: int, override: int | None) -> int:
@@ -340,6 +357,7 @@ def _build_dynamic_env(
     base_port: int,
     server_range: Optional[Tuple[int, int]] = None,
     rl_models_subdir: str = "rl-models",
+    num_coordinators: int = 1, 
 ) -> List[str]:
     if server_range is None:
         start_idx, end_idx = 1, capacity.server_count
@@ -381,6 +399,7 @@ def _build_dynamic_env(
         f"MAX_ACTIVE_GAMES_PER_SERVER={capacity.games_per_server}",
         f"TM_HTTP_CONNECTOR_LIMIT={subset_http}",
         f"TM_HTTP_CONNECTOR_LIMIT_PER_HOST={subset_http_per_host}",
+        f"TM_HTTP_DNS_CACHE_TTL_SEC=300",
         f"POPULATION_SIZE={training.population_size}",
         f"TOURNAMENT_SIZE={training.tournament_size}",
         f"GAMES_PER_EVAL={training.games_per_eval}",
@@ -416,6 +435,15 @@ def _build_dynamic_env(
     inference_threads = int(args.agent_inference_threads)
     if inference_threads >= 0:
         env_items.append(f"AGENT_INFERENCE_THREADS={inference_threads}")
+    elif training.profile == "saturate":
+        # Auto: give each coordinator a fair slice of host CPUs so PyTorch
+        # inference never blocks the async event loop.
+        auto_threads = _clamp(
+            capacity.cpu_count // max(1, num_coordinators),
+            minimum=4,
+            maximum=32,
+        )
+        env_items.append(f"AGENT_INFERENCE_THREADS={auto_threads}")
 
     slot_wait_sec = int(args.server_slot_wait_timeout_sec)
     if slot_wait_sec > 0:
@@ -683,7 +711,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--public-host", default=os.getenv("PUBLIC_HOST", "localhost"))
     parser.add_argument("--base-port", type=int, default=int(os.getenv("TM_BASE_PORT", "8081")))
     parser.add_argument("--min-servers", type=int, default=int(os.getenv("RL_MIN_SERVERS", "4")))
-    parser.add_argument("--max-servers", type=int, default=int(os.getenv("RL_MAX_SERVERS", "48")))
+    parser.add_argument("--max-servers", type=int, default=int(os.getenv("RL_MAX_SERVERS", "128")))
     parser.add_argument("--server-mem-mb", type=int, default=int(os.getenv("RL_SERVER_MEM_MB", "1400")))
     parser.add_argument("--node-heap-mb", type=int, default=int(os.getenv("RL_NODE_HEAP_MB", "0")))
     parser.add_argument("--games-per-server", type=int, default=int(os.getenv("RL_GAMES_PER_SERVER", "0")))
@@ -793,8 +821,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-coordinators",
         type=int,
-        default=int(os.getenv("RL_NUM_COORDINATORS", "1")),
-        help="Number of coordinator replicas; each gets a subset of servers (trains independently)",
+        default=int(os.getenv("RL_NUM_COORDINATORS", "0")),
+        help="Number of coordinator replicas (0 = auto from --coordinator-games-target)",
+    )
+
+    parser.add_argument(
+    "--coordinator-games-target",
+    type=int,
+    default=int(os.getenv("RL_COORDINATOR_GAMES_TARGET", "0")),
+    help="Max concurrent games per coordinator when auto-computing count (0 = profile default: 20/28)",
     )
     parser.add_argument(
         "--coordinators-share-gpu",
@@ -814,7 +849,20 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     capacity = build_capacity_plan(args)
-    num_coordinators = max(1, int(args.num_coordinators))
+    # Auto-compute num_coordinators unless explicitly overridden
+    profile = str(args.training_profile or "balanced").strip().lower()
+    explicit_num_coordinators = max(0, int(args.num_coordinators))
+    if explicit_num_coordinators > 0:
+        num_coordinators = explicit_num_coordinators
+    else:
+        coordinator_games_target = int(args.coordinator_games_target)
+        if coordinator_games_target <= 0:
+            coordinator_games_target = 20 if profile == "saturate" else 28
+        num_coordinators = _auto_num_coordinators(
+            global_game_concurrency=capacity.global_game_concurrency,
+            profile=profile,
+            coordinator_games_target=coordinator_games_target,
+        )
 
     base_env = _extract_env_from_base_compose(Path(args.base_compose))
     base_env_map = _env_list_to_map(base_env)
@@ -908,6 +956,12 @@ def main() -> int:
             training.ppo_min_steps_per_agent,
             training.ppo_buffer_max_steps,
         )
+    )
+    games_per_coord = capacity.global_game_concurrency / num_coordinators
+    poll = args.agent_poll_interval_sec if args.agent_poll_interval_sec >= 0 else (0.08 if profile == "saturate" else 0.2)
+    print(
+        "Coordinators: %d (%.1f games each) — ~%.0f req/s per event loop"
+        % (num_coordinators, games_per_coord, games_per_coord / max(0.001, poll))
     )
     return 0
 

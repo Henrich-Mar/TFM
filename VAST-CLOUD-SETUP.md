@@ -88,17 +88,18 @@ With the current hard base (`GAMES_PER_EVAL=6`), saturate mode targets `~10x` (`
 
 ```bash
 # Use localhost for SSH port forwarding; use $(curl -s ifconfig.me) for direct VM access
-export PUBLIC_HOST=localhost
-# Capacity controls for 40 vCPU, 387 GB RAM
-export RL_TRAINING_PROFILE=saturate
-export RL_MIN_SERVERS=12
 export RL_MAX_SERVERS=18
-export RL_CPU_SERVER_RATIO=1.0
+export RL_MIN_SERVERS=12
+export RL_HTTP_CONNECTOR_LIMIT=3072
+export RL_HTTP_CONNECTOR_LIMIT_PER_HOST=96
+# Capacity controls for 40 vCPU, 387 GB RAM
+export PUBLIC_HOST=localhost
+export RL_TRAINING_PROFILE=saturate
+export RL_CPU_SERVER_RATIO=0.6  
 export RL_SERVER_MEM_MB=1400
 export RL_NODE_HEAP_MB=1050
 export RL_GAMES_PER_SERVER=4
-export RL_HTTP_CONNECTOR_LIMIT_PER_HOST=96
-export RL_HTTP_CONNECTOR_LIMIT=3072
+export RL_COORDINATORS_SHARE_GPU=1
 export RL_AGENT_POLL_INTERVAL_SEC=0.08
 export RL_AGENT_FAILURE_PAUSE_SEC=0.05
 export RL_INITIAL_CARDS_JITTER_MS=250
@@ -106,7 +107,7 @@ export RL_INITIAL_CARDS_JITTER_MS=250
 # Optional hard overrides (leave unset for auto from profile)
 export RL_GAMES_PER_EVAL=30
 # export RL_PPO_ROLLOUT_STEPS=131072
-export RL_TM_GAME_TIMEOUT_SEC=600   # if games cancelled unexpectedly
+export RL_TM_GAME_TIMEOUT_SEC=800   # if games cancelled unexpectedly
 chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
 ```
@@ -175,7 +176,6 @@ With 18 servers and persistent `get_player_state` timeouts, run 2–3 coordinato
 
 ```bash
 export RL_NUM_COORDINATORS=2   # or 3
-export RL_COORDINATORS_SHARE_GPU=1
 export RL_TRAINING_PROFILE=saturate
 # ... other saturate vars ...
 ./start-rl-cloud-training.sh

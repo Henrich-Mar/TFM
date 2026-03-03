@@ -32,7 +32,8 @@ python3 scripts/generate_rl_cloud_compose.py \
   --coordinators-share-gpu "${RL_COORDINATORS_SHARE_GPU:-0}" \
   --gpu-index "${RL_GPU_INDEX:-0}" \
   --tm-game-timeout-sec "${RL_TM_GAME_TIMEOUT_SEC:-0}" \
-  --tm-http-force-close-connections "${RL_TM_HTTP_FORCE_CLOSE_CONNECTIONS:-0}"
+  --tm-http-force-close-connections "${RL_TM_HTTP_FORCE_CLOSE_CONNECTIONS:-0}" \
+  --tm-recycle-session-on-disconnect "${RL_TM_RECYCLE_SESSION_ON_DISCONNECT:-0}"
 
 docker compose -f "$COMPOSE_FILE" up -d --build
 

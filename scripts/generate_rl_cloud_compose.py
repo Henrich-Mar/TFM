@@ -46,6 +46,9 @@ DYNAMIC_ENV_KEYS = {
     "TM_HTTP_REQUEST_TOTAL_TIMEOUT_SEC",
     "TM_GET_STATE_RETRY_ATTEMPTS",
     "TM_HTTP_FORCE_CLOSE_CONNECTIONS",
+    "TM_RECYCLE_SESSION_ON_DISCONNECT",
+    "TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS",
+    "TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL",
 }
 
 
@@ -428,9 +431,26 @@ def _build_dynamic_env(
 
     initial_cards_jitter_ms = int(args.initial_cards_jitter_ms)
     if initial_cards_jitter_ms < 0:
-        initial_cards_jitter_ms = 250 if training.profile == "saturate" else -1
+        if training.profile == "saturate":
+            initial_cards_jitter_ms = 1200 if int(num_coordinators) > 1 else 800
+        else:
+            initial_cards_jitter_ms = -1
     if initial_cards_jitter_ms >= 0:
         env_items.append(f"TM_SEND_INPUT_INITIAL_CARDS_JITTER_MS={initial_cards_jitter_ms}")
+
+    send_input_retries = int(args.send_input_transport_retry_attempts)
+    if send_input_retries > 0:
+        env_items.append(f"TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS={send_input_retries}")
+    elif training.profile == "saturate":
+        env_items.append("TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS=3")
+
+    send_input_initial_retries = int(args.send_input_transport_retry_attempts_initial)
+    if send_input_initial_retries > 0:
+        env_items.append(
+            f"TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL={send_input_initial_retries}"
+        )
+    elif training.profile == "saturate":
+        env_items.append("TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7")
 
     inference_threads = int(args.agent_inference_threads)
     if inference_threads >= 0:
@@ -476,6 +496,10 @@ def _build_dynamic_env(
     # Connection reuse: 0 = keep-alive (better async I/O throughput), 1 = close after each request
     force_close = int(args.tm_http_force_close_connections)
     env_items.append(f"TM_HTTP_FORCE_CLOSE_CONNECTIONS={1 if force_close else 0}")
+
+    # Session recycle on disconnect can amplify churn under high concurrency.
+    recycle_on_disconnect = int(args.tm_recycle_session_on_disconnect)
+    env_items.append(f"TM_RECYCLE_SESSION_ON_DISCONNECT={1 if recycle_on_disconnect else 0}")
 
     if rl_models_subdir != "rl-models":
         env_items.append(f"RL_MODELS_DIR=/app/{rl_models_subdir}")
@@ -819,6 +843,24 @@ def parse_args() -> argparse.Namespace:
         help="1=close HTTP connection after each request (base default); 0=keep-alive for better async I/O (recommended for cloud)",
     )
     parser.add_argument(
+        "--tm-recycle-session-on-disconnect",
+        type=int,
+        default=int(os.getenv("RL_TM_RECYCLE_SESSION_ON_DISCONNECT", "0")),
+        help="1=recycle shared aiohttp session on disconnect errors; 0=disable (recommended for high-concurrency cloud)",
+    )
+    parser.add_argument(
+        "--send-input-transport-retry-attempts",
+        type=int,
+        default=int(os.getenv("RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS", "0")),
+        help="Retries for send_player_input transport errors (0 = use profile default)",
+    )
+    parser.add_argument(
+        "--send-input-transport-retry-attempts-initial",
+        type=int,
+        default=int(os.getenv("RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL", "0")),
+        help="Retries for initialCards transport errors (0 = use profile default)",
+    )
+    parser.add_argument(
         "--num-coordinators",
         type=int,
         default=int(os.getenv("RL_NUM_COORDINATORS", "0")),
@@ -889,6 +931,7 @@ def main() -> int:
                 base_port=args.base_port,
                 server_range=(start_srv, end_srv),
                 rl_models_subdir=models_subdir,
+                num_coordinators=num_coordinators,
             )
             coord_env = _merge_env_lists(dynamic_env, base_env_filtered, ESSENTIAL_ENV_DEFAULTS)
             coord_envs.append(coord_env)
@@ -900,6 +943,7 @@ def main() -> int:
             args=args,
             public_host=args.public_host,
             base_port=args.base_port,
+            num_coordinators=num_coordinators,
         )
         env_items = _merge_env_lists(dynamic_env, base_env_filtered, ESSENTIAL_ENV_DEFAULTS)
         coord_envs = None

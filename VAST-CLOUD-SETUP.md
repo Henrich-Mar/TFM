@@ -102,11 +102,13 @@ export RL_GAMES_PER_SERVER=4
 export RL_COORDINATORS_SHARE_GPU=1
 export RL_AGENT_POLL_INTERVAL_SEC=0.08
 export RL_AGENT_FAILURE_PAUSE_SEC=0.05
-export RL_INITIAL_CARDS_JITTER_MS=250
+export RL_INITIAL_CARDS_JITTER_MS=1200
+export RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0
 
 # Optional hard overrides (leave unset for auto from profile)
 export RL_GAMES_PER_EVAL=30
 # export RL_PPO_ROLLOUT_STEPS=131072
+export RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7
 export RL_TM_GAME_TIMEOUT_SEC=800   # if games cancelled unexpectedly
 chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
@@ -129,7 +131,7 @@ Dashboard (use 127.0.0.1 when accessing via SSH port forwarding, e.g. Vast.ai):
 - `http://127.0.0.1:5000/dashboard`
 - `http://127.0.0.1:5000/stats`
 
-For port forwarding: forward ports 5000 and 8081–8098 (or 8081–8098 for 18 game servers), then use the 127.0.0.1 URLs. Set `PUBLIC_HOST=localhost` when running so game links in the dashboard work.
+For port forwarding: forward ports 5000 and 8081â€“8098 (or 8081â€“8098 for 18 game servers), then use the 127.0.0.1 URLs. Set `PUBLIC_HOST=localhost` when running so game links in the dashboard work.
 
 ## 6) Troubleshooting / Games Dropped
 
@@ -148,7 +150,10 @@ If the coordinator cannot keep up with many game servers and games are dropped (
 | `RL_TOURNAMENT_CONCURRENCY=72` | match GLOBAL_GAME_CONCURRENCY | Explicit concurrency override |
 | `RL_TM_HTTP_REQUEST_TIMEOUT_SEC=120` | 120 | HTTP request timeout (reduces get_player_state TimeoutError) |
 | `RL_TM_GET_STATE_RETRY_ATTEMPTS=5` | 5 | More retries for get_player_state |
-| `RL_NUM_COORDINATORS=2` or `3` | 2–3 | Multi-coordinator: each gets a subset of servers |
+| `RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7` | 7 | More retries for `initialCards` burst disconnects |
+| `RL_INITIAL_CARDS_JITTER_MS=1200` | 1200 | Spreads startup `initialCards` posts to avoid thundering herd |
+| `RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0` | 0 | Avoid recycle churn during transient disconnect bursts |
+| `RL_NUM_COORDINATORS=2` or `3` | 2â€“3 | Multi-coordinator: each gets a subset of servers |
 | `RL_COORDINATORS_SHARE_GPU=1` | 1 | When using 2+ coordinators: share one GPU (for pipeline bottleneck, single-GPU hosts) |
 | `RL_TM_GAME_TIMEOUT_SEC=600` | 600 | Game timeout in seconds (default 420); increase if games are slow or "cancelled unexpectedly" |
 | `RL_TM_HTTP_FORCE_CLOSE_CONNECTIONS=0` | 0 (cloud default) | HTTP keep-alive for better async I/O; 1 = close after each request |
@@ -168,11 +173,11 @@ Try: `export RL_TM_GAME_TIMEOUT_SEC=600` (add to saturate env) and ensure `TM_GA
 
 ### Multi-coordinator (if single coordinator still times out)
 
-With 18 servers and persistent `get_player_state` timeouts, run 2–3 coordinators in parallel, each with a subset of servers.
+With 18 servers and persistent `get_player_state` timeouts, run 2â€“3 coordinators in parallel, each with a subset of servers.
 
-**Option A – Dedicated GPUs** (default): Each coordinator gets its own GPU. Requires N GPUs for N coordinators.
+**Option A â€“ Dedicated GPUs** (default): Each coordinator gets its own GPU. Requires N GPUs for N coordinators.
 
-**Option B – Shared GPU**: When the bottleneck is the pipeline (game servers, HTTP), not GPU compute, coordinators can share one GPU:
+**Option B â€“ Shared GPU**: When the bottleneck is the pipeline (game servers, HTTP), not GPU compute, coordinators can share one GPU:
 
 ```bash
 export RL_NUM_COORDINATORS=2   # or 3

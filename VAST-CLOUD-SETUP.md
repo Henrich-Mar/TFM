@@ -87,7 +87,8 @@ This profile aims for much more training volume per generation.
 With the current hard base (`GAMES_PER_EVAL=6`), saturate mode targets `~10x` (`~60`).
 
 ```bash
-export PUBLIC_HOST=$(curl -s ifconfig.me)
+# Use localhost for SSH port forwarding; use $(curl -s ifconfig.me) for direct VM access
+export PUBLIC_HOST=localhost
 # Capacity controls for 40 vCPU, 387 GB RAM
 export RL_TRAINING_PROFILE=saturate
 export RL_MIN_SERVERS=12
@@ -119,7 +120,7 @@ You can verify the generated training volume in `docker-compose.rl_cloud.generat
 
 ```bash
 docker compose -f docker-compose.rl_cloud.generated.yml ps
-docker compose -f docker-compose.rl_cloud.generated.yml logs -f rl-coordinator
+docker compose -f docker-compose.rl_cloud.generated.yml logs -f rl-coordinator    # or rl-coordinator-1, rl-coordinator-2, etc.
 ```
 
 Dashboard (use 127.0.0.1 when accessing via SSH port forwarding, e.g. Vast.ai):
@@ -143,6 +144,30 @@ If the coordinator cannot keep up with many game servers and games are dropped (
 | `RL_HTTP_CONNECTOR_LIMIT_PER_HOST=96` | 96 | More connections per host |
 | `RL_AGENT_INFERENCE_THREADS=32` | 32 | Thread pool size for inference (0 = auto) |
 | `RL_TOURNAMENT_CONCURRENCY=72` | match GLOBAL_GAME_CONCURRENCY | Explicit concurrency override |
+| `RL_TM_HTTP_REQUEST_TIMEOUT_SEC=120` | 120 | HTTP request timeout (reduces get_player_state TimeoutError) |
+| `RL_TM_GET_STATE_RETRY_ATTEMPTS=5` | 5 | More retries for get_player_state |
+| `RL_NUM_COORDINATORS=2` or `3` | 2–3 | Multi-coordinator: each gets a subset of servers |
+| `RL_COORDINATORS_SHARE_GPU=1` | 1 | When using 2+ coordinators: share one GPU (for pipeline bottleneck, single-GPU hosts) |
+
+### Multi-coordinator (if single coordinator still times out)
+
+With 18 servers and persistent `get_player_state` timeouts, run 2–3 coordinators in parallel, each with a subset of servers.
+
+**Option A – Dedicated GPUs** (default): Each coordinator gets its own GPU. Requires N GPUs for N coordinators.
+
+**Option B – Shared GPU**: When the bottleneck is the pipeline (game servers, HTTP), not GPU compute, coordinators can share one GPU:
+
+```bash
+export RL_NUM_COORDINATORS=2   # or 3
+export RL_COORDINATORS_SHARE_GPU=1
+export RL_TRAINING_PROFILE=saturate
+# ... other saturate vars ...
+./start-rl-cloud-training.sh
+```
+
+**Note:** Multiple coordinators on one GPU share VRAM. Ensure the GPU has enough (e.g. 2 coordinators typically need 8GB+ total). Use `RL_GPU_INDEX=0` (default) or another index if you have multiple GPUs and want coordinators to share a specific one.
+
+Dashboards: `http://127.0.0.1:5000`, `http://127.0.0.1:5001`, etc.
 
 Check coordinator logs for:
 - `No game server capacity available` (slot timeout)

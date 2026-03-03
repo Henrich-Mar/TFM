@@ -15,7 +15,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 DYNAMIC_ENV_KEYS = {
@@ -42,6 +42,8 @@ DYNAMIC_ENV_KEYS = {
     "AGENT_INFERENCE_THREADS",
     "TM_SERVER_SLOT_WAIT_TIMEOUT_SEC",
     "TM_CREATE_GAME_RETRY_ATTEMPTS",
+    "TM_HTTP_REQUEST_TOTAL_TIMEOUT_SEC",
+    "TM_GET_STATE_RETRY_ATTEMPTS",
 }
 
 
@@ -335,24 +337,37 @@ def _build_dynamic_env(
     args: argparse.Namespace,
     public_host: str,
     base_port: int,
+    server_range: Optional[Tuple[int, int]] = None,
+    rl_models_subdir: str = "rl-models",
 ) -> List[str]:
-    game_servers = ",".join(f"tfm-server-{i}:8080" for i in range(1, capacity.server_count + 1))
+    if server_range is None:
+        start_idx, end_idx = 1, capacity.server_count
+    else:
+        start_idx, end_idx = server_range
+    subset_count = end_idx - start_idx + 1
+
+    game_servers = ",".join(f"tfm-server-{i}:8080" for i in range(start_idx, end_idx + 1))
     public_tm_map = ",".join(
         f"tfm-server-{i}:8080=http://{public_host}:{base_port + i - 1}"
-        for i in range(1, capacity.server_count + 1)
+        for i in range(start_idx, end_idx + 1)
     )
     public_tm_server_id_map = ",".join(
         f"tfm-server-{i}:8080=tfm-server-{i}"
-        for i in range(1, capacity.server_count + 1)
+        for i in range(start_idx, end_idx + 1)
     )
     public_tm_url = ",".join(
         f"http://{public_host}:{base_port + i - 1}"
-        for i in range(1, capacity.server_count + 1)
+        for i in range(start_idx, end_idx + 1)
     )
     internal_tm_url = ",".join(
         f"http://tfm-server-{i}:8080"
-        for i in range(1, capacity.server_count + 1)
+        for i in range(start_idx, end_idx + 1)
     )
+
+    subset_global = subset_count * capacity.games_per_server
+    subset_tournament = max(1, min(subset_global, capacity.cpu_count * 2))
+    subset_http = max(256, int(capacity.http_limit * subset_count / max(1, capacity.server_count)))
+    subset_http_per_host = max(16, int(capacity.http_limit_per_host * subset_count / max(1, capacity.server_count)))
 
     env_items = [
         f"GAME_SERVERS={game_servers}",
@@ -360,11 +375,11 @@ def _build_dynamic_env(
         f"PUBLIC_TM_SERVER_ID_MAP={public_tm_server_id_map}",
         f"PUBLIC_TM_URL={public_tm_url}",
         f"INTERNAL_TM_URL={internal_tm_url}",
-        f"TOURNAMENT_CONCURRENCY={capacity.tournament_concurrency}",
-        f"GLOBAL_GAME_CONCURRENCY={capacity.global_game_concurrency}",
+        f"TOURNAMENT_CONCURRENCY={subset_tournament}",
+        f"GLOBAL_GAME_CONCURRENCY={subset_global}",
         f"MAX_ACTIVE_GAMES_PER_SERVER={capacity.games_per_server}",
-        f"TM_HTTP_CONNECTOR_LIMIT={capacity.http_limit}",
-        f"TM_HTTP_CONNECTOR_LIMIT_PER_HOST={capacity.http_limit_per_host}",
+        f"TM_HTTP_CONNECTOR_LIMIT={subset_http}",
+        f"TM_HTTP_CONNECTOR_LIMIT_PER_HOST={subset_http_per_host}",
         f"POPULATION_SIZE={training.population_size}",
         f"TOURNAMENT_SIZE={training.tournament_size}",
         f"GAMES_PER_EVAL={training.games_per_eval}",
@@ -413,10 +428,34 @@ def _build_dynamic_env(
     elif training.profile == "saturate":
         env_items.append("TM_CREATE_GAME_RETRY_ATTEMPTS=6")
 
+    http_req_timeout = int(args.http_request_timeout_sec)
+    if http_req_timeout > 0:
+        env_items.append(f"TM_HTTP_REQUEST_TOTAL_TIMEOUT_SEC={http_req_timeout}")
+    elif training.profile == "saturate":
+        env_items.append("TM_HTTP_REQUEST_TOTAL_TIMEOUT_SEC=120")
+
+    get_state_retries = int(args.get_state_retry_attempts)
+    if get_state_retries > 0:
+        env_items.append(f"TM_GET_STATE_RETRY_ATTEMPTS={get_state_retries}")
+    elif training.profile == "saturate":
+        env_items.append("TM_GET_STATE_RETRY_ATTEMPTS=5")
+
+    if rl_models_subdir != "rl-models":
+        env_items.append(f"RL_MODELS_DIR=/app/{rl_models_subdir}")
+        env_items.append(f"RL_CHECKPOINT_DIR=/app/{rl_models_subdir}/checkpoints")
+
     return env_items
 
 
-def _render_compose(plan: CapacityPlan, env_items: List[str], base_port: int) -> str:
+def _render_compose(
+    plan: CapacityPlan,
+    env_items: List[str],
+    base_port: int,
+    num_coordinators: int = 1,
+    coord_envs: Optional[List[List[str]]] = None,
+    coordinators_share_gpu: bool = False,
+    gpu_index: int = 0,
+) -> str:
     lines: List[str] = []
     lines.append("services:")
 
@@ -492,43 +531,110 @@ def _render_compose(plan: CapacityPlan, env_items: List[str], base_port: int) ->
             "    volumes:",
             "      - postgres_data_cloud:/var/lib/postgresql/data",
             "",
-            "  rl-coordinator:",
-            "    build:",
-            "      context: ./rl-environment",
-            "      dockerfile: Dockerfile.training",
-            "    restart: unless-stopped",
-            "    deploy:",
-            "      resources:",
-            "        reservations:",
-            "          devices:",
+        ]
+    )
+
+    use_shared_gpu = coordinators_share_gpu and num_coordinators > 1
+    gpu_device_block = (
+        [
+            "            - driver: nvidia",
+            f"              device_ids: ['{gpu_index}']",
+            "              capabilities: [gpu]",
+        ]
+        if use_shared_gpu
+        else [
             "            - driver: nvidia",
             "              count: 1",
             "              capabilities: [gpu]",
-            "    volumes:",
-            "      - ./rl-environment:/app",
-            "      - ./rl-models:/app/rl-models",
-            "      - ./rl-logs:/app/logs",
-            "      - ./card_metadata.json:/app/card_metadata.json:ro",
-            "    environment:",
         ]
     )
 
-    for item in env_items:
-        lines.append(f"      - {item}")
+    if num_coordinators > 1 and coord_envs is not None and len(coord_envs) == num_coordinators:
+        for c in range(num_coordinators):
+            coord_name = f"rl-coordinator-{c + 1}"
+            models_subdir = f"rl-models-coord-{c + 1}"
+            coord_port = 4999 + (c + 1)
+            lines.extend(
+                [
+                    "",
+                    f"  {coord_name}:",
+                    "    build:",
+                    "      context: ./rl-environment",
+                    "      dockerfile: Dockerfile.training",
+                    "    restart: unless-stopped",
+                    "    deploy:",
+                    "      resources:",
+                    "        reservations:",
+                    "          devices:",
+                ]
+            )
+            lines.extend(gpu_device_block)
+            lines.extend(
+                [
+                    "    volumes:",
+                    "      - ./rl-environment:/app",
+                    f"      - ./{models_subdir}:/app/{models_subdir}",
+                    "      - ./rl-logs:/app/logs",
+                    "      - ./card_metadata.json:/app/card_metadata.json:ro",
+                    "    environment:",
+                ]
+            )
+            for item in coord_envs[c]:
+                lines.append(f"      - {item}")
+            start_srv = (c * plan.server_count) // num_coordinators + 1
+            end_srv = ((c + 1) * plan.server_count) // num_coordinators
+            lines.append("    depends_on:")
+            lines.append("      - redis")
+            lines.append("      - postgres")
+            for i in range(start_srv, end_srv + 1):
+                lines.append(f"      - tfm-server-{i}")
+            lines.append(f'    ports:')
+            lines.append(f'      - "{coord_port}:5000"')
+    else:
+        coord_env = coord_envs[0] if coord_envs else env_items
+        lines.extend(
+            [
+                "",
+                "  rl-coordinator:",
+                "    build:",
+                "      context: ./rl-environment",
+                "      dockerfile: Dockerfile.training",
+                "    restart: unless-stopped",
+                "    deploy:",
+                "      resources:",
+                "        reservations:",
+                "          devices:",
+                "            - driver: nvidia",
+                "              count: 1",
+                "              capabilities: [gpu]",
+                "    volumes:",
+                "      - ./rl-environment:/app",
+                "      - ./rl-models:/app/rl-models",
+                "      - ./rl-logs:/app/logs",
+                "      - ./card_metadata.json:/app/card_metadata.json:ro",
+                "    environment:",
+            ]
+        )
+        for item in coord_env:
+            lines.append(f"      - {item}")
+        lines.extend(
+            [
+                "    depends_on:",
+            ]
+        )
+        for i in range(1, plan.server_count + 1):
+            lines.append(f"      - tfm-server-{i}")
+        lines.extend(
+            [
+                "      - redis",
+                "      - postgres",
+                "    ports:",
+                '      - "5000:5000"',
+            ]
+        )
 
     lines.extend(
         [
-            "    depends_on:",
-        ]
-    )
-    for i in range(1, plan.server_count + 1):
-        lines.append(f"      - tfm-server-{i}")
-    lines.extend(
-        [
-            "      - redis",
-            "      - postgres",
-            "    ports:",
-            "      - \"5000:5000\"",
             "",
             "volumes:",
             "  postgres_data_cloud:",
@@ -629,12 +735,43 @@ def parse_args() -> argparse.Namespace:
         default=int(os.getenv("RL_TM_CREATE_GAME_RETRY_ATTEMPTS", "0")),
         help="Retries for create_game (0 = use base/saturate default)",
     )
+    parser.add_argument(
+        "--http-request-timeout-sec",
+        type=int,
+        default=int(os.getenv("RL_TM_HTTP_REQUEST_TIMEOUT_SEC", "0")),
+        help="HTTP request total timeout (0 = use base/saturate default)",
+    )
+    parser.add_argument(
+        "--get-state-retry-attempts",
+        type=int,
+        default=int(os.getenv("RL_TM_GET_STATE_RETRY_ATTEMPTS", "0")),
+        help="get_player_state retries (0 = use base/saturate default)",
+    )
+    parser.add_argument(
+        "--num-coordinators",
+        type=int,
+        default=int(os.getenv("RL_NUM_COORDINATORS", "1")),
+        help="Number of coordinator replicas; each gets a subset of servers (trains independently)",
+    )
+    parser.add_argument(
+        "--coordinators-share-gpu",
+        type=int,
+        default=int(os.getenv("RL_COORDINATORS_SHARE_GPU", "0")),
+        help="When 1 and num_coordinators>1, all coordinators share one GPU via device_ids (for pipeline bottleneck)",
+    )
+    parser.add_argument(
+        "--gpu-index",
+        type=int,
+        default=int(os.getenv("RL_GPU_INDEX", "0")),
+        help="GPU index to use when coordinators share GPU (e.g. 0 -> device_ids: ['0'])",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     capacity = build_capacity_plan(args)
+    num_coordinators = max(1, int(args.num_coordinators))
 
     base_env = _extract_env_from_base_compose(Path(args.base_compose))
     base_env_map = _env_list_to_map(base_env)
@@ -644,16 +781,48 @@ def main() -> int:
         for item in base_env
         if item.split("=", 1)[0].strip() not in DYNAMIC_ENV_KEYS
     ]
-    dynamic_env = _build_dynamic_env(
-        capacity=capacity,
-        training=training,
-        args=args,
-        public_host=args.public_host,
-        base_port=args.base_port,
-    )
-    env_items = _merge_env_lists(dynamic_env, base_env_filtered, ESSENTIAL_ENV_DEFAULTS)
 
-    compose_text = _render_compose(capacity, env_items=env_items, base_port=args.base_port)
+    if num_coordinators > 1:
+        coord_envs = []
+        for c in range(num_coordinators):
+            start_srv = (c * capacity.server_count) // num_coordinators + 1
+            end_srv = ((c + 1) * capacity.server_count) // num_coordinators
+            if start_srv > end_srv:
+                continue
+            models_subdir = f"rl-models-coord-{c + 1}"
+            dynamic_env = _build_dynamic_env(
+                capacity=capacity,
+                training=training,
+                args=args,
+                public_host=args.public_host,
+                base_port=args.base_port,
+                server_range=(start_srv, end_srv),
+                rl_models_subdir=models_subdir,
+            )
+            coord_env = _merge_env_lists(dynamic_env, base_env_filtered, ESSENTIAL_ENV_DEFAULTS)
+            coord_envs.append(coord_env)
+        env_items = coord_envs[0]
+    else:
+        dynamic_env = _build_dynamic_env(
+            capacity=capacity,
+            training=training,
+            args=args,
+            public_host=args.public_host,
+            base_port=args.base_port,
+        )
+        env_items = _merge_env_lists(dynamic_env, base_env_filtered, ESSENTIAL_ENV_DEFAULTS)
+        coord_envs = None
+
+    coordinators_share_gpu = bool(args.coordinators_share_gpu)
+    compose_text = _render_compose(
+        capacity,
+        env_items=env_items,
+        base_port=args.base_port,
+        num_coordinators=num_coordinators,
+        coord_envs=coord_envs,
+        coordinators_share_gpu=coordinators_share_gpu,
+        gpu_index=max(0, int(args.gpu_index)),
+    )
     with Path(args.output).open("w", encoding="utf-8", newline="\n") as f:
         f.write(compose_text)
 

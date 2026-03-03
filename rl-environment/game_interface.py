@@ -241,7 +241,7 @@ class GameInstance:
     def _get_session(self) -> aiohttp.ClientSession:
         """Return an open HTTP session, recreating cluster session if needed."""
         if self.cluster is not None and hasattr(self.cluster, "ensure_session"):
-            self.session = self.cluster.ensure_session(timeout_total=60.0)
+            self.session = self.cluster.ensure_session(timeout_total=None)
         if self.session is None or self.session.closed:
             raise ServerTransportError("HTTP session is closed")
         return self.session
@@ -857,8 +857,10 @@ class GameServerCluster:
             except Exception as e:
                 logger.warning("Periodic health check failed: %s", e)
 
-    def _build_session(self, timeout_total: float = 60.0) -> aiohttp.ClientSession:
-        timeout_value = max(1.0, float(timeout_total))
+    def _build_session(self, timeout_total: Optional[float] = None) -> aiohttp.ClientSession:
+        if timeout_total is None:
+            timeout_total = self._parse_float_env("TM_HTTP_REQUEST_TOTAL_TIMEOUT_SEC", 90.0, min_value=10.0)
+        timeout_value = max(10.0, float(timeout_total))
         connector_limit = self._parse_int_env("TM_HTTP_CONNECTOR_LIMIT", 256, min_value=0)
         connector_limit_per_host = self._parse_int_env("TM_HTTP_CONNECTOR_LIMIT_PER_HOST", 128, min_value=0)
         force_close = GameInstance._env_flag("TM_HTTP_FORCE_CLOSE_CONNECTIONS", default=False)
@@ -872,13 +874,13 @@ class GameServerCluster:
             connector=connector,
         )
 
-    def ensure_session(self, timeout_total: float = 60.0) -> aiohttp.ClientSession:
+    def ensure_session(self, timeout_total: Optional[float] = None) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             self.session = self._build_session(timeout_total=timeout_total)
         return self.session
         
     async def __aenter__(self):
-        self.session = self.ensure_session(timeout_total=60.0)
+        self.session = self.ensure_session(timeout_total=None)
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -1014,7 +1016,7 @@ class GameServerCluster:
     
     async def health_check(self) -> Dict[str, bool]:
         """Check health of all game servers"""
-        self.ensure_session(timeout_total=60.0)
+        self.ensure_session(timeout_total=None)
         
         results = {}
         health_timeout = aiohttp.ClientTimeout(total=max(0.5, float(self.server_health_timeout_sec)))
@@ -1121,7 +1123,7 @@ class GameServerCluster:
                          player_names: List[str],
                          game_options: Dict[str, Any]) -> GameInstance:
         """Create a new game on the best available server"""
-        self.ensure_session(timeout_total=60.0)
+        self.ensure_session(timeout_total=None)
         
         # Prepare game creation request with a preset + runtime overrides.
         base_options = self.base_game_options or self._default_game_options()

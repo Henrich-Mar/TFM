@@ -2535,10 +2535,11 @@ class RLAgent:
             # Prefer authoritative data from the JSON player view to avoid parsing dynamic HTML
             try:
                 our_player_id = (our_player or {}).get('id')
-                if our_player_id and game_instance and getattr(game_instance, 'session', None):
+                if our_player_id and game_instance:
                     # Use the same base URL/session as the game instance for reliable in-cluster access
                     internal_base = getattr(game_instance, 'base_url', os.getenv('INTERNAL_TM_URL', os.getenv('PUBLIC_TM_URL', 'http://localhost:8081')))
-                    async with game_instance.session.get(f"{internal_base}/api/player", params={'id': our_player_id}) as r2:
+                    session = game_instance._get_session()
+                    async with session.get(f"{internal_base}/api/player", params={'id': our_player_id}) as r2:
                         if r2.status == 200:
                             view = await r2.json()
                             players_view = view.get('players', []) or []

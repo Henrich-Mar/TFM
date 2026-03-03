@@ -381,7 +381,8 @@ class TournamentManager:
             if player_ids:
                 sample_pid = player_ids[0]
                 try:
-                    async with game_instance.session.get(
+                    session = game_instance._get_session()
+                    async with session.get(
                         f"{internal_base}/api/player",
                         params={'id': sample_pid},
                     ) as r:

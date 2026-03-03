@@ -5,7 +5,7 @@ import asyncio
 import aiohttp
 import logging
 import random
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import json
 import os
@@ -754,6 +754,9 @@ class GameServerCluster:
         self._health_check_lock = asyncio.Lock()
         self._recycle_lock = asyncio.Lock()
         self._last_recycle_monotonic: float = 0.0
+        # Sessions retired during recycle stay alive briefly so in-flight
+        # requests can finish before connectors are closed.
+        self._retired_sessions: List[Tuple[aiohttp.ClientSession, float]] = []
         # Optional cross-component scratchpad for latest game URLs
         self.recent_games: List[Dict[str, str]] = []
         self.base_game_options = self._load_game_options()
@@ -890,48 +893,115 @@ class GameServerCluster:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
+    async def _close_session_quietly(
+        self,
+        session: Optional[aiohttp.ClientSession],
+        *,
+        propagate_cancel: bool = False,
+    ):
+        if session is None or session.closed:
+            return
+        try:
+            await asyncio.shield(session.close())
+        except asyncio.CancelledError:
+            # Ensure close is still attempted even when caller is cancelling.
+            try:
+                await session.close()
+            except Exception:
+                pass
+            if propagate_cancel:
+                raise
+        except Exception:
+            pass
+
+    async def _drain_retired_sessions(
+        self,
+        *,
+        force: bool = False,
+        now: Optional[float] = None,
+        propagate_cancel: bool = False,
+    ):
+        if not self._retired_sessions:
+            return
+        if now is None:
+            try:
+                now = asyncio.get_running_loop().time()
+            except RuntimeError:
+                now = 0.0
+
+        to_close: List[aiohttp.ClientSession] = []
+        keep: List[Tuple[aiohttp.ClientSession, float]] = []
+        for retired, retire_after in self._retired_sessions:
+            if retired is None or retired.closed:
+                continue
+            if force or float(retire_after) <= float(now):
+                to_close.append(retired)
+            else:
+                keep.append((retired, float(retire_after)))
+        self._retired_sessions = keep
+
+        for retired in to_close:
+            await self._close_session_quietly(
+                retired,
+                propagate_cancel=propagate_cancel,
+            )
+
     async def close(self):
         """Close shared HTTP session used for game/server API calls."""
-        session = self.session
-        self.session = None
-        if session and not session.closed:
-            try:
-                await asyncio.shield(session.close())
-            except asyncio.CancelledError:
-                # Ensure close is still attempted even when caller is cancelling.
-                try:
-                    await session.close()
-                except Exception:
-                    pass
-                raise
+        async with self._recycle_lock:
+            session = self.session
+            self.session = None
+            if session is not None and not session.closed:
+                self._retired_sessions.append((session, 0.0))
+            await self._drain_retired_sessions(force=True, propagate_cancel=True)
 
     async def recycle_session(self):
-        """Force next request to use a fresh HTTP session after transport errors.
+        """Rotate to a fresh shared session after transport errors.
 
-        Uses a lock + 2-second debounce so that concurrent callers don't
-        destroy each other's in-flight requests via the shared connector.
+        Important: do not close the old session immediately. Doing that can
+        close connectors still used by in-flight requests from other games.
+        Retired sessions are closed after a grace period.
         """
         async with self._recycle_lock:
             try:
                 now = asyncio.get_running_loop().time()
             except RuntimeError:
                 now = 0.0
+            await self._drain_retired_sessions(now=now)
             if (now - self._last_recycle_monotonic) < 2.0:
                 return
             self._last_recycle_monotonic = now
+
             old_session = self.session
-            self.session = None
-            if old_session and not old_session.closed:
-                try:
-                    await asyncio.shield(old_session.close())
-                except asyncio.CancelledError:
-                    try:
-                        await old_session.close()
-                    except Exception:
-                        pass
-                    raise
-                except Exception:
-                    pass
+            self.session = self._build_session(timeout_total=None)
+
+            if old_session is not None and not old_session.closed:
+                request_timeout = self._parse_float_env(
+                    "TM_HTTP_REQUEST_TOTAL_TIMEOUT_SEC",
+                    90.0,
+                    min_value=10.0,
+                )
+                default_grace_sec = max(30.0, float(request_timeout) + 5.0)
+                grace_sec = self._parse_float_env(
+                    "TM_RECYCLE_SESSION_GRACE_SEC",
+                    default_grace_sec,
+                    min_value=5.0,
+                )
+                self._retired_sessions.append((old_session, now + float(grace_sec)))
+
+                max_retired = self._parse_int_env(
+                    "TM_RECYCLED_SESSION_MAX",
+                    32,
+                    min_value=1,
+                )
+                while len(self._retired_sessions) > max_retired:
+                    overflow_session, _ = self._retired_sessions.pop(0)
+                    await self._close_session_quietly(overflow_session)
+
+                logger.warning(
+                    "Recycled shared HTTP session; retiring previous connector for %.1fs.",
+                    grace_sec,
+                )
 
     def _default_game_options(self) -> Dict[str, Any]:
         return {

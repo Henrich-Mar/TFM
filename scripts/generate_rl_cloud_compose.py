@@ -44,6 +44,7 @@ DYNAMIC_ENV_KEYS = {
     "TM_CREATE_GAME_RETRY_ATTEMPTS",
     "TM_HTTP_REQUEST_TOTAL_TIMEOUT_SEC",
     "TM_GET_STATE_RETRY_ATTEMPTS",
+    "TM_HTTP_FORCE_CLOSE_CONNECTIONS",
 }
 
 
@@ -444,6 +445,10 @@ def _build_dynamic_env(
     if tm_game_timeout > 0:
         env_items.append(f"TM_GAME_TIMEOUT_SEC={tm_game_timeout}")
 
+    # Connection reuse: 0 = keep-alive (better async I/O throughput), 1 = close after each request
+    force_close = int(args.tm_http_force_close_connections)
+    env_items.append(f"TM_HTTP_FORCE_CLOSE_CONNECTIONS={1 if force_close else 0}")
+
     if rl_models_subdir != "rl-models":
         env_items.append(f"RL_MODELS_DIR=/app/{rl_models_subdir}")
         env_items.append(f"RL_CHECKPOINT_DIR=/app/{rl_models_subdir}/checkpoints")
@@ -756,6 +761,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.getenv("RL_TM_GAME_TIMEOUT_SEC", "0")),
         help="Game timeout in seconds (0 = use default 420); increase if games cancelled unexpectedly",
+    )
+    parser.add_argument(
+        "--tm-http-force-close-connections",
+        type=int,
+        default=int(os.getenv("RL_TM_HTTP_FORCE_CLOSE_CONNECTIONS", "0")),
+        help="1=close HTTP connection after each request (base default); 0=keep-alive for better async I/O (recommended for cloud)",
     )
     parser.add_argument(
         "--num-coordinators",

@@ -864,10 +864,14 @@ class GameServerCluster:
         connector_limit = self._parse_int_env("TM_HTTP_CONNECTOR_LIMIT", 256, min_value=0)
         connector_limit_per_host = self._parse_int_env("TM_HTTP_CONNECTOR_LIMIT_PER_HOST", 128, min_value=0)
         force_close = GameInstance._env_flag("TM_HTTP_FORCE_CLOSE_CONNECTIONS", default=False)
+        use_dns_cache = GameInstance._env_flag("TM_HTTP_USE_DNS_CACHE", default=True)
+        ttl_dns_cache_sec = max(10.0, self._parse_float_env("TM_HTTP_DNS_CACHE_TTL_SEC", 300.0, min_value=0.0))
         connector = aiohttp.TCPConnector(
             limit=connector_limit,
             limit_per_host=connector_limit_per_host,
             force_close=force_close,
+            use_dns_cache=use_dns_cache,
+            ttl_dns_cache=ttl_dns_cache_sec if use_dns_cache else None,
         )
         return aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=timeout_value),

@@ -106,8 +106,8 @@ export RL_INITIAL_CARDS_JITTER_MS=250
 # Optional hard overrides (leave unset for auto from profile)
 export RL_GAMES_PER_EVAL=30
 # export RL_PPO_ROLLOUT_STEPS=131072
-# export RL_TM_GAME_TIMEOUT_SEC=600   # if games cancelled unexpectedly
-
+export RL_TM_GAME_TIMEOUT_SEC=600   # if games cancelled unexpectedly
+chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
 ```
 
@@ -150,6 +150,11 @@ If the coordinator cannot keep up with many game servers and games are dropped (
 | `RL_NUM_COORDINATORS=2` or `3` | 2–3 | Multi-coordinator: each gets a subset of servers |
 | `RL_COORDINATORS_SHARE_GPU=1` | 1 | When using 2+ coordinators: share one GPU (for pipeline bottleneck, single-GPU hosts) |
 | `RL_TM_GAME_TIMEOUT_SEC=600` | 600 | Game timeout in seconds (default 420); increase if games are slow or "cancelled unexpectedly" |
+| `RL_TM_HTTP_FORCE_CLOSE_CONNECTIONS=0` | 0 (cloud default) | HTTP keep-alive for better async I/O; 1 = close after each request |
+
+### Async I/O tuning (connection reuse)
+
+For cloud/saturate mode, HTTP connection reuse is enabled by default (`TM_HTTP_FORCE_CLOSE_CONNECTIONS=0`). This keeps TCP connections open across requests instead of closing after each `get_player_state` / `send_player_input` call, reducing latency and connection churn. The base compose uses `1`; the cloud generator overrides to `0`. DNS caching is enabled with 300s TTL (`TM_HTTP_DNS_CACHE_TTL_SEC`) to avoid repeated lookups for Docker service names.
 
 ### "Game task cancelled unexpectedly" / "play_game task cancelled"
 

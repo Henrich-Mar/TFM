@@ -90,8 +90,8 @@ With the current hard base (`GAMES_PER_EVAL=6`), saturate mode targets `~10x` (`
 export PUBLIC_HOST=$(curl -s ifconfig.me)
 # Capacity controls for 40 vCPU, 387 GB RAM
 export RL_TRAINING_PROFILE=saturate
-export RL_MIN_SERVERS=6
-export RL_MAX_SERVERS=6
+export RL_MIN_SERVERS=12
+export RL_MAX_SERVERS=18
 export RL_CPU_SERVER_RATIO=1.0
 export RL_SERVER_MEM_MB=1400
 export RL_NODE_HEAP_MB=1050
@@ -103,7 +103,7 @@ export RL_AGENT_FAILURE_PAUSE_SEC=0.05
 export RL_INITIAL_CARDS_JITTER_MS=250
 
 # Optional hard overrides (leave unset for auto from profile)
-# export RL_GAMES_PER_EVAL=60
+export RL_GAMES_PER_EVAL=30
 # export RL_PPO_ROLLOUT_STEPS=131072
 
 ./start-rl-cloud-training.sh
@@ -125,3 +125,24 @@ docker compose -f docker-compose.rl_cloud.generated.yml logs -f rl-coordinator
 Dashboard:
 - `http://<vm-ip>:5000/dashboard`
 - `http://<vm-ip>:5000/stats`
+
+## 6) Troubleshooting / Games Dropped
+
+If the coordinator cannot keep up with many game servers and games are dropped (slot timeouts, create failures), try these env-only tweaks before or in addition to the saturate profile:
+
+| Variable | Suggested | Effect |
+|----------|-----------|--------|
+| `RL_TRAINING_PROFILE=saturate` | saturate | Higher concurrency, lower poll/failure delays |
+| `RL_AGENT_POLL_INTERVAL_SEC=0.05` | 0.05 | Faster polling (more CPU) |
+| `RL_AGENT_FAILURE_PAUSE_SEC=0.03` | 0.03 | Shorter pause on failure |
+| `RL_TM_SERVER_SLOT_WAIT_TIMEOUT_SEC=90` | 90 | Less slot timeout drops |
+| `RL_TM_CREATE_GAME_RETRY_ATTEMPTS=6` | 6 | More retries before failing |
+| `RL_HTTP_CONNECTOR_LIMIT=3072` | 3072 | More concurrent connections |
+| `RL_HTTP_CONNECTOR_LIMIT_PER_HOST=96` | 96 | More connections per host |
+| `RL_AGENT_INFERENCE_THREADS=32` | 32 | Thread pool size for inference (0 = auto) |
+| `RL_TOURNAMENT_CONCURRENCY=72` | match GLOBAL_GAME_CONCURRENCY | Explicit concurrency override |
+
+Check coordinator logs for:
+- `No game server capacity available` (slot timeout)
+- `Failed to create game` (create_game retries exhausted)
+- High `payment_reject_count` (server overload)

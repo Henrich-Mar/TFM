@@ -39,6 +39,9 @@ DYNAMIC_ENV_KEYS = {
     "AGENT_FAILURE_PAUSE_SEC",
     "AGENT_POST_MOVE_SLEEP_SEC",
     "TM_SEND_INPUT_INITIAL_CARDS_JITTER_MS",
+    "AGENT_INFERENCE_THREADS",
+    "TM_SERVER_SLOT_WAIT_TIMEOUT_SEC",
+    "TM_CREATE_GAME_RETRY_ATTEMPTS",
 }
 
 
@@ -140,7 +143,12 @@ def build_capacity_plan(args: argparse.Namespace) -> CapacityPlan:
 
     games_per_server = _pick_games_per_server(total_ram_mb, cpu_count, args.games_per_server)
     global_game_concurrency = max(1, server_count * games_per_server)
-    tournament_concurrency = max(1, min(global_game_concurrency, cpu_count * 2))
+    computed_tournament = max(1, min(global_game_concurrency, cpu_count * 2))
+    tournament_concurrency = (
+        max(1, int(args.tournament_concurrency))
+        if int(args.tournament_concurrency) > 0
+        else computed_tournament
+    )
 
     default_http_limit_per_host = max(32, games_per_server * 12)
     configured_http_limit_per_host = max(0, int(args.http_connector_limit_per_host))
@@ -389,6 +397,22 @@ def _build_dynamic_env(
     if initial_cards_jitter_ms >= 0:
         env_items.append(f"TM_SEND_INPUT_INITIAL_CARDS_JITTER_MS={initial_cards_jitter_ms}")
 
+    inference_threads = int(args.agent_inference_threads)
+    if inference_threads >= 0:
+        env_items.append(f"AGENT_INFERENCE_THREADS={inference_threads}")
+
+    slot_wait_sec = int(args.server_slot_wait_timeout_sec)
+    if slot_wait_sec > 0:
+        env_items.append(f"TM_SERVER_SLOT_WAIT_TIMEOUT_SEC={slot_wait_sec}")
+    elif training.profile == "saturate":
+        env_items.append("TM_SERVER_SLOT_WAIT_TIMEOUT_SEC=90")
+
+    create_retries = int(args.create_game_retry_attempts)
+    if create_retries > 0:
+        env_items.append(f"TM_CREATE_GAME_RETRY_ATTEMPTS={create_retries}")
+    elif training.profile == "saturate":
+        env_items.append("TM_CREATE_GAME_RETRY_ATTEMPTS=6")
+
     return env_items
 
 
@@ -580,6 +604,30 @@ def parse_args() -> argparse.Namespace:
         "--initial-cards-jitter-ms",
         type=int,
         default=int(os.getenv("RL_INITIAL_CARDS_JITTER_MS", "-1")),
+    )
+    parser.add_argument(
+        "--tournament-concurrency",
+        type=int,
+        default=int(os.getenv("RL_TOURNAMENT_CONCURRENCY", "0")),
+        help="Override tournament concurrency (0 = auto from capacity)",
+    )
+    parser.add_argument(
+        "--agent-inference-threads",
+        type=int,
+        default=int(os.getenv("RL_AGENT_INFERENCE_THREADS", "-1")),
+        help="Thread pool size for agent inference (0 = auto, -1 = use agent default)",
+    )
+    parser.add_argument(
+        "--server-slot-wait-timeout-sec",
+        type=int,
+        default=int(os.getenv("RL_TM_SERVER_SLOT_WAIT_TIMEOUT_SEC", "0")),
+        help="Timeout when waiting for server slot (0 = use base/saturate default)",
+    )
+    parser.add_argument(
+        "--create-game-retry-attempts",
+        type=int,
+        default=int(os.getenv("RL_TM_CREATE_GAME_RETRY_ATTEMPTS", "0")),
+        help="Retries for create_game (0 = use base/saturate default)",
     )
     return parser.parse_args()
 

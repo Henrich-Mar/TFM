@@ -7,6 +7,8 @@ import torch.nn.functional as F
 import numpy as np
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import json
 import os
 import time
@@ -27,6 +29,28 @@ import aiohttp
 from .ppo import PPORolloutStep, PPOHyperParameters, optimize_ppo_policy
 
 logger = logging.getLogger(__name__)
+
+# Thread pool for offloading CPU-bound inference off the asyncio event loop.
+# Lazily initialized; size controlled by AGENT_INFERENCE_THREADS (0 = auto).
+_inference_executor: Optional[ThreadPoolExecutor] = None
+_inference_executor_lock = threading.Lock()
+
+
+def _get_inference_executor() -> ThreadPoolExecutor:
+    """Return the shared inference thread pool, creating it on first use."""
+    global _inference_executor
+    with _inference_executor_lock:
+        if _inference_executor is not None:
+            return _inference_executor
+        try:
+            n = int(os.getenv("AGENT_INFERENCE_THREADS", "0"))
+        except Exception:
+            n = 0
+        if n <= 0:
+            n = min(32, (os.cpu_count() or 8))
+        _inference_executor = ThreadPoolExecutor(max_workers=max(1, n), thread_name_prefix="agent_inference")
+        return _inference_executor
+
 
 @dataclass
 class AgentConfig:
@@ -2214,6 +2238,34 @@ class RLAgent:
                 if titanium_units > 0:
                     self._bump_decision_stat('titanium_spent', titanium_units)
     
+    def _sync_forward_and_probs(
+        self,
+        state_vector: np.ndarray,
+        phase_index: int,
+        recurrent_state_np: np.ndarray,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
+        """CPU-bound forward pass; intended to run in ThreadPoolExecutor."""
+        state_tensor = torch.FloatTensor(state_vector).unsqueeze(0)
+        phase_tensor = torch.tensor([phase_index], dtype=torch.long)
+        recurrent_state_tensor = torch.FloatTensor(recurrent_state_np).unsqueeze(0)
+
+        with torch.no_grad():
+            out = self._forward_network(
+                state_tensor,
+                phase_indices=phase_tensor,
+                recurrent_state=recurrent_state_tensor,
+            )
+            policy_logits = out["policy_logits"]
+            value = out["value"]
+            recurrent_state_out = out.get("recurrent_state")
+            aux_predictions = out.get("aux_predictions")
+
+            policy_temperature = self._effective_policy_temperature()
+            policy_logits = policy_logits / max(policy_temperature, 1e-3)
+            policy_probs = F.softmax(policy_logits, dim=-1)
+
+        return policy_logits, value, recurrent_state_out, aux_predictions, policy_probs
+
     async def _get_action_from_network(
         self,
         state_vector: np.ndarray,
@@ -2223,29 +2275,25 @@ class RLAgent:
     ) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool, Optional[Dict[str, Any]]]:
         """Get action from neural network"""
         try:
-            # Convert to tensor
-            state_tensor = torch.FloatTensor(state_vector).unsqueeze(0)
             phase_index = int(self._extract_phase_index(player_state))
-            phase_tensor = torch.tensor([phase_index], dtype=torch.long)
             recurrent_state_in = self._get_recurrent_state_for_player(player_id)
-            recurrent_state_tensor = recurrent_state_in.unsqueeze(0)
+            recurrent_state_np = recurrent_state_in.detach().cpu().numpy()
 
-            with torch.no_grad():
-                out = self._forward_network(
-                    state_tensor,
-                    phase_indices=phase_tensor,
-                    recurrent_state=recurrent_state_tensor,
-                )
-                policy_logits = out["policy_logits"]
-                value = out["value"]
-                recurrent_state_out = out.get("recurrent_state")
-                aux_predictions = out.get("aux_predictions")
+            loop = asyncio.get_running_loop()
+            executor = _get_inference_executor()
+            policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = await loop.run_in_executor(
+                executor,
+                self._sync_forward_and_probs,
+                state_vector,
+                phase_index,
+                recurrent_state_np,
+            )
 
-                # Use decayed/capped exploration temperature for action selection.
-                policy_temperature = self._effective_policy_temperature()
-                policy_logits = policy_logits / max(policy_temperature, 1e-3)
-                policy_probs = F.softmax(policy_logits, dim=-1)
-            
+            if recurrent_state_out is not None and player_id:
+                self._set_recurrent_state_for_player(player_id, recurrent_state_out)
+
+            policy_temperature = self._effective_policy_temperature()
+
             # Get available actions
             available_actions = self.action_decoder.get_available_actions(player_state)
             available_actions = self._filter_pass_actions(available_actions, player_state)

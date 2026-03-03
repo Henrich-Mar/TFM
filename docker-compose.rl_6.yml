@@ -5,7 +5,7 @@ services:
     container_name: tm-server-1
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     restart: unless-stopped
     ports:
       - "8081:8080"
@@ -23,7 +23,7 @@ services:
     container_name: tm-server-2
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     restart: unless-stopped
     ports:
       - "8082:8080"
@@ -41,7 +41,7 @@ services:
     container_name: tm-server-3
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     restart: unless-stopped
     ports:
       - "8083:8080"
@@ -59,7 +59,7 @@ services:
     container_name: tm-server-4
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     restart: unless-stopped
     ports:
       - "8084:8080"
@@ -77,7 +77,7 @@ services:
     container_name: tm-server-5
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     restart: unless-stopped
     ports:
       - "8085:8080"
@@ -95,7 +95,7 @@ services:
     container_name: tm-server-6
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     restart: unless-stopped
     ports:
       - "8086:8080"

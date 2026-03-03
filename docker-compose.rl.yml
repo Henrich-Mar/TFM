@@ -5,7 +5,7 @@ services:
     container_name: tm-server-1
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     restart: unless-stopped
     ports:
       - "8081:8080"

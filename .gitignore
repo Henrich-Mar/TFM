@@ -2,6 +2,7 @@
 /rl-models
 __pycache__
 *.log
+/docker-compose.rl_cloud.generated.yml
 /rl-logs/*
 /rl-logs/rl-coordinator.log.3
 *venv*

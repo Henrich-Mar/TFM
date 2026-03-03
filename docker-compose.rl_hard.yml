@@ -6,7 +6,7 @@ services:
   tfm-server-1:
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     ports:
       - "8081:8080"
     environment:
@@ -32,7 +32,7 @@ services:
   tfm-server-2:
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     ports:
       - "8082:8080"
     environment:
@@ -58,7 +58,7 @@ services:
   tfm-server-3:
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     ports:
       - "8083:8080"
     environment:
@@ -84,7 +84,7 @@ services:
   tfm-server-4:
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     ports:
       - "8084:8080"
     environment:
@@ -110,7 +110,7 @@ services:
   tfm-server-5:
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     ports:
       - "8085:8080"
     environment:
@@ -136,7 +136,7 @@ services:
   tfm-server-6:
     build:
       context: ./terraforming-mars
-      dockerfile: Dockerfile.rl
+      dockerfile: ../Dockerfile.rl
     ports:
       - "8086:8080"
     environment:

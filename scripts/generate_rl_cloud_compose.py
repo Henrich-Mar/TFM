@@ -492,6 +492,8 @@ def _build_dynamic_env(
     tm_game_timeout = int(args.tm_game_timeout_sec)
     if tm_game_timeout > 0:
         env_items.append(f"TM_GAME_TIMEOUT_SEC={tm_game_timeout}")
+    elif training.profile == "saturate":
+        env_items.append("TM_GAME_TIMEOUT_SEC=800")
 
     # Connection reuse: 0 = keep-alive (better async I/O throughput), 1 = close after each request
     force_close = int(args.tm_http_force_close_connections)

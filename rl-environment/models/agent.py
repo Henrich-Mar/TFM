@@ -1331,7 +1331,32 @@ class RLAgent:
             return self._build_play_game_telemetry(game_outcome, counter_snapshot_before)
             
         except asyncio.CancelledError:
-            logger.warning("Agent %s play_game task cancelled", self.id[:8])
+            reason = "unknown"
+            game_id = ""
+            task_name = ""
+            try:
+                current_task = asyncio.current_task()
+                if current_task is not None:
+                    reason = str(getattr(current_task, "_cancel_reason", "") or "unknown")
+                    game_id = str(getattr(current_task, "_cancel_game_id", "") or "")
+                    task_name = str(current_task.get_name() or "")
+            except Exception:
+                pass
+            if reason == "game_timeout":
+                logger.warning(
+                    "Agent %s play_game task cancelled due to game timeout (game_id=%s task=%s)",
+                    self.id[:8],
+                    game_id or "unknown",
+                    task_name or "unnamed",
+                )
+            else:
+                logger.warning(
+                    "Agent %s play_game task cancelled (reason=%s game_id=%s task=%s)",
+                    self.id[:8],
+                    reason,
+                    game_id or "unknown",
+                    task_name or "unnamed",
+                )
             raise
         except Exception as e:
             logger.error(f"Agent {self.id[:8]} failed during game: {e}")

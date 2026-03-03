@@ -90,8 +90,8 @@ With the current hard base (`GAMES_PER_EVAL=6`), saturate mode targets `~10x` (`
 # Use localhost for SSH port forwarding; use $(curl -s ifconfig.me) for direct VM access
 export RL_MAX_SERVERS=18
 export RL_MIN_SERVERS=12
-export RL_HTTP_CONNECTOR_LIMIT=3072
-export RL_HTTP_CONNECTOR_LIMIT_PER_HOST=96
+export RL_HTTP_CONNECTOR_LIMIT=9216
+export RL_HTTP_CONNECTOR_LIMIT_PER_HOST=288
 # Capacity controls for 40 vCPU, 387 GB RAM
 export PUBLIC_HOST=localhost
 export RL_TRAINING_PROFILE=saturate
@@ -168,6 +168,8 @@ These appear when game tasks are cancelled before completion. Common causes:
 - **Game timeout**: Games run longer than `TM_GAME_TIMEOUT_SEC`. Increase it (e.g. 600) for high-concurrency saturate mode.
 - **Event-loop blocking**: With multi-coordinator GPU sharing, ensure PPO runs in a thread pool and does not block the event loop.
 - **Process signal**: Container or host interrupting the process.
+
+If logs include `play_game task cancelled due to game timeout`, the cancellation was triggered by tournament timeout handling (not a random agent failure).
 
 Try: `export RL_TM_GAME_TIMEOUT_SEC=600` (add to saturate env) and ensure `TM_GAME_TIMEOUT_SEC` is passed into the coordinator container.
 

@@ -42,6 +42,23 @@ class TournamentManager:
         self.tournament_progress: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
+    def _cancel_agent_tasks_with_reason(
+        agent_tasks: List[asyncio.Task],
+        *,
+        reason: str,
+        game_id: str,
+    ):
+        for task in agent_tasks:
+            if task.done():
+                continue
+            try:
+                setattr(task, "_cancel_reason", str(reason))
+                setattr(task, "_cancel_game_id", str(game_id))
+            except Exception:
+                pass
+            task.cancel()
+
+    @staticmethod
     def _agent_name_token(agent_id: Any, width: int = 8) -> str:
         raw = ''.join(ch for ch in str(agent_id or '') if ch.isalnum())
         if not raw:
@@ -526,9 +543,11 @@ class TournamentManager:
             # Ensure all in-flight agent tasks are cancelled and awaited so gather
             # does not emit "exception was never retrieved" warnings.
             with suppress(Exception):
-                for t in locals().get("agent_tasks", []):
-                    if not t.done():
-                        t.cancel()
+                self._cancel_agent_tasks_with_reason(
+                    locals().get("agent_tasks", []),
+                    reason="game_timeout",
+                    game_id=actual_game_id,
+                )
             with suppress(Exception):
                 if "agent_group" in locals():
                     await agent_group
@@ -577,9 +596,11 @@ class TournamentManager:
         except asyncio.CancelledError:
             # Propagate service-level cancellation, but drain child tasks first.
             with suppress(Exception):
-                for t in locals().get("agent_tasks", []):
-                    if not t.done():
-                        t.cancel()
+                self._cancel_agent_tasks_with_reason(
+                    locals().get("agent_tasks", []),
+                    reason="tournament_cancelled",
+                    game_id=actual_game_id,
+                )
             with suppress(Exception):
                 if "agent_group" in locals():
                     await agent_group
@@ -587,9 +608,11 @@ class TournamentManager:
              
         except Exception as e:
             with suppress(Exception):
-                for t in locals().get("agent_tasks", []):
-                    if not t.done():
-                        t.cancel()
+                self._cancel_agent_tasks_with_reason(
+                    locals().get("agent_tasks", []),
+                    reason="game_failed",
+                    game_id=actual_game_id,
+                )
             with suppress(Exception):
                 if "agent_group" in locals():
                     await agent_group

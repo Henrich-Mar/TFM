@@ -74,17 +74,43 @@ The launcher creates `docker-compose.rl_cloud.generated.yml` with dynamic:
 
 ## 4) Tune speed (optional)
 
-Override sizing with env vars before launch:
+### Balanced profile (default)
 
 ```bash
-export RL_MAX_SERVERS=64
-export RL_SERVER_MEM_MB=1600
-export RL_GAMES_PER_SERVER=5
-export RL_NODE_HEAP_MB=1200
-export RL_CPU_SERVER_RATIO=2.5
 export PUBLIC_HOST=$(curl -s ifconfig.me)
 ./start-rl-cloud-training.sh
 ```
+
+### Saturate profile (recommended for your 40 vCPU / 387 GB node)
+
+This profile aims for much more training volume per generation.
+With the current hard base (`GAMES_PER_EVAL=6`), saturate mode targets `~10x` (`~60`).
+
+```bash
+export PUBLIC_HOST=$(curl -s ifconfig.me)
+export RL_TRAINING_PROFILE=saturate
+
+# Capacity controls for 40 vCPU, 387 GB RAM
+export RL_TRAINING_PROFILE=saturate
+export RL_MIN_SERVERS=16
+export RL_MAX_SERVERS=28
+export RL_CPU_SERVER_RATIO=1.0
+export RL_SERVER_MEM_MB=1400
+export RL_NODE_HEAP_MB=1050
+export RL_GAMES_PER_SERVER=4
+
+# Optional hard overrides (leave unset for auto from profile)
+# export RL_GAMES_PER_EVAL=60
+# export RL_PPO_ROLLOUT_STEPS=131072
+
+./start-rl-cloud-training.sh
+```
+
+You can verify the generated training volume in `docker-compose.rl_cloud.generated.yml`:
+- `GAMES_PER_EVAL`
+- `POPULATION_SIZE`
+- `GLOBAL_GAME_CONCURRENCY`
+- `PPO_ROLLOUT_STEPS`
 
 ## 5) Monitor
 

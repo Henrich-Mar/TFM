@@ -10,11 +10,12 @@ values using host RAM/CPU heuristics.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import Dict, Iterable, List
 
 
 DYNAMIC_ENV_KEYS = {
@@ -28,6 +29,12 @@ DYNAMIC_ENV_KEYS = {
     "MAX_ACTIVE_GAMES_PER_SERVER",
     "TM_HTTP_CONNECTOR_LIMIT",
     "TM_HTTP_CONNECTOR_LIMIT_PER_HOST",
+    "POPULATION_SIZE",
+    "TOURNAMENT_SIZE",
+    "GAMES_PER_EVAL",
+    "PPO_ROLLOUT_STEPS",
+    "PPO_MIN_STEPS_PER_AGENT",
+    "PPO_BUFFER_MAX_STEPS",
 }
 
 
@@ -57,6 +64,19 @@ class CapacityPlan:
     tournament_concurrency: int
     http_limit: int
     http_limit_per_host: int
+
+
+@dataclass
+class TrainingPlan:
+    profile: str
+    population_size: int
+    tournament_size: int
+    games_per_eval: int
+    expected_games_per_generation: int
+    game_instances_per_generation: int
+    ppo_rollout_steps: int
+    ppo_min_steps_per_agent: int
+    ppo_buffer_max_steps: int
 
 
 def _read_total_ram_mb() -> int:
@@ -185,23 +205,131 @@ def _merge_env_lists(*lists: Iterable[str]) -> List[str]:
     return merged
 
 
-def _build_dynamic_env(plan: CapacityPlan, public_host: str, base_port: int) -> List[str]:
-    game_servers = ",".join(f"tfm-server-{i}:8080" for i in range(1, plan.server_count + 1))
+def _env_list_to_map(env_items: Iterable[str]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for item in env_items:
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        out[key] = value.strip()
+    return out
+
+
+def _safe_int_from_map(env_map: Dict[str, str], key: str, default: int) -> int:
+    try:
+        return int(str(env_map.get(key, str(default))).strip())
+    except Exception:
+        return int(default)
+
+
+def build_training_plan(
+    args: argparse.Namespace,
+    capacity: CapacityPlan,
+    base_env_map: Dict[str, str],
+) -> TrainingPlan:
+    profile = str(args.training_profile or "balanced").strip().lower()
+    if profile not in ("balanced", "saturate"):
+        profile = "balanced"
+
+    base_population_size = max(4, _safe_int_from_map(base_env_map, "POPULATION_SIZE", 16))
+    base_tournament_size = max(4, _safe_int_from_map(base_env_map, "TOURNAMENT_SIZE", 4))
+    base_games_per_eval = max(1, _safe_int_from_map(base_env_map, "GAMES_PER_EVAL", 6))
+    base_rollout_steps = max(8192, _safe_int_from_map(base_env_map, "PPO_ROLLOUT_STEPS", 65536))
+    base_min_steps_per_agent = max(256, _safe_int_from_map(base_env_map, "PPO_MIN_STEPS_PER_AGENT", 1024))
+    base_buffer_max_steps = max(65536, _safe_int_from_map(base_env_map, "PPO_BUFFER_MAX_STEPS", 600000))
+
+    population_size = int(args.population_size) if int(args.population_size) > 0 else base_population_size
+    tournament_size = int(args.tournament_size) if int(args.tournament_size) > 0 else base_tournament_size
+    tournament_size = max(4, tournament_size)
+
+    if int(args.games_per_eval) > 0:
+        games_per_eval = int(args.games_per_eval)
+    else:
+        factor = float(args.games_per_eval_factor)
+        if factor <= 0.0:
+            factor = 10.0 if profile == "saturate" else 1.0
+        scaled = max(1, int(round(base_games_per_eval * factor)))
+
+        target_waves = float(args.target_game_waves)
+        if target_waves <= 0.0:
+            target_waves = 2.0 if profile == "saturate" else 1.0
+        min_instances = int(math.ceil(float(capacity.global_game_concurrency) * target_waves))
+        min_games_per_eval = int(
+            math.ceil((float(min_instances) * 4.0) / max(1.0, float(population_size)))
+        )
+        games_per_eval = max(1, scaled, min_games_per_eval)
+
+    expected_games_per_generation = int(population_size * games_per_eval)
+    game_instances_per_generation = int(math.ceil(float(expected_games_per_generation) / 4.0))
+
+    ppo_min_steps_per_agent = (
+        int(args.ppo_min_steps_per_agent)
+        if int(args.ppo_min_steps_per_agent) > 0
+        else base_min_steps_per_agent
+    )
+    ppo_min_steps_per_agent = max(256, ppo_min_steps_per_agent)
+
+    if int(args.ppo_rollout_steps) > 0:
+        ppo_rollout_steps = int(args.ppo_rollout_steps)
+    else:
+        rollout_factor = float(args.ppo_rollout_factor)
+        if rollout_factor <= 0.0:
+            rollout_factor = 2.0 if profile == "saturate" else 1.0
+
+        scaled_rollout = max(8192, int(round(base_rollout_steps * rollout_factor)))
+        floor_from_agent_min = int(population_size * ppo_min_steps_per_agent)
+        if profile == "saturate":
+            floor_from_agent_min *= 2
+        floor_from_eval_volume = int(expected_games_per_generation * (48 if profile == "saturate" else 24))
+        ppo_rollout_steps = max(8192, scaled_rollout, floor_from_agent_min, floor_from_eval_volume)
+        ppo_rollout_steps = min(400000, ppo_rollout_steps)
+
+    if int(args.ppo_buffer_max_steps) > 0:
+        ppo_buffer_max_steps = int(args.ppo_buffer_max_steps)
+    else:
+        multiplier = 5 if profile == "saturate" else 4
+        ppo_buffer_max_steps = max(base_buffer_max_steps, ppo_rollout_steps * multiplier)
+        ppo_buffer_max_steps = min(1_200_000, ppo_buffer_max_steps)
+    ppo_buffer_max_steps = max(ppo_rollout_steps * 2, ppo_buffer_max_steps)
+
+    return TrainingPlan(
+        profile=profile,
+        population_size=population_size,
+        tournament_size=tournament_size,
+        games_per_eval=games_per_eval,
+        expected_games_per_generation=expected_games_per_generation,
+        game_instances_per_generation=game_instances_per_generation,
+        ppo_rollout_steps=ppo_rollout_steps,
+        ppo_min_steps_per_agent=ppo_min_steps_per_agent,
+        ppo_buffer_max_steps=ppo_buffer_max_steps,
+    )
+
+
+def _build_dynamic_env(
+    capacity: CapacityPlan,
+    training: TrainingPlan,
+    public_host: str,
+    base_port: int,
+) -> List[str]:
+    game_servers = ",".join(f"tfm-server-{i}:8080" for i in range(1, capacity.server_count + 1))
     public_tm_map = ",".join(
         f"tfm-server-{i}:8080=http://{public_host}:{base_port + i - 1}"
-        for i in range(1, plan.server_count + 1)
+        for i in range(1, capacity.server_count + 1)
     )
     public_tm_server_id_map = ",".join(
         f"tfm-server-{i}:8080=tfm-server-{i}"
-        for i in range(1, plan.server_count + 1)
+        for i in range(1, capacity.server_count + 1)
     )
     public_tm_url = ",".join(
         f"http://{public_host}:{base_port + i - 1}"
-        for i in range(1, plan.server_count + 1)
+        for i in range(1, capacity.server_count + 1)
     )
     internal_tm_url = ",".join(
         f"http://tfm-server-{i}:8080"
-        for i in range(1, plan.server_count + 1)
+        for i in range(1, capacity.server_count + 1)
     )
 
     return [
@@ -210,11 +338,17 @@ def _build_dynamic_env(plan: CapacityPlan, public_host: str, base_port: int) -> 
         f"PUBLIC_TM_SERVER_ID_MAP={public_tm_server_id_map}",
         f"PUBLIC_TM_URL={public_tm_url}",
         f"INTERNAL_TM_URL={internal_tm_url}",
-        f"TOURNAMENT_CONCURRENCY={plan.tournament_concurrency}",
-        f"GLOBAL_GAME_CONCURRENCY={plan.global_game_concurrency}",
-        f"MAX_ACTIVE_GAMES_PER_SERVER={plan.games_per_server}",
-        f"TM_HTTP_CONNECTOR_LIMIT={plan.http_limit}",
-        f"TM_HTTP_CONNECTOR_LIMIT_PER_HOST={plan.http_limit_per_host}",
+        f"TOURNAMENT_CONCURRENCY={capacity.tournament_concurrency}",
+        f"GLOBAL_GAME_CONCURRENCY={capacity.global_game_concurrency}",
+        f"MAX_ACTIVE_GAMES_PER_SERVER={capacity.games_per_server}",
+        f"TM_HTTP_CONNECTOR_LIMIT={capacity.http_limit}",
+        f"TM_HTTP_CONNECTOR_LIMIT_PER_HOST={capacity.http_limit_per_host}",
+        f"POPULATION_SIZE={training.population_size}",
+        f"TOURNAMENT_SIZE={training.tournament_size}",
+        f"GAMES_PER_EVAL={training.games_per_eval}",
+        f"PPO_ROLLOUT_STEPS={training.ppo_rollout_steps}",
+        f"PPO_MIN_STEPS_PER_AGENT={training.ppo_min_steps_per_agent}",
+        f"PPO_BUFFER_MAX_STEPS={training.ppo_buffer_max_steps}",
     ]
 
 
@@ -355,23 +489,52 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reserve-mb", type=int, default=int(os.getenv("RL_RESERVE_MB", "0")))
     parser.add_argument("--infra-overhead-mb", type=int, default=int(os.getenv("RL_INFRA_OVERHEAD_MB", "4096")))
     parser.add_argument("--cpu-server-ratio", type=float, default=float(os.getenv("RL_CPU_SERVER_RATIO", "2.0")))
+    parser.add_argument(
+        "--training-profile",
+        choices=["balanced", "saturate"],
+        default=os.getenv("RL_TRAINING_PROFILE", "balanced"),
+    )
+    parser.add_argument("--population-size", type=int, default=int(os.getenv("RL_POPULATION_SIZE", "0")))
+    parser.add_argument("--tournament-size", type=int, default=int(os.getenv("RL_TOURNAMENT_SIZE", "0")))
+    parser.add_argument("--games-per-eval", type=int, default=int(os.getenv("RL_GAMES_PER_EVAL", "0")))
+    parser.add_argument("--games-per-eval-factor", type=float, default=float(os.getenv("RL_GAMES_PER_EVAL_FACTOR", "0")))
+    parser.add_argument("--target-game-waves", type=float, default=float(os.getenv("RL_TARGET_GAME_WAVES", "0")))
+    parser.add_argument("--ppo-rollout-steps", type=int, default=int(os.getenv("RL_PPO_ROLLOUT_STEPS", "0")))
+    parser.add_argument("--ppo-rollout-factor", type=float, default=float(os.getenv("RL_PPO_ROLLOUT_FACTOR", "0")))
+    parser.add_argument(
+        "--ppo-min-steps-per-agent",
+        type=int,
+        default=int(os.getenv("RL_PPO_MIN_STEPS_PER_AGENT", "0")),
+    )
+    parser.add_argument(
+        "--ppo-buffer-max-steps",
+        type=int,
+        default=int(os.getenv("RL_PPO_BUFFER_MAX_STEPS", "0")),
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    plan = build_capacity_plan(args)
+    capacity = build_capacity_plan(args)
 
     base_env = _extract_env_from_base_compose(Path(args.base_compose))
+    base_env_map = _env_list_to_map(base_env)
+    training = build_training_plan(args, capacity=capacity, base_env_map=base_env_map)
     base_env_filtered = [
         item
         for item in base_env
         if item.split("=", 1)[0].strip() not in DYNAMIC_ENV_KEYS
     ]
-    dynamic_env = _build_dynamic_env(plan, public_host=args.public_host, base_port=args.base_port)
+    dynamic_env = _build_dynamic_env(
+        capacity=capacity,
+        training=training,
+        public_host=args.public_host,
+        base_port=args.base_port,
+    )
     env_items = _merge_env_lists(dynamic_env, base_env_filtered, ESSENTIAL_ENV_DEFAULTS)
 
-    compose_text = _render_compose(plan, env_items=env_items, base_port=args.base_port)
+    compose_text = _render_compose(capacity, env_items=env_items, base_port=args.base_port)
     with Path(args.output).open("w", encoding="utf-8", newline="\n") as f:
         f.write(compose_text)
 
@@ -379,20 +542,40 @@ def main() -> int:
     print(
         "Host capacity: RAM=%d MB, CPUs=%d -> servers=%d, games/server=%d, global_concurrency=%d"
         % (
-            plan.total_ram_mb,
-            plan.cpu_count,
-            plan.server_count,
-            plan.games_per_server,
-            plan.global_game_concurrency,
+            capacity.total_ram_mb,
+            capacity.cpu_count,
+            capacity.server_count,
+            capacity.games_per_server,
+            capacity.global_game_concurrency,
         )
     )
     print(
         "Per server: mem_limit=%d MB, node_heap=%d MB | HTTP limits: total=%d per_host=%d"
         % (
-            plan.server_mem_mb,
-            plan.node_heap_mb,
-            plan.http_limit,
-            plan.http_limit_per_host,
+            capacity.server_mem_mb,
+            capacity.node_heap_mb,
+            capacity.http_limit,
+            capacity.http_limit_per_host,
+        )
+    )
+    print(
+        "Training profile=%s: POPULATION_SIZE=%d, TOURNAMENT_SIZE=%d, GAMES_PER_EVAL=%d "
+        "(expected agent-games/gen=%d, game instances/gen=%d)"
+        % (
+            training.profile,
+            training.population_size,
+            training.tournament_size,
+            training.games_per_eval,
+            training.expected_games_per_generation,
+            training.game_instances_per_generation,
+        )
+    )
+    print(
+        "PPO: PPO_ROLLOUT_STEPS=%d, PPO_MIN_STEPS_PER_AGENT=%d, PPO_BUFFER_MAX_STEPS=%d"
+        % (
+            training.ppo_rollout_steps,
+            training.ppo_min_steps_per_agent,
+            training.ppo_buffer_max_steps,
         )
     )
     return 0

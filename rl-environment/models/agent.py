@@ -30,7 +30,33 @@ from .ppo import PPORolloutStep, PPOHyperParameters, optimize_ppo_policy
 
 logger = logging.getLogger(__name__)
 
-# Thread pool for offloading CPU-bound inference off the asyncio event loop.
+# ---------------------------------------------------------------------------
+# Inference device resolution (GPU when available, controlled by env var)
+# ---------------------------------------------------------------------------
+_inference_device: Optional[torch.device] = None
+_inference_device_lock = threading.Lock()
+
+
+def _resolve_inference_device() -> torch.device:
+    """Return the device used for inference, determined once from
+    ``AGENT_INFERENCE_DEVICE`` (``auto`` | ``cpu`` | ``cuda`` | ``cuda:N``).
+    """
+    global _inference_device
+    with _inference_device_lock:
+        if _inference_device is not None:
+            return _inference_device
+        env_val = os.getenv("AGENT_INFERENCE_DEVICE", "auto").strip().lower()
+        if env_val == "auto":
+            _inference_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        elif env_val.startswith("cuda"):
+            _inference_device = torch.device(env_val)
+        else:
+            _inference_device = torch.device("cpu")
+        logger.info("Inference device resolved to %s", _inference_device)
+        return _inference_device
+
+
+# Thread pool for offloading inference off the asyncio event loop.
 # Lazily initialized; size controlled by AGENT_INFERENCE_THREADS (0 = auto).
 _inference_executor: Optional[ThreadPoolExecutor] = None
 _inference_executor_lock = threading.Lock()
@@ -47,9 +73,159 @@ def _get_inference_executor() -> ThreadPoolExecutor:
         except Exception:
             n = 0
         if n <= 0:
-            n = min(32, (os.cpu_count() or 8))
+            device = _resolve_inference_device()
+            if device.type == "cuda":
+                # GPU forward passes serialize on the default CUDA stream;
+                # a small pool keeps CPU prep concurrent without excessive
+                # GPU context-switching.
+                n = 4
+            else:
+                n = min(32, (os.cpu_count() or 8))
         _inference_executor = ThreadPoolExecutor(max_workers=max(1, n), thread_name_prefix="agent_inference")
         return _inference_executor
+
+
+# ---------------------------------------------------------------------------
+# Batched GPU inference: collects per-agent inference requests from
+# concurrent games and runs one batched forward pass on the GPU.
+# ---------------------------------------------------------------------------
+
+_InferenceRequest = Tuple[np.ndarray, int, np.ndarray, "asyncio.Future[Any]", asyncio.AbstractEventLoop]
+
+
+class InferenceBatcher:
+    """Collects inference requests for a single agent's network and runs
+    them in one batched GPU forward pass.
+
+    Each agent owns one batcher instance (created lazily).  Callers await
+    ``batcher.infer(...)`` which returns the same 5-tuple as
+    ``_sync_forward_and_probs``.
+    """
+
+    def __init__(
+        self,
+        agent: "RLAgent",
+        max_batch: int = 32,
+        deadline_ms: float = 3.0,
+    ):
+        self._agent = agent
+        self._max_batch = max(1, max_batch)
+        self._deadline_sec = max(0.0005, deadline_ms / 1000.0)
+        self._pending: List[_InferenceRequest] = []
+        self._lock = threading.Lock()
+        self._has_items = threading.Event()
+        self._batch_ready = threading.Event()
+        self._alive = True
+        self._worker = threading.Thread(
+            target=self._run, daemon=True,
+            name=f"infer_batch_{agent.id[:8]}",
+        )
+        self._worker.start()
+
+    # -- public async API ----------------------------------------------------
+
+    async def infer(
+        self,
+        state_vector: np.ndarray,
+        phase_index: int,
+        recurrent_state_np: np.ndarray,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[Any] = loop.create_future()
+        with self._lock:
+            self._pending.append((state_vector, phase_index, recurrent_state_np, fut, loop))
+            if len(self._pending) >= self._max_batch:
+                self._batch_ready.set()
+        self._has_items.set()
+        return await fut
+
+    # -- background worker ---------------------------------------------------
+
+    def _run(self) -> None:
+        while self._alive:
+            self._has_items.wait()
+            self._has_items.clear()
+            if not self._alive:
+                break
+            # Brief accumulation window (or early-out when batch is full).
+            self._batch_ready.wait(timeout=self._deadline_sec)
+            self._batch_ready.clear()
+            self._process_batch()
+
+    def _process_batch(self) -> None:
+        with self._lock:
+            batch = self._pending[: self._max_batch]
+            self._pending = self._pending[self._max_batch :]
+            # Re-signal if overflow items remain.
+            if self._pending:
+                self._has_items.set()
+
+        if not batch:
+            return
+
+        try:
+            device = self._agent._inference_device
+            states = torch.tensor(
+                np.stack([r[0] for r in batch]),
+                dtype=torch.float32, device=device,
+            )
+            phases = torch.tensor(
+                [r[1] for r in batch],
+                dtype=torch.long, device=device,
+            )
+            recurrent = torch.tensor(
+                np.stack([r[2] for r in batch]),
+                dtype=torch.float32, device=device,
+            )
+
+            with torch.no_grad():
+                use_amp = device.type == "cuda"
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    out = self._agent._forward_network(
+                        states, phase_indices=phases, recurrent_state=recurrent,
+                    )
+
+                policy_logits = out["policy_logits"].float()
+                value = out["value"].float()
+                recurrent_out = out.get("recurrent_state")
+                if recurrent_out is not None:
+                    recurrent_out = recurrent_out.float()
+                aux_preds = out.get("aux_predictions")
+
+                temperature = self._agent._effective_policy_temperature()
+                policy_logits = policy_logits / max(temperature, 1e-3)
+                policy_probs = F.softmax(policy_logits, dim=-1)
+
+            if device.type != "cpu":
+                policy_logits = policy_logits.cpu()
+                value = value.cpu()
+                policy_probs = policy_probs.cpu()
+                if recurrent_out is not None:
+                    recurrent_out = recurrent_out.cpu()
+                if aux_preds is not None:
+                    aux_preds = aux_preds.cpu()
+
+            for i, (_, _, _, fut, loop) in enumerate(batch):
+                r_out = recurrent_out[i : i + 1] if recurrent_out is not None else None
+                a_out = aux_preds[i : i + 1] if aux_preds is not None else None
+                result = (
+                    policy_logits[i : i + 1],
+                    value[i : i + 1],
+                    r_out,
+                    a_out,
+                    policy_probs[i : i + 1],
+                )
+                loop.call_soon_threadsafe(fut.set_result, result)
+        except Exception as exc:
+            for _, _, _, fut, loop in batch:
+                if not fut.done():
+                    loop.call_soon_threadsafe(fut.set_exception, exc)
+
+    def shutdown(self) -> None:
+        self._alive = False
+        self._has_items.set()
+        self._batch_ready.set()
+        self._worker.join(timeout=5.0)
 
 
 @dataclass
@@ -559,9 +735,13 @@ class RLAgent:
         # Neural network
         self.network = TerraformingMarsNetwork(self.config)
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
-        # Use eval mode for inference-only tournaments (disables dropout, speeds up forward pass)
         self.network.eval()
-        
+
+        self._inference_device = _resolve_inference_device()
+        self._move_network_to_inference_device()
+        self._inference_batcher: Optional[InferenceBatcher] = None
+        self._init_inference_batcher()
+
         # Game interaction components
         self.state_encoder = StateEncoder(
             state_size=self.config.state_size,
@@ -718,6 +898,43 @@ class RLAgent:
             return int(os.getenv(name, str(default)))
         except Exception:
             return int(default)
+
+    def _move_network_to_inference_device(self) -> None:
+        """Move the network (and optimizer states) to ``self._inference_device``."""
+        target = self._inference_device
+        try:
+            current = next(self.network.parameters()).device
+        except StopIteration:
+            return
+        if current == target:
+            return
+        try:
+            self.network.to(target)
+            for state in self.optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(target)
+        except Exception as exc:
+            logger.warning(
+                "Failed to move network to %s (%s); falling back to CPU",
+                target, exc,
+            )
+            self._inference_device = torch.device("cpu")
+            self.network.to(self._inference_device)
+
+    def _init_inference_batcher(self) -> None:
+        """Create an ``InferenceBatcher`` when CUDA inference is active and
+        the ``AGENT_INFERENCE_BATCH`` env var is not explicitly disabled."""
+        env_val = os.getenv("AGENT_INFERENCE_BATCH", "auto").strip().lower()
+        if env_val in ("0", "false", "no", "off"):
+            return
+        if env_val == "auto" and self._inference_device.type != "cuda":
+            return
+        max_batch = max(1, self._safe_env_int("AGENT_INFERENCE_BATCH_SIZE", 32))
+        deadline_ms = max(0.5, self._safe_env_float("AGENT_INFERENCE_BATCH_DEADLINE_MS", 3.0))
+        self._inference_batcher = InferenceBatcher(
+            self, max_batch=max_batch, deadline_ms=deadline_ms,
+        )
 
     def _forward_network(
         self,
@@ -2269,25 +2486,48 @@ class RLAgent:
         phase_index: int,
         recurrent_state_np: np.ndarray,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
-        """CPU-bound forward pass; intended to run in ThreadPoolExecutor."""
-        state_tensor = torch.FloatTensor(state_vector).unsqueeze(0)
-        phase_tensor = torch.tensor([phase_index], dtype=torch.long)
-        recurrent_state_tensor = torch.FloatTensor(recurrent_state_np).unsqueeze(0)
+        """Forward pass dispatched to ThreadPoolExecutor.
+
+        Runs on ``self._inference_device`` (GPU when available) with FP16
+        autocast for CUDA to cut latency and VRAM.
+        """
+        device = self._inference_device
+        state_tensor = torch.tensor(
+            state_vector, dtype=torch.float32, device=device,
+        ).unsqueeze(0)
+        phase_tensor = torch.tensor(
+            [phase_index], dtype=torch.long, device=device,
+        )
+        recurrent_state_tensor = torch.tensor(
+            recurrent_state_np, dtype=torch.float32, device=device,
+        ).unsqueeze(0)
 
         with torch.no_grad():
-            out = self._forward_network(
-                state_tensor,
-                phase_indices=phase_tensor,
-                recurrent_state=recurrent_state_tensor,
-            )
-            policy_logits = out["policy_logits"]
-            value = out["value"]
+            use_amp = device.type == "cuda"
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                out = self._forward_network(
+                    state_tensor,
+                    phase_indices=phase_tensor,
+                    recurrent_state=recurrent_state_tensor,
+                )
+
+            policy_logits = out["policy_logits"].float()
+            value = out["value"].float()
             recurrent_state_out = out.get("recurrent_state")
+            if recurrent_state_out is not None:
+                recurrent_state_out = recurrent_state_out.float()
             aux_predictions = out.get("aux_predictions")
 
             policy_temperature = self._effective_policy_temperature()
             policy_logits = policy_logits / max(policy_temperature, 1e-3)
             policy_probs = F.softmax(policy_logits, dim=-1)
+
+        if device.type != "cpu":
+            policy_logits = policy_logits.cpu()
+            value = value.cpu()
+            policy_probs = policy_probs.cpu()
+            if recurrent_state_out is not None:
+                recurrent_state_out = recurrent_state_out.cpu()
 
         return policy_logits, value, recurrent_state_out, aux_predictions, policy_probs
 
@@ -2304,15 +2544,20 @@ class RLAgent:
             recurrent_state_in = self._get_recurrent_state_for_player(player_id)
             recurrent_state_np = recurrent_state_in.detach().cpu().numpy()
 
-            loop = asyncio.get_running_loop()
-            executor = _get_inference_executor()
-            policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = await loop.run_in_executor(
-                executor,
-                self._sync_forward_and_probs,
-                state_vector,
-                phase_index,
-                recurrent_state_np,
-            )
+            if self._inference_batcher is not None:
+                policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = (
+                    await self._inference_batcher.infer(state_vector, phase_index, recurrent_state_np)
+                )
+            else:
+                loop = asyncio.get_running_loop()
+                executor = _get_inference_executor()
+                policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = await loop.run_in_executor(
+                    executor,
+                    self._sync_forward_and_probs,
+                    state_vector,
+                    phase_index,
+                    recurrent_state_np,
+                )
 
             if recurrent_state_out is not None and player_id:
                 self._set_recurrent_state_for_player(player_id, recurrent_state_out)
@@ -3297,6 +3542,13 @@ class RLAgent:
             group["lr"] = float(self.ppo_learning_rate)
 
         self.network.eval()
+        self._inference_device = _resolve_inference_device()
+        self._move_network_to_inference_device()
+        if self._inference_batcher is not None:
+            self._inference_batcher.shutdown()
+        self._inference_batcher = None
+        self._init_inference_batcher()
+
         self.train_from_self_play = (
             self.config.train_from_self_play and os.getenv("SELF_PLAY_LEARNING", "1") != "0"
         )

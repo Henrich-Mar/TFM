@@ -533,16 +533,17 @@ def optimize_ppo_policy(
         else:
             explained_variance_value = 0.0
 
-    # Move network back to CPU for inference during gameplay.
+    # Move network back to its pre-training device.  When the agent keeps
+    # the network on GPU for inference (AGENT_INFERENCE_DEVICE=auto/cuda),
+    # network_was_on_cpu is False and this block is skipped so the network
+    # stays on GPU.
     if network_was_on_cpu and device.type != "cpu":
         cpu_device = torch.device("cpu")
         network.to(cpu_device)
-        # Migrate optimizer state back to CPU.
         for state in optimizer.state.values():
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
                     state[k] = v.to(cpu_device)
-        # Clear GPU cache to free VRAM for the next optimization cycle.
         if device.type == "cuda":
             torch.cuda.empty_cache()
 

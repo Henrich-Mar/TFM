@@ -122,7 +122,7 @@ def _auto_num_coordinators(
     coordinator_games_target concurrent games.
 
     A single Python async event loop saturates at ~600-800 HTTP req/s.
-    With poll_interval=0.08s, target=20 gives ≤250 req/s per coordinator.
+    With poll_interval=0.03s, target=20 gives ≤667 req/s per coordinator.
     """
     if coordinator_games_target <= 0:
         coordinator_games_target = 20 if profile == "saturate" else 28
@@ -413,7 +413,7 @@ def _build_dynamic_env(
 
     poll_interval = float(args.agent_poll_interval_sec)
     if poll_interval < 0:
-        poll_interval = 0.08 if training.profile == "saturate" else -1.0
+        poll_interval = 0.03 if training.profile == "saturate" else -1.0
     if poll_interval >= 0:
         env_items.append(f"AGENT_POLL_INTERVAL_SEC={poll_interval:.3f}")
 
@@ -536,7 +536,8 @@ def _render_compose(
                 "      - NODE_ENV=production",
                 "      - COMPRESS_COMPLETED_GAMES_DAYS=0",
                 f"      - SERVER_ID=tfm-server-{i}",
-                f"      - NODE_OPTIONS=--max-old-space-size={plan.node_heap_mb}",
+                f"      - NODE_OPTIONS=--max-old-space-size={plan.node_heap_mb} --max-semi-space-size=64",
+                "      - UV_THREADPOOL_SIZE=16",
                 "    tmpfs:",
                 "      - /usr/src/app/db:uid=100,gid=65533,mode=0775",
                 "    labels:",
@@ -1004,7 +1005,7 @@ def main() -> int:
         )
     )
     games_per_coord = capacity.global_game_concurrency / num_coordinators
-    poll = args.agent_poll_interval_sec if args.agent_poll_interval_sec >= 0 else (0.08 if profile == "saturate" else 0.2)
+    poll = args.agent_poll_interval_sec if args.agent_poll_interval_sec >= 0 else (0.03 if profile == "saturate" else 0.2)
     print(
         "Coordinators: %d (%.1f games each) — ~%.0f req/s per event loop"
         % (num_coordinators, games_per_coord, games_per_coord / max(0.001, poll))

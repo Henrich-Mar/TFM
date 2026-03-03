@@ -100,7 +100,7 @@ export RL_SERVER_MEM_MB=1400
 export RL_NODE_HEAP_MB=1050
 export RL_GAMES_PER_SERVER=4
 export RL_COORDINATORS_SHARE_GPU=1
-export RL_AGENT_POLL_INTERVAL_SEC=0.08
+export RL_AGENT_POLL_INTERVAL_SEC=0.03
 export RL_AGENT_FAILURE_PAUSE_SEC=0.05
 export RL_INITIAL_CARDS_JITTER_MS=1200
 export RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0
@@ -119,6 +119,20 @@ You can verify the generated training volume in `docker-compose.rl_cloud.generat
 - `POPULATION_SIZE`
 - `GLOBAL_GAME_CONCURRENCY`
 - `PPO_ROLLOUT_STEPS`
+
+### GPU-accelerated inference (automatic)
+
+When a CUDA GPU is available inside the coordinator container (requires NVIDIA Container Toolkit), agent inference runs on GPU automatically (`AGENT_INFERENCE_DEVICE=auto`). All 16 agent networks are kept on GPU in FP16 autocast mode, and concurrent inference requests from the same agent are batched into a single forward pass. This typically cuts per-decision latency from ~5-20 ms (CPU) to <1 ms.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `AGENT_INFERENCE_DEVICE` | `auto` | `auto` = CUDA if available, else CPU. Set `cpu` to force CPU inference. |
+| `AGENT_INFERENCE_BATCH` | `auto` | `auto` = batching enabled on CUDA. Set `0` to disable batching. |
+| `AGENT_INFERENCE_BATCH_SIZE` | `32` | Max batch size per flush (higher = more throughput, slightly more latency). |
+| `AGENT_INFERENCE_BATCH_DEADLINE_MS` | `3.0` | Max wait before flushing a partial batch (ms). |
+| `AGENT_INFERENCE_THREADS` | `0` (auto) | Thread pool size. Auto picks 4 for CUDA, `min(32, cpu_count)` for CPU. |
+
+With the saturate profile on a single-GPU host, the 16 agents consume ~2 GB VRAM for inference (FP16), leaving ~9 GB for PPO training batches.
 
 ## 5) Monitor
 
@@ -140,7 +154,7 @@ If the coordinator cannot keep up with many game servers and games are dropped (
 | Variable | Suggested | Effect |
 |----------|-----------|--------|
 | `RL_TRAINING_PROFILE=saturate` | saturate | Higher concurrency, lower poll/failure delays |
-| `RL_AGENT_POLL_INTERVAL_SEC=0.05` | 0.05 | Faster polling (more CPU) |
+| `RL_AGENT_POLL_INTERVAL_SEC=0.03` | 0.03 | Faster polling (more CPU); safe with GPU inference |
 | `RL_AGENT_FAILURE_PAUSE_SEC=0.03` | 0.03 | Shorter pause on failure |
 | `RL_TM_SERVER_SLOT_WAIT_TIMEOUT_SEC=90` | 90 | Less slot timeout drops |
 | `RL_TM_CREATE_GAME_RETRY_ATTEMPTS=6` | 6 | More retries before failing |

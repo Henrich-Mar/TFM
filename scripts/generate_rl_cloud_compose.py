@@ -524,6 +524,9 @@ def _render_compose(
             "",
             "  redis:",
             "    image: redis:alpine",
+            # Disable RDB snapshots and AOF — RL training state is ephemeral;
+            # persistence only causes periodic disk I/O spikes.
+            "    command: redis-server --save \"\" --appendonly no",
             "    ports:",
             "      - \"6379:6379\"",
             "    restart: unless-stopped",
@@ -534,6 +537,20 @@ def _render_compose(
             "      - POSTGRES_USER=tfm",
             "      - POSTGRES_PASSWORD=tfm_password",
             "      - POSTGRES_DB=tfm_rl",
+            # Tune Postgres for write-heavy RL workload.
+            # synchronous_commit=off is the single biggest win: eliminates the
+            # per-transaction fsync wait (tiny data-loss risk on crash is fine
+            # for ephemeral training data).
+            "    command: >",
+            "      postgres",
+            "        -c synchronous_commit=off",
+            "        -c shared_buffers=256MB",
+            "        -c work_mem=8MB",
+            "        -c wal_buffers=16MB",
+            "        -c checkpoint_completion_target=0.9",
+            "        -c max_wal_size=1GB",
+            "        -c wal_compression=on",
+            "        -c log_min_duration_statement=5000",
             "    ports:",
             "      - \"5432:5432\"",
             "    restart: unless-stopped",
@@ -583,8 +600,11 @@ def _render_compose(
                     "    volumes:",
                     "      - ./rl-environment:/app",
                     f"      - ./{models_subdir}:/app/{models_subdir}",
-                    "      - ./rl-logs:/app/logs",
                     "      - ./card_metadata.json:/app/card_metadata.json:ro",
+                    # tmpfs for logs avoids host-disk I/O under high-concurrency
+                    # saturate mode. Use a bind mount if you need log persistence.
+                    "    tmpfs:",
+                    "      - /app/logs:mode=0775",
                     "    environment:",
                 ]
             )
@@ -619,8 +639,10 @@ def _render_compose(
                 "    volumes:",
                 "      - ./rl-environment:/app",
                 "      - ./rl-models:/app/rl-models",
-                "      - ./rl-logs:/app/logs",
                 "      - ./card_metadata.json:/app/card_metadata.json:ro",
+                # tmpfs for logs avoids host-disk I/O on every log write under high concurrency.
+                "    tmpfs:",
+                "      - /app/logs:mode=0775",
                 "    environment:",
             ]
         )

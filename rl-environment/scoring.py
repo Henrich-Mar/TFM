@@ -1245,7 +1245,7 @@ IS_HARD_MODE = SCORING_MODE == "HARD"
 # Reward Scaling
 STEP_REWARD_SCALE = 0.3 if IS_HARD_MODE else 1.0
 TERMINAL_REWARD_SCALE = 2.0 if IS_HARD_MODE else 1.0
-HATE_DRAFT_LOW_HAND_EV_THRESHOLD = _env_float("HATE_DRAFT_LOW_HAND_EV_THRESHOLD", 0.35)
+HATE_DRAFT_LOW_HAND_EV_THRESHOLD = _env_float("HATE_DRAFT_LOW_HAND_EV_THRESHOLD", 0.25)
 
 def calculate_step_reward_decomposition(
     before_state: Dict[str, Any],

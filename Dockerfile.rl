@@ -20,7 +20,7 @@ FROM install AS builder
 COPY . .
 
 # Polling cadence for /api/waitingfor is generated at build time.
-ARG WAITING_FOR_TIMEOUT=40
+ARG WAITING_FOR_TIMEOUT=10
 ENV WAITING_FOR_TIMEOUT=${WAITING_FOR_TIMEOUT}
 
 # Run building

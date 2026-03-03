@@ -90,7 +90,7 @@ def _get_inference_executor() -> ThreadPoolExecutor:
 # concurrent games and runs one batched forward pass on the GPU.
 # ---------------------------------------------------------------------------
 
-_InferenceRequest = Tuple[np.ndarray, int, np.ndarray, "asyncio.Future[Any]", asyncio.AbstractEventLoop]
+_InferenceRequest = Tuple[np.ndarray, int, torch.Tensor, "asyncio.Future[Any]", asyncio.AbstractEventLoop]
 
 
 class InferenceBatcher:
@@ -128,12 +128,12 @@ class InferenceBatcher:
         self,
         state_vector: np.ndarray,
         phase_index: int,
-        recurrent_state_np: np.ndarray,
+        recurrent_state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[Any] = loop.create_future()
         with self._lock:
-            self._pending.append((state_vector, phase_index, recurrent_state_np, fut, loop))
+            self._pending.append((state_vector, phase_index, recurrent_state, fut, loop))
             if len(self._pending) >= self._max_batch:
                 self._batch_ready.set()
         self._has_items.set()
@@ -173,10 +173,7 @@ class InferenceBatcher:
                 [r[1] for r in batch],
                 dtype=torch.long, device=device,
             )
-            recurrent = torch.tensor(
-                np.stack([r[2] for r in batch]),
-                dtype=torch.float32, device=device,
-            )
+            recurrent = torch.stack([r[2] for r in batch]).to(device)
 
             with torch.no_grad():
                 use_amp = device.type == "cuda"
@@ -200,8 +197,6 @@ class InferenceBatcher:
                 policy_logits = policy_logits.cpu()
                 value = value.cpu()
                 policy_probs = policy_probs.cpu()
-                if recurrent_out is not None:
-                    recurrent_out = recurrent_out.cpu()
                 if aux_preds is not None:
                     aux_preds = aux_preds.cpu()
 
@@ -931,7 +926,7 @@ class RLAgent:
         if env_val == "auto" and self._inference_device.type != "cuda":
             return
         max_batch = max(1, self._safe_env_int("AGENT_INFERENCE_BATCH_SIZE", 32))
-        deadline_ms = max(0.5, self._safe_env_float("AGENT_INFERENCE_BATCH_DEADLINE_MS", 3.0))
+        deadline_ms = max(0.5, self._safe_env_float("AGENT_INFERENCE_BATCH_DEADLINE_MS", 1.0))
         self._inference_batcher = InferenceBatcher(
             self, max_batch=max_batch, deadline_ms=deadline_ms,
         )
@@ -950,7 +945,7 @@ class RLAgent:
 
     def _zero_recurrent_state(self) -> torch.Tensor:
         recurrent_size = max(1, int(getattr(self.network, "recurrent_size", max(16, self.config.hidden_size // 2))))
-        return torch.zeros((recurrent_size,), dtype=torch.float32)
+        return torch.zeros((recurrent_size,), dtype=torch.float32, device=self._inference_device)
 
     def _get_recurrent_state_for_player(self, player_id: Optional[str]) -> torch.Tensor:
         if not player_id:
@@ -966,11 +961,17 @@ class RLAgent:
         if recurrent_state is None:
             self._recurrent_hidden_by_player.pop(str(player_id), None)
             return
+        device = self._inference_device
         if isinstance(recurrent_state, torch.Tensor):
-            vec = recurrent_state.detach().cpu().float().reshape(-1)
+            vec = recurrent_state.detach().float().reshape(-1)
+            if vec.device != device:
+                vec = vec.to(device)
         else:
             try:
-                vec = torch.tensor(np.asarray(recurrent_state, dtype=np.float32).reshape(-1), dtype=torch.float32)
+                vec = torch.tensor(
+                    np.asarray(recurrent_state, dtype=np.float32).reshape(-1),
+                    dtype=torch.float32, device=device,
+                )
             except Exception:
                 return
         self._recurrent_hidden_by_player[str(player_id)] = vec
@@ -1696,14 +1697,20 @@ class RLAgent:
             self._maybe_reset_turn_action_count(player_id, player_state)
             turn_action_count = self._get_turn_action_count(player_id)
 
-            state_vector = self.state_encoder.encode(player_state, turn_action_count=turn_action_count)
+            loop = asyncio.get_running_loop()
+            state_vector = await loop.run_in_executor(
+                _get_inference_executor(),
+                self.state_encoder.encode,
+                player_state,
+                turn_action_count,
+            )
             self._bump_decision_stat('total_decisions')
             
             # Log what we're waiting for
             waiting_for = player_state.get('waitingFor', {})
             waiting_type = waiting_for.get('type', 'unknown')
             is_initial_cards_prompt = waiting_type in ['initialCards', 'selectInitialCards']
-            logger.info(f"Agent {self.id[:8]} making move for input type: {waiting_type}")
+            logger.debug(f"Agent {self.id[:8]} making move for input type: {waiting_type}")
 
             if self.startup_autosubmit and waiting_type in ['initialCards', 'selectInitialCards']:
                 initial_action = self.action_decoder.build_initial_setup_response(player_state)
@@ -1735,7 +1742,7 @@ class RLAgent:
                     self._bump_decision_stat('policy_sampled_actions')
                 else:
                     self._bump_decision_stat('epsilon_random_actions')
-                logger.info(f"Agent {self.id[:8]} attempting policy action: {policy_action}")
+                logger.debug(f"Agent {self.id[:8]} attempting policy action: {policy_action}")
                 if await game_instance.send_player_input(player_id, policy_action):
                     self._bump_decision_stat('policy_successes')
                     # Track how many actions this player has taken this turn so the
@@ -1750,7 +1757,7 @@ class RLAgent:
                             player_id,
                             action_meta.get("recurrent_state_out"),
                         )
-                    logger.info(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
+                    logger.debug(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
                     if sampled_from_policy and policy_action_idx is not None:
                         if action_meta is not None:
                             rare_award = float(action_meta.get("rare_award_funding", 0.0))
@@ -1778,10 +1785,7 @@ class RLAgent:
                         reward_other_component = 0.0
                         reward_shaping_coef = self._current_reward_shaping_coef()
                         if self.train_from_self_play:
-                            try:
-                                post_action_state = await game_instance.get_player_state(player_id)
-                            except Exception:
-                                post_action_state = None
+                            post_action_state = game_instance.peek_cached_state(player_id)
                             reward_breakdown = calculate_step_reward_decomposition(
                                 before_state=player_state,
                                 after_state=post_action_state,
@@ -2484,7 +2488,7 @@ class RLAgent:
         self,
         state_vector: np.ndarray,
         phase_index: int,
-        recurrent_state_np: np.ndarray,
+        recurrent_state: "torch.Tensor",
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
         """Forward pass dispatched to ThreadPoolExecutor.
 
@@ -2498,9 +2502,9 @@ class RLAgent:
         phase_tensor = torch.tensor(
             [phase_index], dtype=torch.long, device=device,
         )
-        recurrent_state_tensor = torch.tensor(
-            recurrent_state_np, dtype=torch.float32, device=device,
-        ).unsqueeze(0)
+        recurrent_state_tensor = recurrent_state.unsqueeze(0)
+        if recurrent_state_tensor.device != device:
+            recurrent_state_tensor = recurrent_state_tensor.to(device)
 
         with torch.no_grad():
             use_amp = device.type == "cuda"
@@ -2526,8 +2530,6 @@ class RLAgent:
             policy_logits = policy_logits.cpu()
             value = value.cpu()
             policy_probs = policy_probs.cpu()
-            if recurrent_state_out is not None:
-                recurrent_state_out = recurrent_state_out.cpu()
 
         return policy_logits, value, recurrent_state_out, aux_predictions, policy_probs
 
@@ -2542,11 +2544,10 @@ class RLAgent:
         try:
             phase_index = int(self._extract_phase_index(player_state))
             recurrent_state_in = self._get_recurrent_state_for_player(player_id)
-            recurrent_state_np = recurrent_state_in.detach().cpu().numpy()
 
             if self._inference_batcher is not None:
                 policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = (
-                    await self._inference_batcher.infer(state_vector, phase_index, recurrent_state_np)
+                    await self._inference_batcher.infer(state_vector, phase_index, recurrent_state_in)
                 )
             else:
                 loop = asyncio.get_running_loop()
@@ -2556,7 +2557,7 @@ class RLAgent:
                     self._sync_forward_and_probs,
                     state_vector,
                     phase_index,
-                    recurrent_state_np,
+                    recurrent_state_in,
                 )
 
             if recurrent_state_out is not None and player_id:
@@ -2605,17 +2606,12 @@ class RLAgent:
             if not available_actions:
                 return None, None, False, None
                  
-            # Log available action types for debugging
-            action_types = []
-            option_titles = waiting_for.get('options', []) if waiting_for.get('type') == 'or' else []
-            card_mask_base = int(self.action_decoder.action_types.get('SELECT_CARD_MASK', -1))
-            card_mask_limit = int(getattr(self.action_decoder, 'card_selection_mask_limit', 0) or 0)
-            startup_base = int(self.action_decoder.action_types.get('STARTUP_PLAN', -1))
-            startup_limit = int(getattr(self.action_decoder, 'startup_plan_limit', 0) or 0)
-            for action_idx in available_actions:
-                action_types.append(self._describe_action(action_idx, player_state))
-            
-            logger.info(f"Available actions: {action_types}")
+            if logger.isEnabledFor(logging.DEBUG):
+                action_types = [
+                    self._describe_action(action_idx, player_state)
+                    for action_idx in available_actions
+                ]
+                logger.debug(f"Available actions: {action_types}")
              
             # Optional: adjust weights for OR menus based on option titles to avoid passing.
             # When PPO is enabled, these heuristic probability reweightings are

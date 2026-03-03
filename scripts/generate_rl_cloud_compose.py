@@ -39,6 +39,7 @@ DYNAMIC_ENV_KEYS = {
     "AGENT_POLL_INTERVAL_SEC",
     "AGENT_FAILURE_PAUSE_SEC",
     "AGENT_POST_MOVE_SLEEP_SEC",
+    "AGENT_INFERENCE_BATCH_DEADLINE_MS",
     "TM_SEND_INPUT_INITIAL_CARDS_JITTER_MS",
     "AGENT_INFERENCE_THREADS",
     "TM_SERVER_SLOT_WAIT_TIMEOUT_SEC",
@@ -429,6 +430,10 @@ def _build_dynamic_env(
     if post_move_sleep >= 0:
         env_items.append(f"AGENT_POST_MOVE_SLEEP_SEC={post_move_sleep:.3f}")
 
+    batch_deadline = float(args.agent_inference_batch_deadline_ms)
+    if batch_deadline > 0:
+        env_items.append(f"AGENT_INFERENCE_BATCH_DEADLINE_MS={batch_deadline:.1f}")
+
     initial_cards_jitter_ms = int(args.initial_cards_jitter_ms)
     if initial_cards_jitter_ms < 0:
         if training.profile == "saturate":
@@ -791,6 +796,11 @@ def parse_args() -> argparse.Namespace:
         "--agent-post-move-sleep-sec",
         type=float,
         default=float(os.getenv("RL_AGENT_POST_MOVE_SLEEP_SEC", "-1")),
+    )
+    parser.add_argument(
+        "--agent-inference-batch-deadline-ms",
+        type=float,
+        default=float(os.getenv("RL_AGENT_INFERENCE_BATCH_DEADLINE_MS", "1.0")),
     )
     parser.add_argument(
         "--initial-cards-jitter-ms",

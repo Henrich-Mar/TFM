@@ -59,6 +59,15 @@ class GameInstance:
         # get_player_state call can return it without a network round-trip.
         self._cached_player_state: Dict[str, Dict[str, Any]] = {}  # player_id -> state
 
+    def peek_cached_state(self, player_id: str) -> Optional[Dict[str, Any]]:
+        """Return the cached post-action state without consuming it.
+
+        Unlike ``get_player_state`` (which pops the cache entry), this leaves
+        the cache intact so the next ``get_player_state`` call still benefits
+        from the zero-network-trip fast path.
+        """
+        return self._cached_player_state.get(str(player_id))
+
     @staticmethod
     def _env_flag(name: str, default: bool = False) -> bool:
         value = str(os.getenv(name, "1" if default else "0")).strip().lower()

@@ -283,21 +283,13 @@ def _apply_env_overrides(env_items: Iterable[str], overrides: Dict[str, str]) ->
 
 
 def _coordinator_role_env_overrides(coord_index: int) -> Dict[str, str]:
-    # coord_index is 0-based.
-    if int(coord_index) <= 0:
-        return {
-            "PPO_ENABLE": "1",
-            "SAVE_TOP_K": "2",
-            "SAVE_EVERY_N_GENERATIONS": "1",
-            "MAX_SAVED_GENERATIONS": "30",
-            "TRAINING_POOL_EXTRA_CHECKPOINTS": "/app/rl-models-global/champion/current/champion.pth",
-        }
+    # All coordinators train with PPO and save checkpoints.
     return {
-        "PPO_ENABLE": "0",
-        "SAVE_TOP_K": "1",
-        "SAVE_EVERY_N_GENERATIONS": "3",
-        "MAX_SAVED_GENERATIONS": "15",
-        "FIXED_BENCHMARK_ENABLED": "0",
+        "PPO_ENABLE": "1",
+        "SAVE_TOP_K": "2",
+        "SAVE_EVERY_N_GENERATIONS": "1",
+        "MAX_SAVED_GENERATIONS": "30",
+        "TRAINING_POOL_EXTRA_CHECKPOINTS": "/app/rl-models-global/champion/current/champion.pth",
     }
 
 
@@ -1088,6 +1080,21 @@ def main() -> int:
             profile=profile,
             coordinator_games_target=coordinator_games_target,
         )
+
+    # When per-coordinator game caps are set, trim server_count so we don't
+    # spin up idle servers that will never host a game.
+    global_cap = int(args.global_game_cap_per_coord)
+    if global_cap > 0 and capacity.games_per_server > 0:
+        needed_servers_per_coord = max(1, math.ceil(global_cap / capacity.games_per_server))
+        max_needed_servers = needed_servers_per_coord * num_coordinators
+        if capacity.server_count > max_needed_servers:
+            print(
+                "Trimming server_count %d -> %d (cap=%d/coord × %d coords ÷ %d games/server)"
+                % (capacity.server_count, max_needed_servers, global_cap,
+                   num_coordinators, capacity.games_per_server)
+            )
+            capacity.server_count = max_needed_servers
+            capacity.global_game_concurrency = max(1, max_needed_servers * capacity.games_per_server)
 
     base_env = _extract_env_from_base_compose(Path(args.base_compose))
     base_env_map = _env_list_to_map(base_env)

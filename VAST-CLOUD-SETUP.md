@@ -172,7 +172,7 @@ export AGENT_INFERENCE_BATCH_SIZE=64
 export AGENT_INFERENCE_THREADS=8
 export PPO_PARALLEL_AGENTS=6
 export PPO_EXECUTOR_WORKERS=6
-export TM_TRANSPORT_TIMING_DEBUG=1
+#export TM_TRANSPORT_TIMING_DEBUG=1
 export TM_HTTP_PREWARM_CONNECTIONS=4
 export RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7
 chmod +x start-rl-cloud-training.sh
@@ -322,8 +322,7 @@ ORCH_WIN_RATE_MARGIN=0.03
 ```
 
 Coordinator role defaults in multi-coordinator mode:
-- `rl-coordinator-1` (trainer): `PPO_ENABLE=1`, `SAVE_TOP_K=2`, `SAVE_EVERY_N_GENERATIONS=1`, `MAX_SAVED_GENERATIONS=30`, `TRAINING_POOL_EXTRA_CHECKPOINTS=/app/rl-models-global/champion/current/champion.pth`
-- `rl-coordinator-2+` (lightweight): `PPO_ENABLE=0`, `SAVE_TOP_K=1`, `SAVE_EVERY_N_GENERATIONS=3`, `MAX_SAVED_GENERATIONS=15`, `FIXED_BENCHMARK_ENABLED=0`
+- **All coordinators** (trainer): `PPO_ENABLE=1`, `SAVE_TOP_K=2`, `SAVE_EVERY_N_GENERATIONS=1`, `MAX_SAVED_GENERATIONS=30`, `TRAINING_POOL_EXTRA_CHECKPOINTS=/app/rl-models-global/champion/current/champion.pth`
 
 Artifacts:
 - Current champion checkpoint: `rl-models-global/champion/current/champion.pth`

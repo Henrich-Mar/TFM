@@ -79,10 +79,10 @@ Run the hardware benchmark to discover optimal parameters for your machine:
 ```bash
 cd ~/tfm-cloud/TFM
 # If the stack is running:
-bash scripts/benchmark_training.sh
+bash benchmark_training.sh
 
 # Or one-shot without a running stack:
-bash scripts/benchmark_training.sh --ppo-rollout-steps 16384
+bash benchmark_training.sh --ppo-rollout-steps 16384
 ```
 
 The benchmark tests:

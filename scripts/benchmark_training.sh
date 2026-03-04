@@ -22,6 +22,10 @@ fi
 
 echo "Using compose file: $COMPOSE_FILE"
 
+# The benchmark script lives in rl-environment/ which is mounted as /app
+# inside the coordinator container.
+BENCH_CMD="python benchmark_training.py"
+
 # If the compose stack is already running, exec into the coordinator.
 COORD_SERVICE=""
 if docker compose -f "$COMPOSE_FILE" ps --status=running 2>/dev/null | grep -q "rl-coordinator"; then
@@ -33,23 +37,12 @@ fi
 if [ -n "$COORD_SERVICE" ]; then
     echo "Running benchmark inside existing $COORD_SERVICE container..."
     docker compose -f "$COMPOSE_FILE" exec "$COORD_SERVICE" \
-        python scripts/benchmark_training.py "$@"
+        $BENCH_CMD "$@"
 else
     # Use 'docker compose run' — builds if needed, sets up GPU, volumes,
     # env vars all from the compose file automatically.
     echo "No running coordinator found. Starting one-shot benchmark via docker compose run..."
-    docker compose -f "$COMPOSE_FILE" run --rm --build \
-        -e AGENT_HIDDEN_SIZE="${AGENT_HIDDEN_SIZE:-1024}" \
-        -e AGENT_NUM_LAYERS="${AGENT_NUM_LAYERS:-8}" \
-        -e AGENT_CARD_TOKEN_DIM="${AGENT_CARD_TOKEN_DIM:-20}" \
-        -e AGENT_TABLEAU_TOKEN_COUNT="${AGENT_TABLEAU_TOKEN_COUNT:-10}" \
-        -e AGENT_HAND_TOKEN_COUNT="${AGENT_HAND_TOKEN_COUNT:-4}" \
-        -e AGENT_OPPONENT_TOKEN_COUNT="${AGENT_OPPONENT_TOKEN_COUNT:-6}" \
-        -e AGENT_TRANSFORMER_EMBED_DIM="${AGENT_TRANSFORMER_EMBED_DIM:-256}" \
-        -e AGENT_TRANSFORMER_HEADS="${AGENT_TRANSFORMER_HEADS:-16}" \
-        -e AGENT_TRANSFORMER_LAYERS="${AGENT_TRANSFORMER_LAYERS:-4}" \
-        -e POPULATION_SIZE="${POPULATION_SIZE:-16}" \
-        -e GAMES_PER_EVAL="${GAMES_PER_EVAL:-6}" \
+    docker compose -f "$COMPOSE_FILE" run --rm --build --no-deps \
         rl-coordinator \
-        python scripts/benchmark_training.py "$@"
+        $BENCH_CMD "$@"
 fi

@@ -765,6 +765,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    try:
+        import uvloop
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass  # uvloop not available (e.g. Windows), use default
     asyncio.run(orchestrator_loop(once=bool(args.once)))
     return 0
 

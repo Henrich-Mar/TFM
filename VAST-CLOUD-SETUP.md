@@ -144,7 +144,7 @@ chmod +x start-rl-cloud-training.sh
 ```
 #copy pasted from benchmark : 
   export RL_TRAINING_PROFILE=saturate
-  export RL_CPU_SERVER_RATIO=0.9 
+  export RL_CPU_SERVER_RATIO=0.9
   export RL_GAMES_PER_SERVER=6
   export PPO_MINIBATCH_SIZE=2048
   export AGENT_INFERENCE_BATCH_SIZE=64
@@ -152,10 +152,12 @@ chmod +x start-rl-cloud-training.sh
   export RL_SERVER_MEM_MB=1400
   export RL_AGENT_POLL_INTERVAL_SEC=0.03
   export RL_AGENT_FAILURE_PAUSE_SEC=0.05
-  export RL_GAMES_PER_EVAL=10
+  export RL_GAMES_PER_EVAL=20
   export RL_INFRA_OVERHEAD_MB=6144
-  export RL_TM_GAME_TIMEOUT_SEC=1200
+  export RL_TM_GAME_TIMEOUT_SEC=2400
   export RL_POPULATION_SIZE=16
+  export RL_NUM_COORDINATORS=6   # or 3
+  export RL_COORDINATOR_BASE_PORT=5100
 
 
 
@@ -178,6 +180,28 @@ When a CUDA GPU is available inside the coordinator container (requires NVIDIA C
 | `AGENT_INFERENCE_THREADS` | `0` (auto) | Thread pool size. Auto picks 4 for CUDA, `min(32, cpu_count)` for CPU. |
 
 With the saturate profile on a single-GPU host, the 16 agents consume ~2 GB VRAM for inference (FP16), leaving ~9 GB for PPO training batches.
+
+### Coordinator asyncio optimizations (automatic)
+
+Coordinator and champion orchestrator use **uvloop** when available (Linux): 2–4x faster event loop for HTTP and game I/O. On Windows, the default asyncio loop is used.
+
+**PPO offload**: PPO training runs in a dedicated `ThreadPoolExecutor`, so the event loop stays responsive for HTTP, polling, and game handling. Optional tuning:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `PPO_EXECUTOR_WORKERS` | `4` | Thread pool size for PPO. Increase if PPO becomes a bottleneck (1–16). |
+
+### If games exceed ~1200s (long game duration)
+
+Per-move latency can be acceptable while full game duration is still too high when draft-heavy options are enabled.
+Use the fast training preset (no draft, no Moon/Venus):
+
+```bash
+export RL_GAME_OPTIONS_FILE=/app/game_options.fast_training.json
+./start-rl-cloud-training.sh
+```
+
+The cloud compose generator now forwards this into coordinator env as `GAME_OPTIONS_FILE`.
 
 ## 6) Monitor
 

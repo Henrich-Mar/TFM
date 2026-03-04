@@ -1901,4 +1901,9 @@ async def main():
         await asyncio.shield(coordinator.shutdown())
 
 if __name__ == "__main__":
+    try:
+        import uvloop
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass  # uvloop not available (e.g. Windows), use default
     asyncio.run(main())

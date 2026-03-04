@@ -85,6 +85,51 @@ def _get_inference_executor() -> ThreadPoolExecutor:
         return _inference_executor
 
 
+# Thread pool for offloading PPO optimization off the asyncio event loop.
+# Keeps the event loop responsive for HTTP/game handling during training.
+_ppo_executor: Optional[ThreadPoolExecutor] = None
+_ppo_executor_lock = threading.Lock()
+
+
+def _get_ppo_executor() -> ThreadPoolExecutor:
+    """Return the shared PPO thread pool, creating it on first use."""
+    global _ppo_executor
+    with _ppo_executor_lock:
+        if _ppo_executor is not None:
+            return _ppo_executor
+        try:
+            n = int(os.getenv("PPO_EXECUTOR_WORKERS", "4"))
+        except Exception:
+            n = 4
+        n = max(1, min(n, 16))
+        _ppo_executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="agent_ppo")
+        return _ppo_executor
+
+
+def _run_ppo_update_sync(
+    agent: "RLAgent",
+    steps: List[PPORolloutStep],
+    current_entropy_coef: float,
+    policy_temp: float,
+) -> Dict[str, Any]:
+    """Run PPO optimization synchronously (for executor). Must not call async code."""
+    agent.ppo_hparams.entropy_coef = float(current_entropy_coef)
+    metrics = optimize_ppo_policy(
+        network=agent.network,
+        optimizer=agent.optimizer,
+        steps=steps,
+        ppo=agent.ppo_hparams,
+        policy_temperature=policy_temp,
+    )
+    if metrics:
+        metrics.update(agent._adapt_ppo_learning_rate(float(metrics.get("ppo/approx_kl", 0.0))))
+        metrics["ppo/learning_rate"] = float(agent.optimizer.param_groups[0].get("lr", 0.0))
+        metrics["ppo/target_kl"] = float(agent.ppo_hparams.target_kl)
+        metrics["ppo/entropy_coef"] = float(current_entropy_coef)
+    agent.network.eval()
+    return metrics or {}
+
+
 # ---------------------------------------------------------------------------
 # Batched GPU inference: collects per-agent inference requests from
 # concurrent games and runs one batched forward pass on the GPU.
@@ -2942,7 +2987,7 @@ class RLAgent:
         )
 
     async def optimize_from_rollout_buffer(self, max_steps: Optional[int] = None) -> Dict[str, Any]:
-        """Run PPO optimization from buffered rollout data."""
+        """Run PPO optimization from buffered rollout data. Offloaded to thread pool to keep event loop responsive."""
         if not self.ppo_enable:
             return {}
 
@@ -2950,11 +2995,11 @@ class RLAgent:
         take = max(1, take)
         expected_schema_version = str(self.state_schema_version or "v1")
         schema_filtered = 0
+        steps: List[PPORolloutStep] = []
 
         async with self.training_lock:
             if not self.rollout_buffer:
                 return {}
-            steps: List[PPORolloutStep] = []
             while self.rollout_buffer and len(steps) < take:
                 candidate = self.rollout_buffer.popleft()
                 if str(getattr(candidate, "state_schema_version", "")) != expected_schema_version:
@@ -2962,24 +3007,21 @@ class RLAgent:
                     continue
                 steps.append(candidate)
 
-            if not steps:
-                return {"rollout/steps": 0, "rollout/schema_filtered": int(schema_filtered)}
+        if not steps:
+            return {"rollout/steps": 0, "rollout/schema_filtered": int(schema_filtered)}
 
-            current_entropy_coef = float(self._current_ppo_entropy_coef())
-            self.ppo_hparams.entropy_coef = float(current_entropy_coef)
-            metrics = optimize_ppo_policy(
-                network=self.network,
-                optimizer=self.optimizer,
-                steps=steps,
-                ppo=self.ppo_hparams,
-                policy_temperature=max(float(self._effective_policy_temperature()), 1e-3),
-            )
-            if metrics:
-                metrics.update(self._adapt_ppo_learning_rate(float(metrics.get("ppo/approx_kl", 0.0))))
-                metrics["ppo/learning_rate"] = float(self.optimizer.param_groups[0].get("lr", 0.0))
-                metrics["ppo/target_kl"] = float(self.ppo_hparams.target_kl)
-                metrics["ppo/entropy_coef"] = float(current_entropy_coef)
-            self.network.eval()
+        current_entropy_coef = float(self._current_ppo_entropy_coef())
+        policy_temp = max(float(self._effective_policy_temperature()), 1e-3)
+
+        loop = asyncio.get_running_loop()
+        metrics = await loop.run_in_executor(
+            _get_ppo_executor(),
+            _run_ppo_update_sync,
+            self,
+            steps,
+            current_entropy_coef,
+            policy_temp,
+        )
 
         metrics["rollout/schema_filtered"] = int(schema_filtered)
         if metrics:

@@ -144,33 +144,36 @@ export RL_TM_GAME_TIMEOUT_SEC=1200   # if games cancelled unexpectedly
 chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
 ```
-#copy pasted from benchmark : 
-  export RL_TRAINING_PROFILE=saturate
-  export RL_CPU_SERVER_RATIO=0.9
-  export RL_GAMES_PER_SERVER=6
-  export PPO_MINIBATCH_SIZE=2048
-  export AGENT_INFERENCE_BATCH_SIZE=64
-  export AGENT_INFERENCE_THREADS=8
-  export RL_SERVER_MEM_MB=1400
-  export RL_AGENT_POLL_INTERVAL_SEC=0.03
-  export RL_AGENT_FAILURE_PAUSE_SEC=0.05
-  export RL_GAMES_PER_EVAL=20
-  export RL_INFRA_OVERHEAD_MB=6144
-  export RL_TM_GAME_TIMEOUT_SEC=2400
-  export RL_GLOBAL_GAME_CAP_PER_COORD=20
-  export RL_TOURNAMENT_CAP_PER_COORD=20
-  export RL_POPULATION_SIZE=16
-  export RL_NUM_COORDINATORS=6   # or 3
-  export RL_COORDINATOR_BASE_PORT=5100
-  export PPO_PARALLEL_AGENTS=6   # viac paralelných PPO (pozor na VRAM)
-  export PPO_EXECUTOR_WORKERS=6
-  #debug 
-  # Enable timing diagnostics to inspect bottlenecks
-  export TM_TRANSPORT_TIMING_DEBUG=1
-  # Enable connection pre-warming (2–4 connections per server)
-  export TM_HTTP_PREWARM_CONNECTIONS=4
+### Low-latency optimized (1 game/server, 40 vCPU / 387 GB)
+
+```bash
+export RL_TRAINING_PROFILE=saturate
+export RL_CPU_SERVER_RATIO=0.925
+export RL_GAMES_PER_SERVER=1
+export RL_SERVER_MEM_MB=900
+export RL_NODE_HEAP_MB=512
+export RL_GLOBAL_GAME_CAP_PER_COORD=6
+export RL_TOURNAMENT_CAP_PER_COORD=6
+export RL_NUM_COORDINATORS=6
+export RL_COORDINATOR_BASE_PORT=5100
+export RL_COORDINATORS_SHARE_GPU=1
+export RL_AGENT_POLL_INTERVAL_SEC=0.03
+export RL_AGENT_FAILURE_PAUSE_SEC=0.05
+export RL_GAMES_PER_EVAL=20
+export RL_INFRA_OVERHEAD_MB=6144
+export RL_TM_GAME_TIMEOUT_SEC=2400
+export RL_POPULATION_SIZE=16
+export PPO_MINIBATCH_SIZE=2048
+export AGENT_INFERENCE_BATCH_SIZE=64
+export AGENT_INFERENCE_THREADS=8
+export PPO_PARALLEL_AGENTS=6
+export PPO_EXECUTOR_WORKERS=6
+export TM_TRANSPORT_TIMING_DEBUG=1
+export TM_HTTP_PREWARM_CONNECTIONS=4
+export RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7
 chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
+```
 
 
 You can verify the generated training volume in `docker-compose.rl_cloud.generated.yml`:

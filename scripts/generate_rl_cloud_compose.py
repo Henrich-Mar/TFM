@@ -612,8 +612,10 @@ def _render_compose(
 
         # NODE_OPTIONS only allows a restricted set of flags (V8 security policy).
         # --optimize-for-size, --gc-interval, --expose-gc are all blocked.
-        # Only --max-old-space-size is safe and reliable here.
-        node_options = f"--max-old-space-size={plan.node_heap_mb}"
+        # --max-old-space-size and --max-semi-space-size are whitelisted.
+        # Larger semi-space (64 MB vs default ~2-4 MB) reduces minor GC pause
+        # frequency for game servers that allocate many short-lived objects per turn.
+        node_options = f"--max-old-space-size={plan.node_heap_mb} --max-semi-space-size=64"
 
         lines.extend(
             [

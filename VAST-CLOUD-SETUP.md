@@ -152,8 +152,10 @@ chmod +x start-rl-cloud-training.sh
   export RL_SERVER_MEM_MB=1400
   export RL_AGENT_POLL_INTERVAL_SEC=0.03
   export RL_AGENT_FAILURE_PAUSE_SEC=0.05
-  export RL_GAMES_PER_EVAL=30
+  export RL_GAMES_PER_EVAL=10
   export RL_INFRA_OVERHEAD_MB=6144
+  export RL_TM_GAME_TIMEOUT_SEC=1200
+  export RL_POPULATION_SIZE=128
 
 
 

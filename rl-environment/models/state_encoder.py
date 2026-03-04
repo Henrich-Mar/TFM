@@ -7,6 +7,8 @@ import os
 import json
 import logging
 
+from .rust_backend import get_rust_module
+
 logger = logging.getLogger(__name__)
 
 class StateEncoder:
@@ -142,58 +144,21 @@ class StateEncoder:
                 player (0 = first action slot, 1 = second action slot, …).
                 Supplied by the agent so the network can plan sequences.
         """
-        features = []
-        try:
-            # Extract main sections
-            game_state = player_state.get('game', {})
-            player = player_state.get('thisPlayer', {})
-            
-            # Global parameters (4 features, normalized)
-            features.extend(self._encode_global_parameters(game_state))
-            
-            # Player resources (8 features, normalized)
-            features.extend(self._encode_player_resources(player))
-            
-            # Player production (8 features, normalized)
-            features.extend(self._encode_player_production(player))
-            
-            # Player tableau/played cards (50 features)
-            features.extend(self._encode_tableau(player))
-            
-            # Cards in hand (50 features)
-            features.extend(self._encode_hand_cards(player_state))
-            
-            # Board state (100 features)
-            features.extend(self._encode_board_state(game_state, player))
-            
-            # Game phase and generation (10 features, slots 7-9 now carry turn progress)
-            features.extend(self._encode_game_phase(game_state, turn_action_count))
-            
-            # Opponents state (simplified, 100 features)
-            features.extend(self._encode_opponents_state(player_state.get('players', []), player))
-            
-            # Current action context (50 features)
-            features.extend(self._encode_action_context(player_state))
-            
-            # Awards and milestones (504 features: 70 milestones * 4 + 56 awards * 4)
-            # For each milestone/award: [exists_in_game, I_have_it, opponent_has_it, my_progress_normalized]
-            features.extend(self._encode_awards_milestones(game_state, player))
-            
-            # Pad or truncate to exact size
-            features = features[:self.state_size]
-            while len(features) < self.state_size:
-                features.append(0.0)
+        rust_tfm_rl = get_rust_module(required=True)
 
-            encoded = np.array(features, dtype=np.float32)
-            self._inject_card_token_features(encoded, player_state)
-            return encoded
-            
-        except Exception as e:
-            logger.error(f"Error encoding state: {e}")
-            # Return zero vector as fallback
-            return np.zeros(self.state_size, dtype=np.float32)
-    
-    
+        # The JSON payload is passed as a raw string to bypass Python object churn.
+        rust_encoded = rust_tfm_rl.encode_state(
+            json.dumps(player_state),
+            int(turn_action_count),
+            int(self.state_size),
+        )
+        encoded = np.array(rust_encoded, dtype=np.float32)
+        if encoded.shape != (int(self.state_size),):
+            raise RuntimeError(
+                f"Rust encoder returned invalid shape {encoded.shape}, expected ({int(self.state_size)},)"
+            )
+        self._inject_card_token_features(encoded, player_state)
+        return encoded
 
     def _encode_global_parameters(self, game_state: Dict[str, Any]) -> List[float]:
         """Encode global terraforming parameters and Moon parameters with proper discrete value handling"""
@@ -425,18 +390,16 @@ class StateEncoder:
             'Venus', 'Plant', 'Microbe', 'Animal', 'City', 'Moon',
             'Mars', 'Crime', 'Wild', 'Event', 'Clone',
         ]
+        rust_tfm_rl = get_rust_module(required=True)
+        player_json = json.dumps(player)
 
         def _affordability(cost: float, tags: Dict[str, int]) -> float:
-            purchasing_power = mc
-            if tags.get('Building', 0) > 0:
-                purchasing_power += steel * steel_value
-            if tags.get('Space', 0) > 0:
-                purchasing_power += titanium * titanium_value
-            if cost <= 0:
-                return 1.0
-            if purchasing_power >= cost:
-                return 1.0
-            return max(0.0, 1.0 - ((cost - purchasing_power) / 20.0))
+            return float(
+                rust_tfm_rl.estimate_affordability(
+                    player_json,
+                    json.dumps({'cost': cost, 'tags': tags}),
+                )
+            )
 
         logger.debug(
             "Hand cards=%s candidate_cards=%s waiting_type=%s for player %s",
@@ -451,12 +414,36 @@ class StateEncoder:
         total_hand_cost = sum(self._get_card_cost(card) for card in hand_cards)
         encoding[1] = min(total_hand_cost / 100.0, 1.0)
 
+        hand_affordable: Dict[int, bool] = {}
+        if hand_cards:
+            affordability_cards: List[Dict[str, Any]] = []
+            for card in hand_cards:
+                name = str(card.get('name', '') or '')
+                tags = self._get_card_tags(name, fallback=card.get('tags', {}))
+                affordability_cards.append(
+                    {
+                        'name': name,
+                        'cost': self._get_card_cost(card),
+                        'tags': tags,
+                    }
+                )
+            try:
+                flags = rust_tfm_rl.can_afford_cards(player_json, json.dumps(affordability_cards))
+                for idx, raw in enumerate(flags):
+                    hand_affordable[idx] = bool(raw)
+            except Exception:
+                hand_affordable = {}
+
         affordable_count = 0
-        for card in hand_cards:
+        for idx, card in enumerate(hand_cards):
             name = str(card.get('name', '') or '')
             tags = self._get_card_tags(name, fallback=card.get('tags', {}))
             cost = self._get_card_cost(card)
-            if _affordability(cost, tags) >= 0.99:
+            if hand_affordable:
+                is_affordable = bool(hand_affordable.get(idx, False))
+            else:
+                is_affordable = _affordability(cost, tags) >= 0.99
+            if is_affordable:
                 affordable_count += 1
             for tag_idx, tag_name in enumerate(tag_order):
                 if tags.get(tag_name, 0) > 0:
@@ -695,31 +682,13 @@ class StateEncoder:
     ) -> float:
         resolved_tags = tags or self._get_card_tags(str(card.get('name', '') or ''), fallback=card.get('tags', {}))
         cost = self._get_card_cost(card)
-
-        try:
-            mc = float(player.get('megaCredits', 0) or 0)
-            steel = float(player.get('steel', 0) or 0)
-            titanium = float(player.get('titanium', 0) or 0)
-            steel_value = float(player.get('steelValue', 2) or 2)
-            titanium_value = float(player.get('titaniumValue', 3) or 3)
-        except Exception:
-            mc = 0.0
-            steel = 0.0
-            titanium = 0.0
-            steel_value = 2.0
-            titanium_value = 3.0
-
-        purchasing_power = mc
-        if resolved_tags.get('Building', 0) > 0:
-            purchasing_power += steel * steel_value
-        if resolved_tags.get('Space', 0) > 0:
-            purchasing_power += titanium * titanium_value
-
-        if cost <= 0.0:
-            return 1.0
-        if purchasing_power >= cost:
-            return 1.0
-        return max(0.0, 1.0 - ((cost - purchasing_power) / 25.0))
+        rust_tfm_rl = get_rust_module(required=True)
+        return float(
+            rust_tfm_rl.estimate_affordability(
+                json.dumps(player),
+                json.dumps({'cost': cost, 'tags': resolved_tags}),
+            )
+        )
 
     def _get_card_metadata(self, card: Dict[str, Any]) -> Dict[str, Any]:
         name = str(card.get('name', '') or '')

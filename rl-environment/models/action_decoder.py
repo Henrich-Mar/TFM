@@ -9,6 +9,8 @@ import os
 import json
 import itertools
 
+from .rust_backend import get_rust_module
+
 logger = logging.getLogger(__name__)
 
 _CARD_SELECTION_MASK_BASE = 520
@@ -359,6 +361,28 @@ def _safe_int(value: Any, default: int = 0) -> int:
     except Exception:
         return int(default)
 
+
+def _rust_backend():
+    return get_rust_module(required=True)
+
+
+def _can_afford_cards_batch(player: Dict[str, Any], cards: List[Dict[str, Any]]) -> List[bool]:
+    backend = _rust_backend()
+    player_json = json.dumps(player or {})
+    payload_cards: List[Dict[str, Any]] = []
+    for card in cards:
+        payload_cards.append(
+            {
+                'name': str(card.get('name', '') or ''),
+                'calculatedCost': float(_card_cost(card)),
+                'cost': float(_card_cost(card)),
+                'tags': dict(_card_tags(card)),
+                'victoryPoints': float(_card_vp(card)),
+            }
+        )
+    out = backend.can_afford_cards(player_json, json.dumps(payload_cards))
+    return [bool(v) for v in out]
+
 def _is_special_card_prompt_title(title_l: str) -> bool:
     return (
         'standard project' in title_l
@@ -424,72 +448,35 @@ def _enumerate_card_selection_masks(
 ) -> List[int]:
     if not cards:
         return []
-
-    enabled_indices = [idx for idx, card in enumerate(cards) if not card.get('isDisabled', False)]
-    if not enabled_indices:
-        return []
-
-    min_pick = max(0, min(_safe_int(min_cards, 0), len(enabled_indices)))
-    max_pick = max(min_pick, min(_safe_int(max_cards, len(enabled_indices)), len(enabled_indices)))
-    if max_pick <= 0:
-        return [0] if min_pick == 0 else []
-
-    scored_indices = sorted(
-        enabled_indices,
-        key=lambda idx: _score_card_for_selection(cards[idx], player_state),
-        reverse=True,
-    )
-
-    candidate_budget = min(
-        len(scored_indices),
-        max(_CARD_SELECTION_CANDIDATE_LIMIT, min(max_pick, 14)),
-    )
-    candidate_indices = sorted(scored_indices[:candidate_budget])
-    score_map = {idx: _score_card_for_selection(cards[idx], player_state) for idx in candidate_indices}
-
-    ranked_masks: List[Tuple[float, int, int]] = []
-    if min_pick == 0:
-        ranked_masks.append((0.0, 0, 0))
-
-    start_pick = max(1, min_pick)
-    for pick_count in range(start_pick, max_pick + 1):
-        if pick_count > len(candidate_indices):
-            break
-        for combo in itertools.combinations(candidate_indices, pick_count):
-            mask = 0
-            combo_score = 0.0
-            for idx in combo:
-                mask |= (1 << idx)
-                combo_score += float(score_map.get(idx, 0.0))
-            combo_score += 0.03 * float(pick_count)
-            ranked_masks.append((combo_score, pick_count, mask))
-
-    ranked_masks.sort(key=lambda item: (item[0], item[1], -item[2]), reverse=True)
-
+    payload_cards: List[Dict[str, Any]] = []
+    for card in cards:
+        payload_cards.append(
+            {
+                'name': str(card.get('name', '') or ''),
+                'calculatedCost': float(_card_cost(card)),
+                'cost': float(_card_cost(card)),
+                'tags': dict(_card_tags(card)),
+                'victoryPoints': float(_card_vp(card)),
+                'isDisabled': bool(card.get('isDisabled', False)),
+            }
+        )
+    payload = {
+        'cards': payload_cards,
+        'minCards': _safe_int(min_cards, 0),
+        'maxCards': _safe_int(max_cards, len(cards)),
+        'playerState': player_state or {},
+    }
+    combos = _rust_backend().enumerate_card_selection_combos(json.dumps(payload), max(1, int(limit)))
     masks: List[int] = []
-    seen_masks = set()
-    for _, _, mask in ranked_masks:
-        if mask in seen_masks:
-            continue
-        selected_count = int(mask.bit_count()) if hasattr(int, 'bit_count') else bin(mask).count('1')
-        if selected_count < min_pick or selected_count > max_pick:
-            continue
+    for combo in combos:
+        mask = 0
+        for idx in combo:
+            try:
+                mask |= (1 << int(idx))
+            except Exception:
+                continue
         masks.append(mask)
-        seen_masks.add(mask)
-        if len(masks) >= max(1, int(limit)):
-            break
-
-    if masks:
-        return masks
-
-    fallback_target = max(min_pick, 1)
-    fallback_indices = scored_indices[:min(fallback_target, len(scored_indices))]
-    fallback_mask = 0
-    for idx in fallback_indices:
-        fallback_mask |= (1 << idx)
-    if fallback_mask > 0:
-        return [fallback_mask]
-    return [0] if min_pick == 0 else []
+    return masks
 
 def _decode_card_selection_mask_action(
     waiting_for: Dict[str, Any],
@@ -810,7 +797,7 @@ def _enumerate_startup_plan_payloads(
     project_max = min(project_max, len(project_cards))
     project_min = min(project_min, project_max)
 
-    top_candidates: List[Tuple[float, Dict[str, Any], str]] = []
+    top_candidates: List[Tuple[float, Dict[str, Any], Tuple[Any, ...], Dict[str, Any]]] = []
     for corp_card in corp_cards:
         corp_name = str(corp_card.get('name', '') or '')
         corp_score = _score_initial_card(corp_card, 'corporation', project_tag_counts)
@@ -877,15 +864,47 @@ def _enumerate_startup_plan_payloads(
                     sig_project = tuple(sorted(project_names))
                     signature = (corp_name, sig_prelude, sig_ceo, sig_project)
                     
-                    top_candidates.append((float(total_score + ceo_tag_bonus), payload, signature))
+                    top_candidates.append(
+                        (
+                            float(total_score + ceo_tag_bonus),
+                            payload,
+                            signature,
+                            {
+                                'index': len(top_candidates),
+                                'score': float(total_score + ceo_tag_bonus),
+                                'corp': corp_name,
+                                'prelude': list(prelude_names),
+                                'ceo': list(ceo_names),
+                                'project': list(project_names),
+                            },
+                        )
+                    )
 
     if not top_candidates:
         return []
 
+    rank_payload = {'candidates': [item[3] for item in top_candidates]}
+    ranked_json = _rust_backend().rank_startup_plans(
+        json.dumps(rank_payload),
+        max(1, int(max_plans)),
+    )
+    ranked = json.loads(str(ranked_json or "[]"))
+    ranked_payloads: List[Dict[str, Any]] = []
+    for row in ranked:
+        idx = _safe_int((row or {}).get('index', -1), -1)
+        if 0 <= idx < len(top_candidates):
+            ranked_payloads.append(top_candidates[idx][1])
+        if len(ranked_payloads) >= max(1, int(max_plans)):
+            break
+    if ranked_payloads:
+        return ranked_payloads
+
+    # Strict Rust cutover should always return ranked payloads, but keep this guard
+    # in case malformed ranking data is produced.
     top_candidates.sort(key=lambda item: (item[0], item[2]), reverse=True)
-    dedup: Set[Tuple] = set()
+    dedup: Set[Tuple[Any, ...]] = set()
     selected: List[Dict[str, Any]] = []
-    for _, payload, signature in top_candidates:
+    for _, payload, signature, _ in top_candidates:
         if signature in dedup:
             continue
         dedup.add(signature)
@@ -2475,40 +2494,14 @@ def _metadata_tags(card_name: str) -> Dict[str, int]:
             out[ts] = 1
     return out
 def _can_afford_card(player: Dict[str, Any], card: Dict[str, Any]) -> bool:
-    """Check if player can afford to play a card"""
-    cost = card.get('calculatedCost', card.get('cost', 0))
-    if cost <= 0:
-        return True
-        
-    player_mc = player.get('megaCredits', 0)
-    player_steel = player.get('steel', 0)
-    player_titanium = player.get('titanium', 0)
-    player_heat = player.get('heat', 0)
-    player_plants = player.get('plants', 0)
-    steel_value = player.get('steelValue', 2)
-    titanium_value = player.get('titaniumValue', 3)
-    
-    total_purchasing_power = player_mc
-    
-    # Add steel value for Building cards
-    tags = card.get('tags', {}) or _metadata_tags(card.get('name', ''))
-    if tags.get('Building'):
-        total_purchasing_power += player_steel * steel_value
-        
-    # Add titanium value for Space cards  
-    if tags.get('Space'):
-        total_purchasing_power += player_titanium * titanium_value
-    
-    # Check corporation-specific abilities (simplified)
-    corporation = player.get('corporation', {})
-    corp_name = corporation.get('name', '') if isinstance(corporation, dict) else str(corporation)
-    
-    # Helion can use heat as money
-    if 'helion' in corp_name.lower():
-        total_purchasing_power += player_heat
-        
-    # Check if they can afford it
-    return total_purchasing_power >= cost
+    payload_card = {
+        'name': str(card.get('name', '') or ''),
+        'calculatedCost': float(_card_cost(card)),
+        'cost': float(_card_cost(card)),
+        'tags': dict(_card_tags(card)),
+        'victoryPoints': float(_card_vp(card)),
+    }
+    return bool(_can_afford_cards_batch(player, [payload_card])[0])
 
 class ActionDecoder:
     def __init__(self):
@@ -2772,10 +2765,11 @@ class ActionDecoder:
                 if not available_actions and not is_selection and player_state:
                     # For playing cards, check affordability
                     player = player_state.get('thisPlayer', {})
-                    affordable_cards = []
-                    for i, card in enumerate(cards):
-                        if _can_afford_card(player, card):
-                            affordable_cards.append(i)
+                    affordability_flags = _can_afford_cards_batch(player, cards)
+                    affordable_cards = [
+                        i for i, is_affordable in enumerate(affordability_flags)
+                        if bool(is_affordable)
+                    ]
                     
                     # If we have affordable cards, only include those
                     if affordable_cards:

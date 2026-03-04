@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from models.agent import RLAgent, AgentConfig
 from models.action_decoder import ActionDecoder
 import unittest
+from unittest.mock import patch
 
 class TestActionLogging(unittest.TestCase):
     def setUp(self):
@@ -14,8 +15,13 @@ class TestActionLogging(unittest.TestCase):
         config = AgentConfig()
         # Mocking some env vars that RLAgent.__init__ might use
         os.environ["PPO_BATCH_SIZE"] = "32"
+        self._rust_patch = patch("models.agent.require_backend_info", return_value={"module": "rust_tfm_rl", "api_version": "1.0", "crate_version": "test"})
+        self._rust_patch.start()
         self.agent = RLAgent(config)
         self.agent.action_decoder = ActionDecoder()
+
+    def tearDown(self):
+        self._rust_patch.stop()
 
     def test_describe_play_card(self):
         player_state = {

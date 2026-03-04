@@ -22,6 +22,7 @@ from collections import deque
 from game_interface import GameInstance, ServerTransportError
 from .state_encoder import StateEncoder
 from .action_decoder import ActionDecoder
+from .rust_backend import require_backend_info
 from scoring import calculate_terminal_reward, calculate_step_reward_decomposition
 import random
 import aiohttp
@@ -781,6 +782,14 @@ class RLAgent:
         self._move_network_to_inference_device()
         self._inference_batcher: Optional[InferenceBatcher] = None
         self._init_inference_batcher()
+
+        rust_info = require_backend_info()
+        logger.info(
+            "Rust backend ready: module=%s api=%s crate=%s",
+            rust_info.get("module"),
+            rust_info.get("api_version"),
+            rust_info.get("crate_version"),
+        )
 
         # Game interaction components
         self.state_encoder = StateEncoder(

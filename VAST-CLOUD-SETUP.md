@@ -164,7 +164,13 @@ chmod +x start-rl-cloud-training.sh
   export RL_COORDINATOR_BASE_PORT=5100
   export PPO_PARALLEL_AGENTS=6   # viac paralelných PPO (pozor na VRAM)
   export PPO_EXECUTOR_WORKERS=6
-
+  #debug 
+  # Enable timing diagnostics to inspect bottlenecks
+  export TM_TRANSPORT_TIMING_DEBUG=1
+  # Enable connection pre-warming (2–4 connections per server)
+  export TM_HTTP_PREWARM_CONNECTIONS=4
+chmod +x start-rl-cloud-training.sh
+./start-rl-cloud-training.sh
 
 
 You can verify the generated training volume in `docker-compose.rl_cloud.generated.yml`:

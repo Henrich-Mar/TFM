@@ -29,6 +29,13 @@ def _json_loads(text: str) -> Any:
     return json.loads(text)
 
 
+def _json_loads_bytes(data: bytes) -> Any:
+    """Parse JSON from bytes; use orjson when available (avoids extra decode step)."""
+    if _USE_ORJSON:
+        return orjson.loads(data)
+    return json.loads(data.decode("utf-8"))
+
+
 def _json_dumps(obj: Any) -> str:
     """Serialize to JSON string; use orjson when available."""
     if _USE_ORJSON:
@@ -410,7 +417,7 @@ class GameInstance:
             async with session.get(f"{self.base_url}/api/game", 
                                       params={'id': self.game_id}) as response:
                 if response.status == 200:
-                    game_data = _json_loads(await response.text())
+                    game_data = _json_loads_bytes(await response.read())
 
                     # Find player by name
                     for player in game_data.get('players', []):
@@ -451,14 +458,29 @@ class GameInstance:
             max_retries = 3
 
         last_exc: Optional[Exception] = None
+        debug_timing = os.getenv("TM_TRANSPORT_TIMING_DEBUG", "0") == "1"
         for attempt_no in range(1, max_retries + 1):
             attempt_started = time.perf_counter()
             try:
                 session = self._get_session()
+                if debug_timing:
+                    t0 = time.perf_counter()
                 async with session.get(f"{self.base_url}/api/player",
                                           params={'id': player_id}) as response:
+                    if debug_timing:
+                        t1 = time.perf_counter()
                     if response.status == 200:
-                        player_state = _json_loads(await response.text())
+                        body = await response.read()
+                        if debug_timing:
+                            t2 = time.perf_counter()
+                        player_state = _json_loads_bytes(body)
+                        if debug_timing:
+                            t3 = time.perf_counter()
+                            logger.info(
+                                "TM transport timing get_player_state: connect_ttfb_ms=%.2f body_read_ms=%.2f parse_ms=%.2f total_ms=%.2f host=%s port=%s",
+                                (t1 - t0) * 1000, (t2 - t1) * 1000, (t3 - t2) * 1000, (t3 - t0) * 1000,
+                                self.server.host, self.server.port,
+                            )
                         run_id = self._extract_run_id_from_state(player_state)
                         if run_id:
                             self._latest_run_id_by_player[str(player_id)] = run_id
@@ -578,24 +600,39 @@ class GameInstance:
             if len(payload_preview) > 800:
                 payload_preview = payload_preview[:800] + "...(truncated)"
 
+        send_input_debug_timing = os.getenv("TM_TRANSPORT_TIMING_DEBUG", "0") == "1"
         for attempt in range(retry_attempts):
             attempt_no = attempt + 1
             attempt_started = time.perf_counter()
             try:
                 session = self._get_session()
+                if send_input_debug_timing:
+                    t0 = time.perf_counter()
                 async with session.post(
                     f"{self.base_url}/player/input",
                     params={'id': player_id},
                     data=_json_dumps_bytes(prepared_input_data),
                     headers={'Content-Type': 'application/json'},
                 ) as response:
+                    if send_input_debug_timing:
+                        t1 = time.perf_counter()
                     if response.status == 200:
                         # The TM server returns the full PlayerViewModel JSON
                         # on every successful input.  Cache it so the next
                         # get_player_state() call returns instantly without a
                         # network round-trip.
                         try:
-                            body = _json_loads(await response.text())
+                            body_bytes = await response.read()
+                            if send_input_debug_timing:
+                                t2 = time.perf_counter()
+                            body = _json_loads_bytes(body_bytes)
+                            if send_input_debug_timing:
+                                t3 = time.perf_counter()
+                                logger.info(
+                                    "TM transport timing send_player_input: connect_ttfb_ms=%.2f body_read_ms=%.2f parse_ms=%.2f total_ms=%.2f host=%s port=%s",
+                                    (t1 - t0) * 1000, (t2 - t1) * 1000, (t3 - t2) * 1000, (t3 - t0) * 1000,
+                                    self.server.host, self.server.port,
+                                )
                             if isinstance(body, dict):
                                 run_id = self._extract_run_id_from_state(body)
                                 if run_id:
@@ -605,7 +642,7 @@ class GameInstance:
                             pass
                         return True
                     else:
-                        response_text = await response.text()
+                        response_text = (await response.read()).decode("utf-8")
                         logger.error(
                             "Failed to send input for player %s. Status: %s, Response: %s, "
                             "Input: %s, GameURL: %s, PlayerAPI(public): %s, PlayerAPI(internal): %s",
@@ -728,7 +765,7 @@ class GameInstance:
             async with session.get(f"{self.base_url}/api/game", 
                                       params={'id': self.game_id}) as response:
                 if response.status == 200:
-                    return _json_loads(await response.text())
+                    return _json_loads_bytes(await response.read())
                 else:
                     error = ValueError(f"Failed to get final state: {response.status}")
                     if int(response.status) >= 500:
@@ -951,9 +988,47 @@ class GameServerCluster:
         if self.session is None or self.session.closed:
             self.session = self._build_session(timeout_total=timeout_total)
         return self.session
+
+    async def _prewarm_connections(self) -> None:
+        """Open connections to each game server to eliminate cold-start TCP handshake.
+
+        Controlled by TM_HTTP_PREWARM_CONNECTIONS (0=disabled, 2-4 recommended).
+        Issues lightweight GETs to each server in parallel.
+        """
+        prewarm = self._parse_int_env("TM_HTTP_PREWARM_CONNECTIONS", 0, min_value=0)
+        if prewarm <= 0:
+            return
+        prewarm = min(prewarm, 8)
+        session = self.session
+        if session is None or session.closed:
+            return
+        timeout = aiohttp.ClientTimeout(total=5.0)
+
+        async def _prewarm_one(url: str, server: GameServer) -> None:
+            try:
+                async with session.get(url, timeout=timeout) as resp:
+                    await resp.read()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("Prewarm GET to %s:%s failed: %s", server.host, server.port, e)
+
+        async def _prewarm_server(server: GameServer) -> None:
+            base = f"http://{server.host}:{server.port}"
+            tasks = [_prewarm_one(f"{base}/", server) for _ in range(prewarm)]
+            await asyncio.gather(*tasks)
+
+        try:
+            await asyncio.gather(*(_prewarm_server(s) for s in self.servers))
+            logger.info("Connection prewarm complete: %d requests per server", prewarm)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("Connection prewarm had errors (non-fatal): %s", e)
         
     async def __aenter__(self):
         self.session = self.ensure_session(timeout_total=None)
+        await self._prewarm_connections()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -1298,14 +1373,14 @@ class GameServerCluster:
                     headers={'Content-Type': 'application/json'},
                 ) as response:
                     if response.status != 200:
-                        response_text = await response.text()
+                        response_text = (await response.read()).decode("utf-8")
                         error = RuntimeError(f"Failed to create game: {response.status} - {response_text}")
                         # Do not retry likely caller/config errors.
                         setattr(error, "_retryable", bool(response.status >= 500 or response.status in (408, 429)))
                         raise error
 
                     # Get the created game data
-                    game_data = _json_loads(await response.text())
+                    game_data = _json_loads_bytes(await response.read())
 
                     # Extract game ID from response (authoritative)
                     actual_game_id = game_data.get('id')

@@ -498,8 +498,8 @@ class TerraformingMarsNetwork(nn.Module):
         # ---------------------------------------------------------------------------
         import math as _math
         _bias_init = torch.zeros(10, dtype=torch.float32)
-        _bias_init[0] = _math.log(1.55)   # play_card
-        _bias_init[1] = _math.log(0.75)   # standard_project
+        _bias_init[0] = _math.log(1.80)   # play_card
+        _bias_init[1] = _math.log(0.65)   # standard_project
         _bias_init[2] = 0.0               # select_option
         _bias_init[3] = 0.0               # payment_action
         _bias_init[4] = 0.0               # card_selection_mask

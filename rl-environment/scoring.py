@@ -1368,9 +1368,9 @@ def calculate_step_reward_decomposition(
     if isinstance(action_input, dict):
         action_type = str(action_input.get('type', '') or '').lower()
     if action_type == 'projectcard' or (action_type == 'card' and 'card' in action_input):
-        cards_vp_component += 0.07
+        cards_vp_component += 0.14
     elif action_type == 'standardproject':
-        other_component -= 0.04
+        other_component -= 0.05
         affordable_cards = sum(1 for card in before_hand if _can_afford_card_now(card, before_player))
         if affordable_cards > 0:
             other_component -= min(0.08, 0.02 * float(affordable_cards))

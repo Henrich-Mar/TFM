@@ -106,7 +106,7 @@ export RL_INITIAL_CARDS_JITTER_MS=1200
 export RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0
 
 # Optional hard overrides (leave unset for auto from profile)
-export RL_GAMES_PER_EVAL=30
+export RL_GAMES_PER_EVAL=6
 # export RL_PPO_ROLLOUT_STEPS=131072
 export RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7
 export RL_TM_GAME_TIMEOUT_SEC=800   # if games cancelled unexpectedly

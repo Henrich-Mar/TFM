@@ -251,6 +251,47 @@ export RL_TRAINING_PROFILE=saturate
 
 Dashboards: `http://127.0.0.1:5000`, `http://127.0.0.1:5001`, etc.
 
+### Global champion orchestrator (multi-coordinator)
+
+When `RL_NUM_COORDINATORS>1`, the generated compose now includes `rl-champion-orchestrator`.
+It evaluates top checkpoints across coordinators and keeps one global champion under `./rl-models-global`.
+
+Default orchestrator contract:
+
+```bash
+ORCH_COORD_SOURCES=coord-1=/app/coord-models/coord-1,coord-2=/app/coord-models/coord-2
+ORCH_OUTPUT_ROOT=/app/rl-models-global
+ORCH_TRIGGER_EVERY_N_GENS=1
+ORCH_TOP_K_PER_COORD=2
+ORCH_GAMES_PER_CANDIDATE=6
+ORCH_GLOBAL_GAME_CONCURRENCY=2
+ORCH_TOURNAMENT_CONCURRENCY=2
+ORCH_MIN_GAMES_FOR_PROMOTION=24
+ORCH_MIN_COMPLETION_RATE=0.90
+ORCH_WIN_RATE_MARGIN=0.03
+```
+
+Coordinator role defaults in multi-coordinator mode:
+- `rl-coordinator-1` (trainer): `PPO_ENABLE=1`, `SAVE_TOP_K=2`, `SAVE_EVERY_N_GENERATIONS=1`, `MAX_SAVED_GENERATIONS=30`, `TRAINING_POOL_EXTRA_CHECKPOINTS=/app/rl-models-global/champion/current/champion.pth`
+- `rl-coordinator-2+` (lightweight): `PPO_ENABLE=0`, `SAVE_TOP_K=1`, `SAVE_EVERY_N_GENERATIONS=3`, `MAX_SAVED_GENERATIONS=15`, `FIXED_BENCHMARK_ENABLED=0`
+
+Artifacts:
+- Current champion checkpoint: `rl-models-global/champion/current/champion.pth`
+- Current champion manifest: `rl-models-global/champion/current/champion_manifest.json`
+- Round history: `rl-models-global/champion/history/<round_id>/`
+- Orchestrator state: `rl-models-global/orchestrator_state.json`
+
+Monitor:
+
+```bash
+docker compose -f docker-compose.rl_cloud.generated.yml logs -f rl-champion-orchestrator
+```
+
+Troubleshooting:
+- If champion updates never happen, verify `GAME_SERVERS` reachability from orchestrator and check `ORCH_COORD_SOURCES` mounts.
+- If promotion is too strict/slow, lower `ORCH_MIN_GAMES_FOR_PROMOTION` or `ORCH_WIN_RATE_MARGIN`.
+- If orchestrator competes too much with training throughput, lower `ORCH_GLOBAL_GAME_CONCURRENCY` (default `2`).
+
 Check coordinator logs for:
 - `No game server capacity available` (slot timeout)
 - `Failed to create game` (create_game retries exhausted)

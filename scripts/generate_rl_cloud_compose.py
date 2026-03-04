@@ -263,6 +263,51 @@ def _env_list_to_map(env_items: Iterable[str]) -> Dict[str, str]:
     return out
 
 
+def _apply_env_overrides(env_items: Iterable[str], overrides: Dict[str, str]) -> List[str]:
+    items = list(env_items)
+    positions: Dict[str, int] = {}
+    for idx, item in enumerate(items):
+        if "=" not in item:
+            continue
+        key = item.split("=", 1)[0].strip()
+        if key:
+            positions[key] = idx
+    for key, value in overrides.items():
+        token = f"{key}={value}"
+        if key in positions:
+            items[positions[key]] = token
+        else:
+            positions[key] = len(items)
+            items.append(token)
+    return items
+
+
+def _coordinator_role_env_overrides(coord_index: int) -> Dict[str, str]:
+    # coord_index is 0-based.
+    if int(coord_index) <= 0:
+        return {
+            "PPO_ENABLE": "1",
+            "SAVE_TOP_K": "2",
+            "SAVE_EVERY_N_GENERATIONS": "1",
+            "MAX_SAVED_GENERATIONS": "30",
+            "TRAINING_POOL_EXTRA_CHECKPOINTS": "/app/rl-models-global/champion/current/champion.pth",
+        }
+    return {
+        "PPO_ENABLE": "0",
+        "SAVE_TOP_K": "1",
+        "SAVE_EVERY_N_GENERATIONS": "3",
+        "MAX_SAVED_GENERATIONS": "15",
+        "FIXED_BENCHMARK_ENABLED": "0",
+    }
+
+
+def _build_orchestrator_coord_sources(num_coordinators: int) -> str:
+    return ",".join(
+        f"coord-{idx}=/app/coord-models/coord-{idx}"
+        for idx in range(1, max(1, int(num_coordinators)) + 1)
+    )
+
+
 def _safe_int_from_map(env_map: Dict[str, str], key: str, default: int) -> int:
     try:
         return int(str(env_map.get(key, str(default))).strip())
@@ -679,6 +724,7 @@ def _render_compose(
                     "    volumes:",
                     "      - ./rl-environment:/app",
                     f"      - ./{models_subdir}:/app/{models_subdir}",
+                    "      - ./rl-models-global:/app/rl-models-global",
                     "      - ./card_metadata.json:/app/card_metadata.json:ro",
                     # tmpfs for logs avoids host-disk I/O under high-concurrency
                     # saturate mode. Use a bind mount if you need log persistence.
@@ -698,6 +744,58 @@ def _render_compose(
                 lines.append(f"      - tfm-server-{i}")
             lines.append(f'    ports:')
             lines.append(f'      - "{coord_port}:5000"')
+
+        all_game_servers = ",".join(f"tfm-server-{i}:8080" for i in range(1, plan.server_count + 1))
+        coord_sources = _build_orchestrator_coord_sources(num_coordinators)
+        lines.extend(
+            [
+                "",
+                "  rl-champion-orchestrator:",
+                "    build:",
+                "      context: ./rl-environment",
+                "      dockerfile: Dockerfile.training",
+                "    command: python champion_orchestrator.py",
+                "    restart: unless-stopped",
+                "    volumes:",
+                "      - ./rl-environment:/app",
+                "      - ./rl-models-global:/app/rl-models-global",
+                "      - ./card_metadata.json:/app/card_metadata.json:ro",
+            ]
+        )
+        for idx in range(1, num_coordinators + 1):
+            lines.append(f"      - ./rl-models-coord-{idx}:/app/coord-models/coord-{idx}")
+        lines.extend(
+            [
+                "    tmpfs:",
+                "      - /app/logs:mode=0775",
+                "    environment:",
+                "      - GAME_SERVERS=" + all_game_servers,
+                "      - AGENT_INFERENCE_DEVICE=cpu",
+                "      - ORCH_TRAINER_COORD_ID=coord-1",
+                "      - ORCH_COORD_SOURCES=" + coord_sources,
+                "      - ORCH_OUTPUT_ROOT=/app/rl-models-global",
+                "      - ORCH_POLL_INTERVAL_SEC=20",
+                "      - ORCH_TRIGGER_EVERY_N_GENS=1",
+                "      - ORCH_TOP_K_PER_COORD=2",
+                "      - ORCH_GAMES_PER_CANDIDATE=6",
+                "      - ORCH_GLOBAL_GAME_CONCURRENCY=2",
+                "      - ORCH_TOURNAMENT_CONCURRENCY=2",
+                "      - ORCH_MIN_GAMES_FOR_PROMOTION=24",
+                "      - ORCH_MIN_COMPLETION_RATE=0.90",
+                "      - ORCH_WIN_RATE_MARGIN=0.03",
+                "      - ORCH_KEEP_GENERATIONS_TRAINER=30",
+                "      - ORCH_KEEP_GENERATIONS_WORKER=15",
+                "      - TOURNAMENT_CONCURRENCY=2",
+                "      - GLOBAL_GAME_CONCURRENCY=2",
+                "    depends_on:",
+                "      - redis",
+                "      - postgres",
+            ]
+        )
+        for i in range(1, plan.server_count + 1):
+            lines.append(f"      - tfm-server-{i}")
+        for idx in range(1, num_coordinators + 1):
+            lines.append(f"      - rl-coordinator-{idx}")
     else:
         coord_env = coord_envs[0] if coord_envs else env_items
         lines.extend(
@@ -718,6 +816,7 @@ def _render_compose(
                 "    volumes:",
                 "      - ./rl-environment:/app",
                 "      - ./rl-models:/app/rl-models",
+                "      - ./rl-models-global:/app/rl-models-global",
                 "      - ./card_metadata.json:/app/card_metadata.json:ro",
                 # tmpfs for logs avoids host-disk I/O on every log write under high concurrency.
                 "    tmpfs:",
@@ -966,6 +1065,7 @@ def main() -> int:
                 num_coordinators=num_coordinators,
             )
             coord_env = _merge_env_lists(dynamic_env, base_env_filtered, ESSENTIAL_ENV_DEFAULTS)
+            coord_env = _apply_env_overrides(coord_env, _coordinator_role_env_overrides(c))
             coord_envs.append(coord_env)
         env_items = coord_envs[0]
     else:

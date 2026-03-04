@@ -19,7 +19,7 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p rl-models rl-logs
+mkdir -p rl-models rl-logs rl-models-global
 if [ "$NUM_COORDS" -gt 1 ]; then
   for i in $(seq 1 "$NUM_COORDS"); do mkdir -p "rl-models-coord-${i}"; done
 fi
@@ -66,4 +66,9 @@ fi
 echo
 echo "Useful commands:"
 echo "  docker compose -f $COMPOSE_FILE ps"
-echo "  docker compose -f $COMPOSE_FILE logs -f rl-coordinator"
+if [ "$NUM_COORDS" -gt 1 ]; then
+  echo "  docker compose -f $COMPOSE_FILE logs -f rl-coordinator-1"
+  echo "  docker compose -f $COMPOSE_FILE logs -f rl-champion-orchestrator"
+else
+  echo "  docker compose -f $COMPOSE_FILE logs -f rl-coordinator"
+fi

@@ -129,6 +129,8 @@ class RLCoordinator:
             os.getenv("CLEAR_ROLLOUT_BUFFER_ON_INVALID_GENERATION", "1")
         ).strip().lower() not in ("0", "false", "no", "off")
         self.save_top_k = max(1, self._safe_env_int("SAVE_TOP_K", 3))
+        self.save_every_n_generations = max(1, self._safe_env_int("SAVE_EVERY_N_GENERATIONS", 1))
+        self.max_saved_generations = max(1, self._safe_env_int("MAX_SAVED_GENERATIONS", 30))
         self.training_opponent_pool_enabled = str(os.getenv("TRAINING_OPPONENT_POOL_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off")
         self.training_pool_games_per_agent = max(0, self._safe_env_int("TRAINING_POOL_GAMES_PER_AGENT", 1))
         self.training_pool_generation_window = max(1, self._safe_env_int("TRAINING_POOL_GENERATION_WINDOW", 8))
@@ -144,6 +146,7 @@ class RLCoordinator:
             "historical": [],
             "exploiters": [],
         }
+        self.training_pool_extra_checkpoints: List[str] = self._resolve_training_pool_extra_checkpoints()
         self.fixed_benchmark_enabled = str(os.getenv("FIXED_BENCHMARK_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off")
         self.fixed_benchmark_interval = max(1, self._safe_env_int("FIXED_BENCHMARK_INTERVAL", 5))
         self.fixed_benchmark_games_per_agent = max(1, self._safe_env_int("FIXED_BENCHMARK_GAMES_PER_AGENT", 2))
@@ -357,7 +360,24 @@ class RLCoordinator:
                 )
 
                 # Save best agents FROM the evaluated population (before evolving)
-                await self.save_generation_models(generation, fitness_scores)
+                if self._should_save_generation(generation):
+                    await self.save_generation_models(generation, fitness_scores)
+                else:
+                    logger.info(
+                        "Skipping generation_%d checkpoint save due to SAVE_EVERY_N_GENERATIONS=%d",
+                        int(generation),
+                        int(self.save_every_n_generations),
+                    )
+                prune_summary = self._prune_saved_generation_dirs(
+                    keep_last=int(self.max_saved_generations),
+                    pinned_generations={int(generation)},
+                )
+                if prune_summary.get("removed_generations"):
+                    logger.info(
+                        "Pruned saved generations (removed=%s keep_last=%d)",
+                        prune_summary.get("removed_generations"),
+                        int(self.max_saved_generations),
+                    )
 
                 # Evolve population for the next generation
                 self.population = await self.evolution_manager.evolve_population(
@@ -643,13 +663,15 @@ class RLCoordinator:
     def _resolve_training_opponent_checkpoints(self) -> List[str]:
         models_root = self._default_models_root()
         generations = self._available_generations(models_root)
+        extra_checkpoints = self._resolve_training_pool_extra_checkpoints()
+        self.training_pool_extra_checkpoints = list(extra_checkpoints)
         self._training_pool_weighted_checkpoints = {
-            "recent": [],
+            "recent": list(extra_checkpoints),
             "historical": [],
             "exploiters": [],
         }
         if not generations:
-            return []
+            return self._dedupe_existing_checkpoints(extra_checkpoints)
 
         window = max(1, int(self.training_pool_generation_window))
         candidate_generations = generations[-window:]
@@ -675,10 +697,19 @@ class RLCoordinator:
             "historical": self._dedupe_existing_checkpoints(historical_candidates),
             "exploiters": self._dedupe_existing_checkpoints(exploiter_candidates),
         }
+        if extra_checkpoints:
+            external = self._dedupe_existing_checkpoints(extra_checkpoints)
+            self._training_pool_weighted_checkpoints["recent"] = self._dedupe_existing_checkpoints(
+                list(external) + list(self._training_pool_weighted_checkpoints["recent"])
+            )
+            self._training_pool_weighted_checkpoints["historical"] = self._dedupe_existing_checkpoints(
+                list(external) + list(self._training_pool_weighted_checkpoints["historical"])
+            )
         if not self._training_pool_weighted_checkpoints["recent"]:
             self._training_pool_weighted_checkpoints["recent"] = list(self._training_pool_weighted_checkpoints["historical"])
 
         checkpoint_candidates: List[str] = []
+        checkpoint_candidates.extend(extra_checkpoints)
         checkpoint_candidates.extend(self._training_pool_weighted_checkpoints["recent"])
         checkpoint_candidates.extend(self._training_pool_weighted_checkpoints["historical"])
         checkpoint_candidates.extend(self._training_pool_weighted_checkpoints["exploiters"])
@@ -1483,6 +1514,58 @@ class RLCoordinator:
         if os.path.basename(base_dir).lower() == "rl-environment":
             return os.path.join(parent_dir, "rl-models")
         return candidates[0]
+
+    def _resolve_training_pool_extra_checkpoints(self) -> List[str]:
+        raw = str(os.getenv("TRAINING_POOL_EXTRA_CHECKPOINTS", "") or "").strip()
+        if not raw:
+            return []
+        resolved: List[str] = []
+        for token in [part.strip() for part in raw.split(",") if part.strip()]:
+            if not os.path.isabs(token):
+                logger.warning("Ignoring non-absolute TRAINING_POOL_EXTRA_CHECKPOINTS entry: %s", token)
+                continue
+            candidate = os.path.abspath(token)
+            if os.path.isfile(candidate):
+                resolved.append(candidate)
+            else:
+                logger.debug("Ignoring missing TRAINING_POOL_EXTRA_CHECKPOINTS entry: %s", token)
+        return self._dedupe_existing_checkpoints(resolved)
+
+    def _should_save_generation(self, generation: int) -> bool:
+        interval = max(1, int(self.save_every_n_generations))
+        return int(generation) % interval == 0
+
+    def _prune_saved_generation_dirs(
+        self,
+        keep_last: int,
+        pinned_generations: Optional[Set[int]] = None,
+    ) -> Dict[str, Any]:
+        models_root = self._default_models_root()
+        generations = self._available_generations(models_root)
+        keep_window = max(1, int(keep_last))
+        pinned: Set[int] = set()
+        for value in list(pinned_generations or set()):
+            try:
+                pinned.add(int(value))
+            except Exception:
+                continue
+        keep_generations = set(generations[-keep_window:]).union(pinned)
+        removed: List[int] = []
+        for generation in generations:
+            if generation in keep_generations:
+                continue
+            generation_dir = os.path.join(models_root, f"generation_{generation}")
+            if not os.path.isdir(generation_dir):
+                continue
+            try:
+                shutil.rmtree(generation_dir, ignore_errors=False)
+                removed.append(int(generation))
+            except Exception as e:
+                logger.warning("Failed pruning generation_%d at %s: %s", int(generation), generation_dir, e)
+        return {
+            "kept_generations": sorted(int(g) for g in keep_generations),
+            "removed_generations": sorted(int(g) for g in removed),
+        }
 
     @staticmethod
     def _checkpoint_fitness_from_name(path: str) -> float:

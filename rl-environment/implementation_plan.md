@@ -88,3 +88,49 @@ Acceptance target:
    - invalid action reject rate
    - action decoder legality behavior
    - state vector size/token tail integrity
+
+## Pipeline Bottleneck Mitigation (Cloud Compose)
+
+### New Runtime Controls
+- `RL_GLOBAL_GAME_CAP_PER_COORD`
+  - hard cap for `GLOBAL_GAME_CONCURRENCY` generated per coordinator
+  - default: `20` (`saturate`), `24` (`balanced`)
+- `RL_TOURNAMENT_CAP_PER_COORD`
+  - hard cap for `TOURNAMENT_CONCURRENCY` generated per coordinator
+  - default: same as global cap
+- `AGENT_IDLE_POLL_INTERVAL_SEC`
+  - polling interval when `waitingFor` is empty
+  - default: `0.12`
+- `AGENT_ACTIVE_POLL_INTERVAL_SEC`
+  - polling interval when `waitingFor` is present
+  - default: fallback to `AGENT_POLL_INTERVAL_SEC`
+- `AGENT_TIMING_LOG_EVERY_N_DECISIONS`
+  - decision interval for timing summary logs
+  - default: `200`
+
+### Coordinator Cap Logic
+- `raw_subset_global = subset_count * games_per_server`
+- `subset_global = min(raw_subset_global, global_cap_per_coord)`
+- `subset_tournament = min(subset_global, tournament_cap_per_coord)`
+- `MAX_ACTIVE_GAMES_PER_SERVER = min(games_per_server, ceil(subset_global / subset_count))`
+
+Default target for 54 servers / 6 coordinators:
+- per coordinator `GLOBAL_GAME_CONCURRENCY=20`
+- per coordinator `TOURNAMENT_CONCURRENCY=20`
+- per coordinator `MAX_ACTIVE_GAMES_PER_SERVER=3`
+
+### Instrumentation Added
+- Per-agent timing accumulators for:
+  - state encoding
+  - action-availability construction
+  - network forward/sampling
+  - action decode
+  - `send_player_input`
+  - `get_player_state`
+- Cluster-level transport timing stats in `GameServerCluster` (`send_player_input`, `get_player_state`).
+
+### Acceptance Metrics (Canary)
+- Timeout rate `< 1%` of games.
+- No sustained coordinator CPU saturation spikes comparable to prior `~900–1400%`.
+- No material increase in action rejection rate.
+- Generation completion remains above configured gate thresholds.

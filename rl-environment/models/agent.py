@@ -861,9 +861,25 @@ class RLAgent:
         self.reward_debug_log_every = max(1, self._safe_env_int("PPO_REWARD_DEBUG_LOG_EVERY", 200))
         self._reward_debug_counter = 0
         self.rollout_buffer: deque[PPORolloutStep] = deque(maxlen=max(1, int(self.ppo_buffer_max_steps)))
-        self.poll_interval_sec = float(os.getenv("AGENT_POLL_INTERVAL_SEC", "0.2"))
+        self.active_poll_interval_sec = max(
+            0.0,
+            self._safe_env_float(
+                "AGENT_ACTIVE_POLL_INTERVAL_SEC",
+                self._safe_env_float("AGENT_POLL_INTERVAL_SEC", 0.2),
+            ),
+        )
+        # Backward compatibility for existing call-sites that still reference poll_interval_sec.
+        self.poll_interval_sec = float(self.active_poll_interval_sec)
+        self.idle_poll_interval_sec = max(
+            0.0,
+            self._safe_env_float("AGENT_IDLE_POLL_INTERVAL_SEC", 0.12),
+        )
         self.post_move_sleep_sec = float(os.getenv("AGENT_POST_MOVE_SLEEP_SEC", "0.0"))
         self.failure_pause_sec = float(os.getenv("AGENT_FAILURE_PAUSE_SEC", "0.0"))
+        self.timing_log_every_n_decisions = max(
+            1,
+            self._safe_env_int("AGENT_TIMING_LOG_EVERY_N_DECISIONS", 200),
+        )
         self.initial_cards_fallback_max_attempts = max(
             0,
             self._safe_env_int("AGENT_INITIAL_CARDS_FALLBACK_MAX_ATTEMPTS", 1),
@@ -932,6 +948,9 @@ class RLAgent:
             'hate_draft_picks_low_hand_ev': 0,
             'milestone_snipes': 0,
             'award_snipes': 0,
+            'timing_totals_sec': {},
+            'timing_counts': {},
+            'timing_log_events': 0,
         }
 
     @staticmethod
@@ -1526,7 +1545,7 @@ class RLAgent:
             consecutive_transport_errors = 0
             while True:
                 try:
-                    player_state = await game_instance.get_player_state(player_id)
+                    player_state = await self._timed_get_player_state(game_instance, player_id)
                     consecutive_transport_errors = 0
                 except ServerTransportError:
                     consecutive_transport_errors += 1
@@ -1581,7 +1600,7 @@ class RLAgent:
                         continue
                 
                 # Wait before polling again to avoid busy-waiting
-                await self._sleep_if_needed(self.poll_interval_sec)
+                await self._sleep_if_needed(self._poll_interval_for_state(player_state))
             
             # Record game completion
             self.games_played += 1
@@ -1644,6 +1663,31 @@ class RLAgent:
         if delay > 0.0:
             await asyncio.sleep(delay)
 
+    def _poll_interval_for_state(self, player_state: Optional[Dict[str, Any]]) -> float:
+        waiting_for = {}
+        if isinstance(player_state, dict):
+            waiting_for = player_state.get("waitingFor", {}) or {}
+        return float(self.active_poll_interval_sec) if bool(waiting_for) else float(self.idle_poll_interval_sec)
+
+    async def _timed_get_player_state(self, game_instance: GameInstance, player_id: str) -> Dict[str, Any]:
+        started = time.perf_counter()
+        try:
+            return await game_instance.get_player_state(player_id)
+        finally:
+            self._record_pipeline_timing("get_player_state_sec", time.perf_counter() - started)
+
+    async def _timed_send_player_input(
+        self,
+        game_instance: GameInstance,
+        player_id: str,
+        action_input: Dict[str, Any],
+    ) -> bool:
+        started = time.perf_counter()
+        try:
+            return bool(await game_instance.send_player_input(player_id, action_input))
+        finally:
+            self._record_pipeline_timing("send_player_input_sec", time.perf_counter() - started)
+
     @staticmethod
     def _seat_index_from_player_name(player_name: str) -> int:
         raw = str(player_name or "").strip()
@@ -1682,7 +1726,7 @@ class RLAgent:
         attempts = max(1, int(max_attempts))
         for _ in range(attempts):
             try:
-                player_state = await game_instance.get_player_state(player_id)
+                player_state = await self._timed_get_player_state(game_instance, player_id)
             except Exception as e:
                 if isinstance(e, ServerTransportError):
                     raise
@@ -1696,7 +1740,7 @@ class RLAgent:
                 if not setup_action:
                     return False
                 logger.info(f"Agent {self.id[:8]} startup setup action: {setup_action}")
-                if await game_instance.send_player_input(player_id, setup_action):
+                if await self._timed_send_player_input(game_instance, player_id, setup_action):
                     self._record_action_choice(800, setup_action, player_state)
                     await self._sleep_if_needed(self.post_move_sleep_sec)
                     return True
@@ -1752,12 +1796,16 @@ class RLAgent:
             turn_action_count = self._get_turn_action_count(player_id)
 
             loop = asyncio.get_running_loop()
-            state_vector = await loop.run_in_executor(
-                _get_inference_executor(),
-                self.state_encoder.encode,
-                player_state,
-                turn_action_count,
-            )
+            encode_started = time.perf_counter()
+            try:
+                state_vector = await loop.run_in_executor(
+                    _get_inference_executor(),
+                    self.state_encoder.encode,
+                    player_state,
+                    turn_action_count,
+                )
+            finally:
+                self._record_pipeline_timing("encode_state_sec", time.perf_counter() - encode_started)
             self._bump_decision_stat('total_decisions')
             
             # Log what we're waiting for
@@ -1772,7 +1820,7 @@ class RLAgent:
                     self._bump_decision_stat('policy_attempts')
                     self._bump_decision_stat('policy_sampled_actions')
                     logger.info(f"Agent {self.id[:8]} attempting startup setup action: {initial_action}")
-                    if await game_instance.send_player_input(player_id, initial_action):
+                    if await self._timed_send_player_input(game_instance, player_id, initial_action):
                         self._bump_decision_stat('policy_successes')
                         self._record_action_choice(800, initial_action, player_state)
                         logger.info(f"Agent {self.id[:8]} startup setup action succeeded")
@@ -1797,7 +1845,7 @@ class RLAgent:
                 else:
                     self._bump_decision_stat('epsilon_random_actions')
                 logger.debug(f"Agent {self.id[:8]} attempting policy action: {policy_action}")
-                if await game_instance.send_player_input(player_id, policy_action):
+                if await self._timed_send_player_input(game_instance, player_id, policy_action):
                     self._bump_decision_stat('policy_successes')
                     # Track how many actions this player has taken this turn so the
                     # state encoder can expose first-vs-second-action information.
@@ -1948,7 +1996,18 @@ class RLAgent:
 
             # 2. Try a broader set of alternative actions, excluding already-rejected choices.
             pass_base = int(self.action_decoder.action_types.get('PASS', 900))
-            raw_available_actions = self.action_decoder.get_available_actions(player_state)
+            raw_available_actions: List[int] = []
+            if isinstance(action_meta, dict):
+                cached_raw_actions = action_meta.get("available_actions_raw", [])
+                if isinstance(cached_raw_actions, list):
+                    raw_available_actions = [
+                        int(action_idx)
+                        for action_idx in cached_raw_actions
+                        if isinstance(action_idx, (int, np.integer))
+                        or (isinstance(action_idx, str) and str(action_idx).isdigit())
+                    ]
+            if not raw_available_actions:
+                raw_available_actions = self.action_decoder.get_available_actions(player_state)
             can_legally_pass = any(int(a) >= pass_base for a in raw_available_actions)
 
             available_actions = self._filter_pass_actions(raw_available_actions, player_state)
@@ -1977,7 +2036,11 @@ class RLAgent:
                     self._bump_decision_stat('fallback_passes')
                     self._record_action_choice(pass_base)
                     self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions_pass")
-                    sent_pass = await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
+                    sent_pass = await self._timed_send_player_input(
+                        game_instance,
+                        player_id,
+                        self.action_decoder._create_pass_action(),
+                    )
                     if sent_pass:
                         self._clear_fallback_retry_count_for_prompt(player_id, player_state)
                     await self._sleep_if_needed(self.post_move_sleep_sec)
@@ -2009,7 +2072,7 @@ class RLAgent:
                 if random_action:
                     self._bump_decision_stat('fallback_random_attempts')
                     self._bump_fallback_retry_count_for_prompt(player_id, player_state, 1)
-                    if await game_instance.send_player_input(player_id, random_action):
+                    if await self._timed_send_player_input(game_instance, player_id, random_action):
                         self._bump_decision_stat('fallback_random_successes')
                         self._record_action_choice(int(random_action_idx), random_action, player_state)
                         self._clear_rejected_action(player_id, player_state, int(random_action_idx))
@@ -2025,7 +2088,11 @@ class RLAgent:
                 self._bump_decision_stat('fallback_passes')
                 self._record_action_choice(pass_base)
                 self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_pass")
-                sent_pass = await game_instance.send_player_input(player_id, self.action_decoder._create_pass_action())
+                sent_pass = await self._timed_send_player_input(
+                    game_instance,
+                    player_id,
+                    self.action_decoder._create_pass_action(),
+                )
                 if sent_pass:
                     self._clear_fallback_retry_count_for_prompt(player_id, player_state)
                 await self._sleep_if_needed(self.post_move_sleep_sec)
@@ -2121,10 +2188,56 @@ class RLAgent:
 
     def _bump_decision_stat(self, key: str, amount: int = 1):
         self.decision_stats[key] = int(self.decision_stats.get(key, 0)) + int(amount)
+        if key == "total_decisions":
+            self._maybe_log_pipeline_timing()
 
     def _bump_decision_stat_float(self, key: str, amount: float = 0.0):
         current = float(self.decision_stats.get(key, 0.0) or 0.0)
         self.decision_stats[key] = float(current + float(amount))
+
+    def _record_pipeline_timing(self, stage_key: str, elapsed_sec: float):
+        if not stage_key:
+            return
+        elapsed = max(0.0, float(elapsed_sec or 0.0))
+        totals = self.decision_stats.setdefault("timing_totals_sec", {})
+        counts = self.decision_stats.setdefault("timing_counts", {})
+        totals[stage_key] = float(totals.get(stage_key, 0.0) or 0.0) + elapsed
+        counts[stage_key] = int(counts.get(stage_key, 0) or 0) + 1
+
+    def _pipeline_timing_avg_ms(self, stage_key: str) -> float:
+        totals = self.decision_stats.get("timing_totals_sec", {}) or {}
+        counts = self.decision_stats.get("timing_counts", {}) or {}
+        total = float(totals.get(stage_key, 0.0) or 0.0)
+        count = int(counts.get(stage_key, 0) or 0)
+        if count <= 0:
+            return 0.0
+        return (total * 1000.0) / float(count)
+
+    def _maybe_log_pipeline_timing(self):
+        total_decisions = int(self.decision_stats.get("total_decisions", 0) or 0)
+        interval = max(1, int(self.timing_log_every_n_decisions))
+        if total_decisions <= 0 or (total_decisions % interval) != 0:
+            return
+        counts = self.decision_stats.get("timing_counts", {}) or {}
+        logger.info(
+            "Agent %s timing over %d decisions: "
+            "encode=%.2fms(%d) avail=%.2fms(%d) forward=%.2fms(%d) decode=%.2fms(%d) send=%.2fms(%d) get=%.2fms(%d)",
+            self.id[:8],
+            total_decisions,
+            self._pipeline_timing_avg_ms("encode_state_sec"),
+            int(counts.get("encode_state_sec", 0) or 0),
+            self._pipeline_timing_avg_ms("action_availability_sec"),
+            int(counts.get("action_availability_sec", 0) or 0),
+            self._pipeline_timing_avg_ms("network_forward_sec"),
+            int(counts.get("network_forward_sec", 0) or 0),
+            self._pipeline_timing_avg_ms("decode_action_sec"),
+            int(counts.get("decode_action_sec", 0) or 0),
+            self._pipeline_timing_avg_ms("send_player_input_sec"),
+            int(counts.get("send_player_input_sec", 0) or 0),
+            self._pipeline_timing_avg_ms("get_player_state_sec"),
+            int(counts.get("get_player_state_sec", 0) or 0),
+        )
+        self.decision_stats["timing_log_events"] = int(self.decision_stats.get("timing_log_events", 0) or 0) + 1
 
     @staticmethod
     def _iter_action_payloads(action_input: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2599,20 +2712,24 @@ class RLAgent:
             phase_index = int(self._extract_phase_index(player_state))
             recurrent_state_in = self._get_recurrent_state_for_player(player_id)
 
-            if self._inference_batcher is not None:
-                policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = (
-                    await self._inference_batcher.infer(state_vector, phase_index, recurrent_state_in)
-                )
-            else:
-                loop = asyncio.get_running_loop()
-                executor = _get_inference_executor()
-                policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = await loop.run_in_executor(
-                    executor,
-                    self._sync_forward_and_probs,
-                    state_vector,
-                    phase_index,
-                    recurrent_state_in,
-                )
+            forward_started = time.perf_counter()
+            try:
+                if self._inference_batcher is not None:
+                    policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = (
+                        await self._inference_batcher.infer(state_vector, phase_index, recurrent_state_in)
+                    )
+                else:
+                    loop = asyncio.get_running_loop()
+                    executor = _get_inference_executor()
+                    policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = await loop.run_in_executor(
+                        executor,
+                        self._sync_forward_and_probs,
+                        state_vector,
+                        phase_index,
+                        recurrent_state_in,
+                    )
+            finally:
+                self._record_pipeline_timing("network_forward_sec", time.perf_counter() - forward_started)
 
             if recurrent_state_out is not None and player_id:
                 self._set_recurrent_state_for_player(player_id, recurrent_state_out)
@@ -2620,8 +2737,9 @@ class RLAgent:
             policy_temperature = self._effective_policy_temperature()
 
             # Get available actions
-            available_actions = self.action_decoder.get_available_actions(player_state)
-            available_actions = self._filter_pass_actions(available_actions, player_state)
+            availability_started = time.perf_counter()
+            raw_available_actions = self.action_decoder.get_available_actions(player_state)
+            available_actions = self._filter_pass_actions(raw_available_actions, player_state)
             if player_id:
                 rejected_actions = self._get_rejected_actions_for_prompt(player_id, player_state)
                 if rejected_actions:
@@ -2630,6 +2748,7 @@ class RLAgent:
                     if blocked_count > 0:
                         self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
                     available_actions = filtered_actions
+            self._record_pipeline_timing("action_availability_sec", time.perf_counter() - availability_started)
             waiting_for = player_state.get('waitingFor', {})
             self._bump_decision_stat('available_action_observations')
             self._bump_decision_stat('sum_available_actions', len(available_actions))
@@ -2721,9 +2840,11 @@ class RLAgent:
                 action_weight_adjustments=action_weight_adjustments,
                 prefer_project_cards=prefer_project_cards,
             )
-             
+              
             # Convert to game input
+            decode_started = time.perf_counter()
             action_input = self.action_decoder.decode_action(action_index, player_state)
+            self._record_pipeline_timing("decode_action_sec", time.perf_counter() - decode_started)
             aux_targets = self._compute_aux_targets(player_state)
             rare_flags = self._infer_rare_state_flags(player_state, action_input)
             recurrent_out_vec: List[float] = []
@@ -2744,6 +2865,8 @@ class RLAgent:
                 "rare_draft_keep_buy": float(rare_flags.get("draft_keep_buy", 0.0)),
                 "rare_high_cost_payment": float(rare_flags.get("high_cost_payment", 0.0)),
                 "payment_value_estimate": float(rare_flags.get("payment_value", 0.0)),
+                "available_actions_raw": [int(a) for a in raw_available_actions],
+                "available_actions_filtered": [int(a) for a in available_actions],
             }
             if sampled_from_policy and sampled_distribution is not None:
                 action_prob = float(sampled_distribution[int(action_index)].item())
@@ -3264,6 +3387,9 @@ class RLAgent:
         action_legal_count_total = int(self.decision_stats.get('action_legal_count_total', 0))
         action_rejected_by_server = int(self.decision_stats.get('action_rejected_by_server', 0))
         policy_actions_blocked_by_reject_cache = int(self.decision_stats.get('policy_actions_blocked_by_reject_cache', 0))
+        timing_totals_sec = dict(self.decision_stats.get("timing_totals_sec", {}) or {})
+        timing_counts = dict(self.decision_stats.get("timing_counts", {}) or {})
+        timing_log_events = int(self.decision_stats.get("timing_log_events", 0) or 0)
 
         def _ratio(numerator: int, denominator: int) -> float:
             return float(numerator) / float(denominator) if denominator > 0 else 0.0
@@ -3337,6 +3463,13 @@ class RLAgent:
             'action_mix': action_mix,
             'standard_project_counts': standard_project_counts,
             'standard_project_mix': standard_project_mix,
+            'timing_totals_sec': timing_totals_sec,
+            'timing_counts': timing_counts,
+            'timing_log_events': timing_log_events,
+            'timing_avg_ms': {
+                key: ((float(timing_totals_sec.get(key, 0.0) or 0.0) * 1000.0) / float(max(1, int(timing_counts.get(key, 0) or 0))))
+                for key in timing_totals_sec.keys()
+            },
         }
     
     def mutate(self, mutation_rate: float = 0.1):

@@ -46,6 +46,8 @@ python3 scripts/generate_rl_cloud_compose.py \
   --agent-poll-interval-sec "${RL_AGENT_POLL_INTERVAL_SEC:--1}" \
   --agent-failure-pause-sec "${RL_AGENT_FAILURE_PAUSE_SEC:--1}" \
   --tm-game-timeout-sec "${RL_TM_GAME_TIMEOUT_SEC:-0}" \
+  --global-game-cap-per-coord "${RL_GLOBAL_GAME_CAP_PER_COORD:-0}" \
+  --tournament-cap-per-coord "${RL_TOURNAMENT_CAP_PER_COORD:-0}" \
   --tm-http-force-close-connections "${RL_TM_HTTP_FORCE_CLOSE_CONNECTIONS:-0}" \
   --tm-recycle-session-on-disconnect "${RL_TM_RECYCLE_SESSION_ON_DISCONNECT:-0}" \
   --initial-cards-jitter-ms "${RL_INITIAL_CARDS_JITTER_MS:--1}"

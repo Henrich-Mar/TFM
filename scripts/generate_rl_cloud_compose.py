@@ -432,8 +432,28 @@ def _build_dynamic_env(
         for i in range(start_idx, end_idx + 1)
     )
 
-    subset_global = subset_count * capacity.games_per_server
-    subset_tournament = max(1, min(subset_global, capacity.cpu_count * 2))
+    raw_subset_global = subset_count * capacity.games_per_server
+    default_global_cap_per_coord = 20 if training.profile == "saturate" else 24
+    global_cap_per_coord = int(args.global_game_cap_per_coord)
+    if global_cap_per_coord <= 0:
+        global_cap_per_coord = int(default_global_cap_per_coord)
+    subset_global = max(1, min(raw_subset_global, int(global_cap_per_coord)))
+
+    tournament_cap_per_coord = int(args.tournament_cap_per_coord)
+    if tournament_cap_per_coord <= 0:
+        requested_tournament = int(args.tournament_concurrency)
+        if requested_tournament > 0:
+            tournament_cap_per_coord = int(requested_tournament)
+        else:
+            tournament_cap_per_coord = int(global_cap_per_coord)
+    subset_tournament = max(1, min(subset_global, int(tournament_cap_per_coord)))
+    subset_max_active_games_per_server = max(
+        1,
+        min(
+            int(capacity.games_per_server),
+            int(math.ceil(float(subset_global) / float(max(1, subset_count)))),
+        ),
+    )
     subset_http = max(256, int(capacity.http_limit * subset_count / max(1, capacity.server_count)))
     subset_http_per_host = max(16, int(capacity.http_limit_per_host * subset_count / max(1, capacity.server_count)))
 
@@ -445,7 +465,7 @@ def _build_dynamic_env(
         f"INTERNAL_TM_URL={internal_tm_url}",
         f"TOURNAMENT_CONCURRENCY={subset_tournament}",
         f"GLOBAL_GAME_CONCURRENCY={subset_global}",
-        f"MAX_ACTIVE_GAMES_PER_SERVER={capacity.games_per_server}",
+        f"MAX_ACTIVE_GAMES_PER_SERVER={subset_max_active_games_per_server}",
         f"TM_HTTP_CONNECTOR_LIMIT={subset_http}",
         f"TM_HTTP_CONNECTOR_LIMIT_PER_HOST={subset_http_per_host}",
         f"TM_HTTP_DNS_CACHE_TTL_SEC=300",
@@ -939,6 +959,18 @@ def parse_args() -> argparse.Namespace:
         help="Override tournament concurrency (0 = auto from capacity)",
     )
     parser.add_argument(
+        "--global-game-cap-per-coord",
+        type=int,
+        default=int(os.getenv("RL_GLOBAL_GAME_CAP_PER_COORD", "0")),
+        help="Hard cap for GLOBAL_GAME_CONCURRENCY per coordinator (0 = profile default: 20 saturate / 24 balanced)",
+    )
+    parser.add_argument(
+        "--tournament-cap-per-coord",
+        type=int,
+        default=int(os.getenv("RL_TOURNAMENT_CAP_PER_COORD", "0")),
+        help="Hard cap for TOURNAMENT_CONCURRENCY per coordinator (0 = use global cap, or --tournament-concurrency when set)",
+    )
+    parser.add_argument(
         "--agent-inference-threads",
         type=int,
         default=int(os.getenv("RL_AGENT_INFERENCE_THREADS", "-1")),
@@ -1147,6 +1179,32 @@ def main() -> int:
         "Coordinators: %d (%.1f games each) — ~%.0f req/s per event loop"
         % (num_coordinators, games_per_coord, games_per_coord / max(0.001, poll))
     )
+    if coord_envs is not None:
+        for idx, env_items in enumerate(coord_envs, start=1):
+            env_map = _env_list_to_map(env_items)
+            servers_raw = str(env_map.get("GAME_SERVERS", "") or "")
+            coordinator_servers = [item for item in servers_raw.split(",") if item.strip()]
+            print(
+                "Coordinator %d limits: servers=%d GLOBAL_GAME_CONCURRENCY=%s TOURNAMENT_CONCURRENCY=%s MAX_ACTIVE_GAMES_PER_SERVER=%s"
+                % (
+                    idx,
+                    len(coordinator_servers),
+                    str(env_map.get("GLOBAL_GAME_CONCURRENCY", "")),
+                    str(env_map.get("TOURNAMENT_CONCURRENCY", "")),
+                    str(env_map.get("MAX_ACTIVE_GAMES_PER_SERVER", "")),
+                )
+            )
+    else:
+        env_map = _env_list_to_map(env_items)
+        print(
+            "Coordinator limits: servers=%d GLOBAL_GAME_CONCURRENCY=%s TOURNAMENT_CONCURRENCY=%s MAX_ACTIVE_GAMES_PER_SERVER=%s"
+            % (
+                capacity.server_count,
+                str(env_map.get("GLOBAL_GAME_CONCURRENCY", "")),
+                str(env_map.get("TOURNAMENT_CONCURRENCY", "")),
+                str(env_map.get("MAX_ACTIVE_GAMES_PER_SERVER", "")),
+            )
+        )
     return 0
 
 

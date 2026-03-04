@@ -131,6 +131,8 @@ export RL_GAMES_PER_SERVER=4
 export RL_COORDINATORS_SHARE_GPU=1
 export RL_AGENT_POLL_INTERVAL_SEC=0.03
 export RL_AGENT_FAILURE_PAUSE_SEC=0.05
+export RL_GLOBAL_GAME_CAP_PER_COORD=20
+export RL_TOURNAMENT_CAP_PER_COORD=20
 export RL_INITIAL_CARDS_JITTER_MS=1200
 export RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0
 
@@ -155,6 +157,8 @@ chmod +x start-rl-cloud-training.sh
   export RL_GAMES_PER_EVAL=20
   export RL_INFRA_OVERHEAD_MB=6144
   export RL_TM_GAME_TIMEOUT_SEC=2400
+  export RL_GLOBAL_GAME_CAP_PER_COORD=20
+  export RL_TOURNAMENT_CAP_PER_COORD=20
   export RL_POPULATION_SIZE=16
   export RL_NUM_COORDINATORS=6   # or 3
   export RL_COORDINATOR_BASE_PORT=5100
@@ -238,6 +242,8 @@ If the coordinator cannot keep up with many game servers and games are dropped (
 | `RL_HTTP_CONNECTOR_LIMIT_PER_HOST=96` | 96 | More connections per host |
 | `RL_AGENT_INFERENCE_THREADS=32` | 32 | Thread pool size for inference (0 = auto) |
 | `RL_TOURNAMENT_CONCURRENCY=72` | match GLOBAL_GAME_CONCURRENCY | Explicit concurrency override |
+| `RL_GLOBAL_GAME_CAP_PER_COORD=20` | 20 | Hard cap for per-coordinator `GLOBAL_GAME_CONCURRENCY` (default: 20 saturate / 24 balanced) |
+| `RL_TOURNAMENT_CAP_PER_COORD=20` | 20 | Hard cap for per-coordinator `TOURNAMENT_CONCURRENCY` (default: global cap) |
 | `RL_TM_HTTP_REQUEST_TIMEOUT_SEC=120` | 120 | HTTP request timeout (reduces get_player_state TimeoutError) |
 | `RL_TM_GET_STATE_RETRY_ATTEMPTS=5` | 5 | More retries for get_player_state |
 | `RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7` | 7 | More retries for `initialCards` burst disconnects |

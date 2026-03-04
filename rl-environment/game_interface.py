@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -451,6 +452,7 @@ class GameInstance:
 
         last_exc: Optional[Exception] = None
         for attempt_no in range(1, max_retries + 1):
+            attempt_started = time.perf_counter()
             try:
                 session = self._get_session()
                 async with session.get(f"{self.base_url}/api/player",
@@ -497,6 +499,15 @@ class GameInstance:
                     self._raise_transport_error("get player state", e)
                 logger.error(f"Failed to get player state for {player_id}: {e!r}")
                 raise
+            finally:
+                try:
+                    if self.cluster is not None and hasattr(self.cluster, "record_transport_timing"):
+                        self.cluster.record_transport_timing(
+                            "get_player_state_sec",
+                            time.perf_counter() - attempt_started,
+                        )
+                except Exception:
+                    pass
 
         if last_exc is not None:
             self._raise_transport_error("get player state", last_exc)
@@ -569,6 +580,7 @@ class GameInstance:
 
         for attempt in range(retry_attempts):
             attempt_no = attempt + 1
+            attempt_started = time.perf_counter()
             try:
                 session = self._get_session()
                 async with session.post(
@@ -697,6 +709,15 @@ class GameInstance:
                     self._raise_transport_error("send player input", wrapped)
                 logger.error(f"Failed to send input for player {player_id}: {e!r}")
                 return False
+            finally:
+                try:
+                    if self.cluster is not None and hasattr(self.cluster, "record_transport_timing"):
+                        self.cluster.record_transport_timing(
+                            "send_player_input_sec",
+                            time.perf_counter() - attempt_started,
+                        )
+                except Exception:
+                    pass
 
         return False
     
@@ -799,6 +820,14 @@ class GameServerCluster:
         self.base_game_options = self._load_game_options()
         self.input_reject_count: int = 0
         self.payment_reject_count: int = 0
+        self.transport_timing_totals_sec: Dict[str, float] = {
+            "get_player_state_sec": 0.0,
+            "send_player_input_sec": 0.0,
+        }
+        self.transport_timing_counts: Dict[str, int] = {
+            "get_player_state_sec": 0,
+            "send_player_input_sec": 0,
+        }
 
     @staticmethod
     def _cancellation_requested() -> bool:
@@ -1376,6 +1405,17 @@ class GameServerCluster:
             'total_active_games': sum(s.active_games for s in self.servers),
             'input_reject_count': int(self.input_reject_count),
             'payment_reject_count': int(self.payment_reject_count),
+            'transport_timing': {
+                key: {
+                    'calls': int(self.transport_timing_counts.get(key, 0) or 0),
+                    'total_sec': float(self.transport_timing_totals_sec.get(key, 0.0) or 0.0),
+                    'avg_ms': (
+                        (float(self.transport_timing_totals_sec.get(key, 0.0) or 0.0) * 1000.0)
+                        / float(max(1, int(self.transport_timing_counts.get(key, 0) or 0)))
+                    ),
+                }
+                for key in sorted(set(self.transport_timing_totals_sec.keys()) | set(self.transport_timing_counts.keys()))
+            },
             'servers': []
         }
         
@@ -1423,3 +1463,11 @@ class GameServerCluster:
         ]
         if any(marker in response_l for marker in payment_error_markers):
             self.payment_reject_count = int(self.payment_reject_count) + 1
+
+    def record_transport_timing(self, timing_key: str, elapsed_sec: float):
+        key = str(timing_key or "").strip()
+        if not key:
+            return
+        elapsed = max(0.0, float(elapsed_sec or 0.0))
+        self.transport_timing_totals_sec[key] = float(self.transport_timing_totals_sec.get(key, 0.0) or 0.0) + elapsed
+        self.transport_timing_counts[key] = int(self.transport_timing_counts.get(key, 0) or 0) + 1

@@ -3,17 +3,43 @@ Game Interface - Handles communication with Terraforming Mars game servers
 """
 import asyncio
 import aiohttp
-import logging
-import random
-from typing import List, Dict, Any, Optional, Tuple
-from dataclasses import dataclass
 import json
+import logging
 import os
-from pathlib import Path
-from datetime import datetime
+import random
 from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus, urlsplit, urlunsplit
 
+try:
+    import orjson
+    _USE_ORJSON = True
+except ImportError:
+    _USE_ORJSON = False
+
+
+def _json_loads(text: str) -> Any:
+    """Parse JSON; use orjson when available for faster parsing."""
+    if _USE_ORJSON:
+        return orjson.loads(text)
+    return json.loads(text)
+
+
+def _json_dumps(obj: Any) -> str:
+    """Serialize to JSON string; use orjson when available."""
+    if _USE_ORJSON:
+        return orjson.dumps(obj).decode("utf-8")
+    return json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
+
+
+def _json_dumps_bytes(obj: Any) -> bytes:
+    """Serialize to JSON bytes (for HTTP body)."""
+    if _USE_ORJSON:
+        return orjson.dumps(obj)
+    return json.dumps(obj, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
 logger = logging.getLogger(__name__)
 
 class ServerTransportError(RuntimeError):
@@ -383,8 +409,8 @@ class GameInstance:
             async with session.get(f"{self.base_url}/api/game", 
                                       params={'id': self.game_id}) as response:
                 if response.status == 200:
-                    game_data = await response.json()
-                    
+                    game_data = _json_loads(await response.text())
+
                     # Find player by name
                     for player in game_data.get('players', []):
                         if player.get('name') == player_name:
@@ -430,7 +456,7 @@ class GameInstance:
                 async with session.get(f"{self.base_url}/api/player",
                                           params={'id': player_id}) as response:
                     if response.status == 200:
-                        player_state = await response.json()
+                        player_state = _json_loads(await response.text())
                         run_id = self._extract_run_id_from_state(player_state)
                         if run_id:
                             self._latest_run_id_by_player[str(player_id)] = run_id
@@ -485,7 +511,7 @@ class GameInstance:
         """
         prepared_input_data = self._with_run_id(player_id, input_data)
         try:
-            payload_full = json.dumps(prepared_input_data, ensure_ascii=True, separators=(',', ':'))
+            payload_full = _json_dumps(prepared_input_data)
         except Exception:
             payload_full = str(prepared_input_data)
         payload_preview = payload_full
@@ -534,7 +560,7 @@ class GameInstance:
             if should_skip:
                 return True
             try:
-                payload_full = json.dumps(prepared_input_data, ensure_ascii=True, separators=(',', ':'))
+                payload_full = _json_dumps(prepared_input_data)
             except Exception:
                 payload_full = str(prepared_input_data)
             payload_preview = payload_full
@@ -545,17 +571,19 @@ class GameInstance:
             attempt_no = attempt + 1
             try:
                 session = self._get_session()
-                async with session.post(f"{self.base_url}/player/input",
-                                           params={'id': player_id},
-                                           json=prepared_input_data,
-                                           headers={'Content-Type': 'application/json'}) as response:
+                async with session.post(
+                    f"{self.base_url}/player/input",
+                    params={'id': player_id},
+                    data=_json_dumps_bytes(prepared_input_data),
+                    headers={'Content-Type': 'application/json'},
+                ) as response:
                     if response.status == 200:
                         # The TM server returns the full PlayerViewModel JSON
                         # on every successful input.  Cache it so the next
                         # get_player_state() call returns instantly without a
                         # network round-trip.
                         try:
-                            body = await response.json()
+                            body = _json_loads(await response.text())
                             if isinstance(body, dict):
                                 run_id = self._extract_run_id_from_state(body)
                                 if run_id:
@@ -679,7 +707,7 @@ class GameInstance:
             async with session.get(f"{self.base_url}/api/game", 
                                       params={'id': self.game_id}) as response:
                 if response.status == 200:
-                    return await response.json()
+                    return _json_loads(await response.text())
                 else:
                     error = ValueError(f"Failed to get final state: {response.status}")
                     if int(response.status) >= 500:
@@ -1248,7 +1276,7 @@ class GameServerCluster:
                         raise error
 
                     # Get the created game data
-                    game_data = await response.json()
+                    game_data = _json_loads(await response.text())
 
                     # Extract game ID from response (authoritative)
                     actual_game_id = game_data.get('id')

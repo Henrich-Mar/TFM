@@ -3,8 +3,9 @@ Coordinator-facing PPO optimization cycle helpers.
 """
 from __future__ import annotations
 
+import asyncio
 import os
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 
 def _mean(values: List[float]) -> float:
@@ -48,9 +49,10 @@ async def optimize_population_with_ppo(
         budget_floor = min(total_available_steps, int(min_steps_per_agent * len(ppo_agents)))
         rollout_budget = max(rollout_budget, budget_floor)
 
+    # Build (agent, budget) list for parallel execution.
     remaining_budget = rollout_budget
     remaining_agents = len(ppo_agents)
-
+    work: List[Tuple[Any, int]] = []
     for agent in ppo_agents:
         if remaining_budget <= 0:
             continue
@@ -62,8 +64,33 @@ async def optimize_population_with_ppo(
                     per_agent_budget = min(per_agent_budget, available_for_agent)
         except Exception:
             pass
-        metrics = await agent.optimize_from_rollout_buffer(max_steps=per_agent_budget)
+        work.append((agent, per_agent_budget))
         remaining_agents = max(0, remaining_agents - 1)
+
+    if not work:
+        return {
+            "ppo/agents_optimized": 0,
+            "rollout/steps_collected": 0,
+            "rollout/schema_filtered": 0,
+        }
+
+    # Run PPO updates in parallel (limited concurrency to avoid GPU OOM).
+    parallel = max(1, min(int(os.getenv("PPO_PARALLEL_AGENTS", "4")), len(work)))
+    sem = asyncio.Semaphore(parallel)
+
+    async def _run_one(agent: Any, budget: int) -> Dict[str, Any]:
+        async with sem:
+            return await agent.optimize_from_rollout_buffer(max_steps=budget)
+
+    results = await asyncio.gather(
+        *[_run_one(agent, budget) for agent, budget in work],
+        return_exceptions=True,
+    )
+
+    for result in results:
+        if isinstance(result, Exception):
+            continue
+        metrics = result
         if not metrics:
             continue
         steps_used = max(0, int(metrics.get("rollout/steps", 0)))
@@ -72,13 +99,11 @@ async def optimize_population_with_ppo(
             optimized_agents += 1
         rollout_steps += steps_used
         schema_filtered += filtered
-        remaining_budget = max(0, remaining_budget - steps_used)
         for key, value in metrics.items():
             if key in ("rollout/steps", "rollout/schema_filtered"):
                 continue
             normalized_key = str(key)
             normalized_value = value
-            # Legacy compatibility: older agents may still emit a bool-like early-stop key.
             if normalized_key == "ppo/early_stop_kl":
                 normalized_key = "ppo/early_stop_kl_ratio"
                 normalized_value = 1.0 if bool(value) else 0.0

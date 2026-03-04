@@ -158,6 +158,8 @@ chmod +x start-rl-cloud-training.sh
   export RL_POPULATION_SIZE=16
   export RL_NUM_COORDINATORS=6   # or 3
   export RL_COORDINATOR_BASE_PORT=5100
+  export PPO_PARALLEL_AGENTS=6   # viac paralelných PPO (pozor na VRAM)
+  export PPO_EXECUTOR_WORKERS=6
 
 
 
@@ -185,11 +187,16 @@ With the saturate profile on a single-GPU host, the 16 agents consume ~2 GB VRAM
 
 Coordinator and champion orchestrator use **uvloop** when available (Linux): 2–4x faster event loop for HTTP and game I/O. On Windows, the default asyncio loop is used.
 
-**PPO offload**: PPO training runs in a dedicated `ThreadPoolExecutor`, so the event loop stays responsive for HTTP, polling, and game handling. Optional tuning:
+**PPO offload**: PPO training runs in a dedicated `ThreadPoolExecutor`, so the event loop stays responsive for HTTP, polling, and game handling. Agents are optimized in parallel (limited by `PPO_PARALLEL_AGENTS`).
+
+**orjson**: JSON parsing/serialization uses `orjson` when available for faster HTTP handling.
+
+Optional tuning:
 
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `PPO_EXECUTOR_WORKERS` | `4` | Thread pool size for PPO. Increase if PPO becomes a bottleneck (1–16). |
+| `PPO_PARALLEL_AGENTS` | `4` | Max agents optimized in parallel. Higher = faster PPO phase; watch GPU memory (1–16). |
 
 ### If games exceed ~1200s (long game duration)
 

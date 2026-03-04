@@ -124,7 +124,7 @@ export RL_HTTP_CONNECTOR_LIMIT_PER_HOST=288
 export RL_MAX_SERVERS=6
 export PUBLIC_HOST=localhost
 export RL_TRAINING_PROFILE=saturate
-export RL_CPU_SERVER_RATIO=0.6  
+export RL_CPU_SERVER_RATIO=0.9 
 export RL_SERVER_MEM_MB=1400
 export RL_NODE_HEAP_MB=1050
 export RL_GAMES_PER_SERVER=4
@@ -135,13 +135,27 @@ export RL_INITIAL_CARDS_JITTER_MS=1200
 export RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0
 
 # Optional hard overrides (leave unset for auto from profile)
-export RL_GAMES_PER_EVAL=3
+export RL_GAMES_PER_EVAL=30
 # export RL_PPO_ROLLOUT_STEPS=131072
 export RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7
-export RL_TM_GAME_TIMEOUT_SEC=900   # if games cancelled unexpectedly
+export RL_TM_GAME_TIMEOUT_SEC=1200   # if games cancelled unexpectedly
 chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
 ```
+#copy pasted from benchmark : 
+export RL_TRAINING_PROFILE=saturate
+  export RL_CPU_SERVER_RATIO=0.9 
+  export RL_GAMES_PER_SERVER=6
+  export PPO_MINIBATCH_SIZE=2048
+  export AGENT_INFERENCE_BATCH_SIZE=64
+  export AGENT_INFERENCE_THREADS=8
+  export RL_SERVER_MEM_MB=1400
+  export RL_AGENT_POLL_INTERVAL_SEC=0.03
+  export RL_AGENT_FAILURE_PAUSE_SEC=0.05
+  export RL_GAMES_PER_EVAL=30
+  export RL_INFRA_OVERHEAD_MB=6144
+
+
 
 You can verify the generated training volume in `docker-compose.rl_cloud.generated.yml`:
 - `GAMES_PER_EVAL`

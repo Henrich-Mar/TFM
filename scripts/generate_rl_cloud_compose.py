@@ -527,8 +527,27 @@ def _render_compose(
     lines: List[str] = []
     lines.append("services:")
 
+    # Reserve the last 3 cores for coordinator / redis / postgres.
+    # Each game server is pinned to exactly one core so Node.js event loops
+    # never migrate between cores and thrash each other's L2/L3 cache.
+    pinnable_cores = max(1, plan.cpu_count - 3)
+
     for i in range(1, plan.server_count + 1):
         host_port = base_port + i - 1
+        core_pin = (i - 1) % pinnable_cores   # wraps if server_count > pinnable_cores
+
+        # V8 flags tuned for RL game-loop workloads:
+        #   --max-old-space-size   : explicit heap ceiling matching mem_limit
+        #   --optimize-for-size    : smaller code cache; better when 50+ instances share RAM
+        #   --gc-interval=200      : more frequent incremental GC → shorter pause spikes
+        #   --expose-gc            : allows app to call global.gc() at game-end boundary
+        node_options = (
+            f"--max-old-space-size={plan.node_heap_mb} "
+            "--optimize-for-size "
+            "--gc-interval=200 "
+            "--expose-gc"
+        )
+
         lines.extend(
             [
                 f"  tfm-server-{i}:",
@@ -537,12 +556,17 @@ def _render_compose(
                 "      dockerfile: ../Dockerfile.rl",
                 "    ports:",
                 f"      - \"{host_port}:8080\"",
+                # Pin to a single core — eliminates cross-core cache thrashing.
+                f"    cpuset: \"{core_pin}\"",
                 "    environment:",
                 "      - NODE_ENV=production",
                 "      - COMPRESS_COMPLETED_GAMES_DAYS=0",
+                "      - TM_FAST_MODE_OPTION=1",        # headless/fast mode on the server itself
                 f"      - SERVER_ID=tfm-server-{i}",
-                f"      - NODE_OPTIONS=--max-old-space-size={plan.node_heap_mb}",
-                "      - UV_THREADPOOL_SIZE=16",
+                f"      - NODE_OPTIONS={node_options}",
+                # 4 libuv threads is plenty for game simulation (no heavy disk/DNS I/O).
+                # 16 threads × 58 servers = 928 threads thrashing 61 cores.
+                "      - UV_THREADPOOL_SIZE=4",
                 "    tmpfs:",
                 "      - /usr/src/app/db:uid=100,gid=65533,mode=0775",
                 "    labels:",
@@ -550,9 +574,11 @@ def _render_compose(
                 "    healthcheck:",
                 "      test:",
                 "        - CMD-SHELL",
-                "        - node -e \"require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\"",
-                "      interval: 15s",
-                "      timeout: 8s",
+                # wget is ~10× cheaper than spawning a full `node -e` process.
+                # 58 servers × old healthcheck = 58 Node.js forks every 15 s.
+                "        - wget -qO- http://127.0.0.1:8080/ >/dev/null 2>&1",
+                "      interval: 30s",       # was 15s — halves healthcheck overhead
+                "      timeout: 5s",
                 "      retries: 3",
                 "      start_period: 45s",
                 f"    mem_limit: {plan.server_mem_mb}m",

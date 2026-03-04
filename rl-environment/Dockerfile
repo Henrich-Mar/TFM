@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Build and install Rust extension.
-RUN maturin build --release --skip-auditwheel --interpreter python3.11
+RUN maturin build --release --skip-auditwheel --interpreter python3
 RUN pip install --no-cache-dir target/wheels/*.whl
 RUN python -c "import rust_tfm_rl; print(rust_tfm_rl.backend_info())"
 

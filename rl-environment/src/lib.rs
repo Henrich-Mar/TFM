@@ -14,9 +14,9 @@ fn encode_state<'py>(
     json_str: &str,
     turn_action_count: i32,
     state_size: usize,
-) -> PyResult<Bound<'py, PyArray1<f32>>> {
+) -> PyResult<&'py PyArray1<f32>> {
     match encoder::encode_state_impl(json_str, turn_action_count, state_size) {
-        Ok(features) => Ok(features.into_pyarray_bound(py)),
+        Ok(features) => Ok(features.into_pyarray(py)),
         Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e)),
     }
 }

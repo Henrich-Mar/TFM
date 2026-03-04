@@ -51,7 +51,7 @@ RUN pip install --no-cache-dir --no-deps stable-baselines3>=2.0.0
 COPY . .
 
 # Build Rust module
-RUN maturin build --release --skip-auditwheel --interpreter python3.11
+RUN maturin build --release --skip-auditwheel --interpreter python3
 RUN pip install --no-cache-dir target/wheels/*.whl
 RUN python -c "import rust_tfm_rl; print(rust_tfm_rl.backend_info())"
 

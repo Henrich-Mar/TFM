@@ -612,10 +612,10 @@ def _render_compose(
 
         # NODE_OPTIONS only allows a restricted set of flags (V8 security policy).
         # --optimize-for-size, --gc-interval, --expose-gc are all blocked.
-        # --max-old-space-size and --max-semi-space-size are whitelisted.
-        # Larger semi-space (64 MB vs default ~2-4 MB) reduces minor GC pause
-        # frequency for game servers that allocate many short-lived objects per turn.
-        node_options = f"--max-old-space-size={plan.node_heap_mb} --max-semi-space-size=64"
+        # Only --max-old-space-size is safe in NODE_OPTIONS.
+        # --max-semi-space-size is NOT whitelisted in NODE_OPTIONS for Node 16,
+        # so we pass it as a direct CLI flag via the command override below.
+        node_options = f"--max-old-space-size={plan.node_heap_mb}"
 
         lines.extend(
             [
@@ -623,6 +623,9 @@ def _render_compose(
                 "    build:",
                 "      context: ./terraforming-mars",
                 "      dockerfile: ../Dockerfile.rl",
+                # Bypass npm to pass --max-semi-space-size directly to V8.
+                # 64 MB young generation reduces minor GC pause frequency.
+                "    command: [\"node\", \"--max-semi-space-size=64\", \"build/src/server/server.js\"]",
                 "    ports:",
                 f"      - \"{host_port}:8080\"",
                 # Pin to a single core — eliminates cross-core cache thrashing.

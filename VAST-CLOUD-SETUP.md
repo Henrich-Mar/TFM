@@ -147,6 +147,8 @@ chmod +x start-rl-cloud-training.sh
 ### Low-latency optimized (1 game/server, 40 vCPU / 387 GB)
 
 ```bash
+export PUBLIC_HOST=localhost
+
 export RL_TRAINING_PROFILE=saturate
 export RL_CPU_SERVER_RATIO=0.925
 export RL_GAMES_PER_SERVER=1
@@ -162,6 +164,8 @@ export RL_AGENT_FAILURE_PAUSE_SEC=0.05
 export RL_GAMES_PER_EVAL=20
 export RL_INFRA_OVERHEAD_MB=6144
 export RL_TM_GAME_TIMEOUT_SEC=2400
+export RL_INITIAL_CARDS_JITTER_MS=1200
+export RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0
 export RL_POPULATION_SIZE=16
 export PPO_MINIBATCH_SIZE=2048
 export AGENT_INFERENCE_BATCH_SIZE=64

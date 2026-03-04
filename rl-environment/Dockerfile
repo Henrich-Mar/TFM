@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     curl \
+    patchelf \
     && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
@@ -20,7 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Build and install Rust extension.
-RUN maturin build --release
+RUN maturin build --release --skip-auditwheel --interpreter python3.11
 RUN pip install --no-cache-dir target/wheels/*.whl
 RUN python -c "import rust_tfm_rl; print(rust_tfm_rl.backend_info())"
 

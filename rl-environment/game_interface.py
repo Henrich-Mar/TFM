@@ -476,7 +476,7 @@ class GameInstance:
                         player_state = _json_loads_bytes(body)
                         if debug_timing:
                             t3 = time.perf_counter()
-                            logger.info(
+                            logger.warning(
                                 "TM transport timing get_player_state: connect_ttfb_ms=%.2f body_read_ms=%.2f parse_ms=%.2f total_ms=%.2f host=%s port=%s",
                                 (t1 - t0) * 1000, (t2 - t1) * 1000, (t3 - t2) * 1000, (t3 - t0) * 1000,
                                 self.server.host, self.server.port,
@@ -628,7 +628,7 @@ class GameInstance:
                             body = _json_loads_bytes(body_bytes)
                             if send_input_debug_timing:
                                 t3 = time.perf_counter()
-                                logger.info(
+                                logger.warning(
                                     "TM transport timing send_player_input: connect_ttfb_ms=%.2f body_read_ms=%.2f parse_ms=%.2f total_ms=%.2f host=%s port=%s",
                                     (t1 - t0) * 1000, (t2 - t1) * 1000, (t3 - t2) * 1000, (t3 - t0) * 1000,
                                     self.server.host, self.server.port,

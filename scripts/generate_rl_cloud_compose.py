@@ -573,6 +573,14 @@ def _build_dynamic_env(
     recycle_on_disconnect = int(args.tm_recycle_session_on_disconnect)
     env_items.append(f"TM_RECYCLE_SESSION_ON_DISCONNECT={1 if recycle_on_disconnect else 0}")
 
+    # Transport latency debug and connection prewarm (passthrough from env)
+    tm_timing_debug = os.getenv("TM_TRANSPORT_TIMING_DEBUG", "").strip()
+    if tm_timing_debug:
+        env_items.append(f"TM_TRANSPORT_TIMING_DEBUG={tm_timing_debug}")
+    prewarm = os.getenv("TM_HTTP_PREWARM_CONNECTIONS", "").strip()
+    if prewarm and prewarm.isdigit():
+        env_items.append(f"TM_HTTP_PREWARM_CONNECTIONS={prewarm}")
+
     if rl_models_subdir != "rl-models":
         env_items.append(f"RL_MODELS_DIR=/app/{rl_models_subdir}")
         env_items.append(f"RL_CHECKPOINT_DIR=/app/{rl_models_subdir}/checkpoints")

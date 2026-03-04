@@ -72,7 +72,36 @@ The launcher creates `docker-compose.rl_cloud.generated.yml` with dynamic:
 - `MAX_ACTIVE_GAMES_PER_SERVER`
 - HTTP connector limits
 
-## 4) Tune speed (optional)
+## 4) Benchmark before training (optional)
+
+Run the hardware benchmark to discover optimal parameters for your machine:
+
+```bash
+cd ~/tfm-cloud/TFM
+# If the stack is running:
+bash scripts/benchmark_training.sh
+
+# Or one-shot without a running stack:
+bash scripts/benchmark_training.sh --ppo-rollout-steps 16384
+```
+
+The benchmark tests:
+- **GPU inference** — forward-pass latency at batch sizes 1–64 (CPU vs GPU)
+- **PPO training** — gradient update throughput at minibatch sizes 512–8192
+- **VRAM usage** — peak memory per minibatch size
+
+Output includes a recommended `export` block — paste it before running `start-rl-cloud-training.sh`.
+
+**Flags:**
+| Flag | Effect |
+|------|--------|
+| `--cpu-only` | Skip GPU benchmarks (useful for debugging) |
+| `--skip-inference` | Only run PPO benchmark |
+| `--skip-ppo` | Only run inference benchmark |
+| `--ppo-rollout-steps N` | Synthetic rollout size (default 8192) |
+| `--ppo-minibatch-sizes 1024,4096` | Custom minibatch sizes to test |
+
+## 5) Tune speed (optional)
 
 ### Balanced profile (default)
 
@@ -88,11 +117,11 @@ With the current hard base (`GAMES_PER_EVAL=6`), saturate mode targets `~10x` (`
 
 ```bash
 # Use localhost for SSH port forwarding; use $(curl -s ifconfig.me) for direct VM access
-export RL_MAX_SERVERS=18
 export RL_MIN_SERVERS=12
 export RL_HTTP_CONNECTOR_LIMIT=9216
 export RL_HTTP_CONNECTOR_LIMIT_PER_HOST=288
 # Capacity controls for 40 vCPU, 387 GB RAM
+export RL_MAX_SERVERS=6
 export PUBLIC_HOST=localhost
 export RL_TRAINING_PROFILE=saturate
 export RL_CPU_SERVER_RATIO=0.6  
@@ -106,10 +135,10 @@ export RL_INITIAL_CARDS_JITTER_MS=1200
 export RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0
 
 # Optional hard overrides (leave unset for auto from profile)
-export RL_GAMES_PER_EVAL=6
+export RL_GAMES_PER_EVAL=3
 # export RL_PPO_ROLLOUT_STEPS=131072
 export RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7
-export RL_TM_GAME_TIMEOUT_SEC=800   # if games cancelled unexpectedly
+export RL_TM_GAME_TIMEOUT_SEC=900   # if games cancelled unexpectedly
 chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
 ```
@@ -134,7 +163,7 @@ When a CUDA GPU is available inside the coordinator container (requires NVIDIA C
 
 With the saturate profile on a single-GPU host, the 16 agents consume ~2 GB VRAM for inference (FP16), leaving ~9 GB for PPO training batches.
 
-## 5) Monitor
+## 6) Monitor
 
 ```bash
 docker compose -f docker-compose.rl_cloud.generated.yml ps
@@ -147,7 +176,7 @@ Dashboard (use 127.0.0.1 when accessing via SSH port forwarding, e.g. Vast.ai):
 
 For port forwarding: forward ports 5000 and 8081â€“8098 (or 8081â€“8098 for 18 game servers), then use the 127.0.0.1 URLs. Set `PUBLIC_HOST=localhost` when running so game links in the dashboard work.
 
-## 6) Troubleshooting / Games Dropped
+## 7) Troubleshooting / Games Dropped
 
 If the coordinator cannot keep up with many game servers and games are dropped (slot timeouts, create failures), try these env-only tweaks before or in addition to the saturate profile:
 

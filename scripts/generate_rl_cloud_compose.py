@@ -564,6 +564,7 @@ def _render_compose(
     plan: CapacityPlan,
     env_items: List[str],
     base_port: int,
+    coordinator_base_port: int = 5000,
     num_coordinators: int = 1,
     coord_envs: Optional[List[List[str]]] = None,
     coordinators_share_gpu: bool = False,
@@ -703,7 +704,7 @@ def _render_compose(
         for c in range(num_coordinators):
             coord_name = f"rl-coordinator-{c + 1}"
             models_subdir = f"rl-models-coord-{c + 1}"
-            coord_port = 4999 + (c + 1)
+            coord_port = int(coordinator_base_port) + c
             lines.extend(
                 [
                     "",
@@ -838,7 +839,7 @@ def _render_compose(
                 "      - redis",
                 "      - postgres",
                 "    ports:",
-                '      - "5000:5000"',
+                f'      - "{int(coordinator_base_port)}:5000"',
             ]
         )
 
@@ -860,6 +861,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="docker-compose.rl_cloud.generated.yml")
     parser.add_argument("--public-host", default=os.getenv("PUBLIC_HOST", "localhost"))
     parser.add_argument("--base-port", type=int, default=int(os.getenv("TM_BASE_PORT", "8081")))
+    parser.add_argument(
+        "--coordinator-base-port",
+        type=int,
+        default=int(os.getenv("RL_COORDINATOR_BASE_PORT", "5000")),
+        help="First host port for coordinator dashboard API (multi: base..base+N-1, single: base)",
+    )
     parser.add_argument("--min-servers", type=int, default=int(os.getenv("RL_MIN_SERVERS", "4")))
     parser.add_argument("--max-servers", type=int, default=int(os.getenv("RL_MAX_SERVERS", "128")))
     parser.add_argument("--server-mem-mb", type=int, default=int(os.getenv("RL_SERVER_MEM_MB", "1400")))
@@ -1085,6 +1092,7 @@ def main() -> int:
         capacity,
         env_items=env_items,
         base_port=args.base_port,
+        coordinator_base_port=max(1, int(args.coordinator_base_port)),
         num_coordinators=num_coordinators,
         coord_envs=coord_envs,
         coordinators_share_gpu=coordinators_share_gpu,

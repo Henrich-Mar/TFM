@@ -155,7 +155,7 @@ chmod +x start-rl-cloud-training.sh
   export RL_GAMES_PER_EVAL=10
   export RL_INFRA_OVERHEAD_MB=6144
   export RL_TM_GAME_TIMEOUT_SEC=1200
-  export RL_POPULATION_SIZE=128
+  export RL_POPULATION_SIZE=16
 
 
 
@@ -291,6 +291,7 @@ Troubleshooting:
 - If champion updates never happen, verify `GAME_SERVERS` reachability from orchestrator and check `ORCH_COORD_SOURCES` mounts.
 - If promotion is too strict/slow, lower `ORCH_MIN_GAMES_FOR_PROMOTION` or `ORCH_WIN_RATE_MARGIN`.
 - If orchestrator competes too much with training throughput, lower `ORCH_GLOBAL_GAME_CONCURRENCY` (default `2`).
+- If host port `5000` is occupied, set `RL_COORDINATOR_BASE_PORT` (e.g. `5100`) before `./start-rl-cloud-training.sh`.
 
 Check coordinator logs for:
 - `No game server capacity available` (slot timeout)

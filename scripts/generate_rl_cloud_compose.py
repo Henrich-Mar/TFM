@@ -536,17 +536,10 @@ def _render_compose(
         host_port = base_port + i - 1
         core_pin = (i - 1) % pinnable_cores   # wraps if server_count > pinnable_cores
 
-        # V8 flags tuned for RL game-loop workloads:
-        #   --max-old-space-size   : explicit heap ceiling matching mem_limit
-        #   --optimize-for-size    : smaller code cache; better when 50+ instances share RAM
-        #   --gc-interval=200      : more frequent incremental GC → shorter pause spikes
-        #   --expose-gc            : allows app to call global.gc() at game-end boundary
-        node_options = (
-            f"--max-old-space-size={plan.node_heap_mb} "
-            "--optimize-for-size "
-            "--gc-interval=200 "
-            "--expose-gc"
-        )
+        # NODE_OPTIONS only allows a restricted set of flags (V8 security policy).
+        # --optimize-for-size, --gc-interval, --expose-gc are all blocked.
+        # Only --max-old-space-size is safe and reliable here.
+        node_options = f"--max-old-space-size={plan.node_heap_mb}"
 
         lines.extend(
             [

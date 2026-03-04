@@ -143,7 +143,7 @@ chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
 ```
 #copy pasted from benchmark : 
-export RL_TRAINING_PROFILE=saturate
+  export RL_TRAINING_PROFILE=saturate
   export RL_CPU_SERVER_RATIO=0.9 
   export RL_GAMES_PER_SERVER=6
   export PPO_MINIBATCH_SIZE=2048

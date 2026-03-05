@@ -285,45 +285,80 @@ def optimize_ppo_policy(
     # --- Device selection: move network + data to GPU for training, back to CPU after ---
     device = _get_training_device()
     network_was_on_cpu = next(network.parameters()).device.type == "cpu"
+
+    def _move_network_to(dev: torch.device) -> None:
+        network.to(dev)
+        for st in optimizer.state.values():
+            for k, v in st.items():
+                if isinstance(v, torch.Tensor):
+                    st[k] = v.to(dev)
+
+    def _prepare_data(dev: torch.device) -> tuple:
+        """Build all training tensors on *dev*. Returns (sample action_dim, data dict)."""
+        _s_state = torch.from_numpy(np.asarray(steps[0].state, dtype=np.float32)).unsqueeze(0).to(dev)
+        _s_phase = torch.tensor([int(getattr(steps[0], "phase_index", 0))], dtype=torch.long).to(dev)
+        with torch.no_grad():
+            _s_out = _forward_network(network, _s_state, phase_indices=_s_phase, recurrent_state=None)
+        _action_dim = int(_s_out["policy_logits"].shape[-1])
+
+        _states = torch.from_numpy(
+            np.stack([np.asarray(step.state, dtype=np.float32) for step in steps], axis=0)
+        ).float().to(dev)
+        _actions = torch.tensor([int(step.action) for step in steps], dtype=torch.long).to(dev)
+        _old_log_probs = torch.tensor([float(step.logp_old) for step in steps], dtype=torch.float32).to(dev)
+        _old_values = torch.tensor([float(step.value_old) for step in steps], dtype=torch.float32).to(dev)
+        _rewards = torch.tensor([float(step.reward) for step in steps], dtype=torch.float32).to(dev)
+        _dones = torch.tensor([1.0 if bool(step.done) else 0.0 for step in steps], dtype=torch.float32).to(dev)
+        _phase_indices = torch.tensor([int(getattr(step, "phase_index", 0)) for step in steps], dtype=torch.long).to(dev)
+        _recurrent_states = _build_recurrent_state_batch(steps, default_dim=int(getattr(network, "recurrent_size", 0)))
+        if _recurrent_states is not None:
+            _recurrent_states = _recurrent_states.to(dev)
+        _aux_targets = _build_aux_target_batch(steps).to(dev)
+        _legal_masks = _build_legal_mask_batch(steps, action_dim=_action_dim).to(dev)
+        _rare_payload = _build_rare_state_payload(steps)
+        _rare_payload = {k: v.to(dev) if isinstance(v, torch.Tensor) else v for k, v in _rare_payload.items()}
+        return _action_dim, {
+            "states": _states, "actions": _actions, "old_log_probs": _old_log_probs,
+            "old_values": _old_values, "rewards": _rewards, "dones": _dones,
+            "phase_indices": _phase_indices, "recurrent_states": _recurrent_states,
+            "aux_targets": _aux_targets, "legal_masks": _legal_masks,
+            "rare_payload": _rare_payload,
+        }
+
     if device.type != "cpu":
         try:
-            network.to(device)
-            # Migrate optimizer state tensors to the new device so Adam
-            # momentum/variance buffers match the parameter device.
-            for state in optimizer.state.values():
-                for k, v in state.items():
-                    if isinstance(v, torch.Tensor):
-                        state[k] = v.to(device)
+            _move_network_to(device)
             _ppo_logger.info("PPO training on device=%s (%d steps)", device, len(steps))
-        except Exception as e:
-            _ppo_logger.warning("Failed to move network to %s, falling back to CPU: %s", device, e)
+            action_dim, _d = _prepare_data(device)
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            _ppo_logger.warning(
+                "CUDA OOM during PPO data preparation (%s). Clearing cache and falling back to CPU.",
+                e,
+            )
+            torch.cuda.empty_cache()
             device = torch.device("cpu")
-            network.to(device)
+            _move_network_to(device)
+            action_dim, _d = _prepare_data(device)
+        except Exception as e:
+            _ppo_logger.warning("Failed to move network/data to %s, falling back to CPU: %s", device, e)
+            device = torch.device("cpu")
+            _move_network_to(device)
+            action_dim, _d = _prepare_data(device)
+    else:
+        action_dim, _d = _prepare_data(device)
 
-    sample_state = torch.from_numpy(np.asarray(steps[0].state, dtype=np.float32)).unsqueeze(0).to(device)
-    sample_phase = torch.tensor([int(getattr(steps[0], "phase_index", 0))], dtype=torch.long).to(device)
-    with torch.no_grad():
-        sample_out = _forward_network(network, sample_state, phase_indices=sample_phase, recurrent_state=None)
-        sample_logits = sample_out["policy_logits"]
-    action_dim = int(sample_logits.shape[-1])
-
-    states = torch.from_numpy(np.stack([np.asarray(step.state, dtype=np.float32) for step in steps], axis=0)).float().to(device)
-    actions = torch.tensor([int(step.action) for step in steps], dtype=torch.long).to(device)
-    old_log_probs = torch.tensor([float(step.logp_old) for step in steps], dtype=torch.float32).to(device)
-    old_values = torch.tensor([float(step.value_old) for step in steps], dtype=torch.float32).to(device)
-    rewards = torch.tensor([float(step.reward) for step in steps], dtype=torch.float32).to(device)
-    dones = torch.tensor([1.0 if bool(step.done) else 0.0 for step in steps], dtype=torch.float32).to(device)
-    phase_indices = torch.tensor([int(getattr(step, "phase_index", 0)) for step in steps], dtype=torch.long).to(device)
-    recurrent_states = _build_recurrent_state_batch(steps, default_dim=int(getattr(network, "recurrent_size", 0)))
-    if recurrent_states is not None:
-        recurrent_states = recurrent_states.to(device)
-    aux_targets = _build_aux_target_batch(steps).to(device)
-    legal_masks = _build_legal_mask_batch(steps, action_dim=action_dim).to(device)
-    rare_payload = _build_rare_state_payload(steps)
-    # Move rare_payload tensors to device
-    rare_payload = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in rare_payload.items()}
+    states = _d["states"]
+    actions = _d["actions"]
+    old_log_probs = _d["old_log_probs"]
+    old_values = _d["old_values"]
+    rewards = _d["rewards"]
+    dones = _d["dones"]
+    phase_indices = _d["phase_indices"]
+    recurrent_states = _d["recurrent_states"]
+    aux_targets = _d["aux_targets"]
+    legal_masks = _d["legal_masks"]
+    rare_payload = _d["rare_payload"]
     reward_components = _build_reward_component_batch(steps)
-    # reward_components stay on CPU — only used for metrics at the end
 
     rare_priority_enabled = str(os.getenv("PPO_RARE_STATE_PRIORITY_ENABLED", "1")).strip().lower() not in (
         "0",
@@ -533,19 +568,20 @@ def optimize_ppo_policy(
         else:
             explained_variance_value = 0.0
 
-    # Move network back to its pre-training device.  When the agent keeps
-    # the network on GPU for inference (AGENT_INFERENCE_DEVICE=auto/cuda),
-    # network_was_on_cpu is False and this block is skipped so the network
-    # stays on GPU.
-    if network_was_on_cpu and device.type != "cpu":
-        cpu_device = torch.device("cpu")
-        network.to(cpu_device)
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(cpu_device)
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+    # Restore network to its pre-training device.
+    original_device = torch.device("cpu") if network_was_on_cpu else _get_training_device()
+    current_device = next(network.parameters()).device
+    if current_device != original_device:
+        try:
+            network.to(original_device)
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(original_device)
+        except Exception as e:
+            _ppo_logger.warning("Failed to restore network to %s after PPO: %s", original_device, e)
+    if device.type == "cuda" or current_device.type == "cuda":
+        torch.cuda.empty_cache()
 
     updates = max(1, num_updates)
     aux_updates = max(1, int(aux_metric_updates))

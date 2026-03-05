@@ -154,21 +154,21 @@ export RL_NUM_COORDINATORS=6
 export RL_COORDINATOR_BASE_PORT=5100
 export RL_COORDINATORS_SHARE_GPU=1
 
-# Force total servers = 30 => 5 per coordinator
+# Force total servers = 60 => 10 per coordinator
 export RL_MIN_SERVERS=30
 export RL_MAX_SERVERS=30
 
 # 2 concurrent games per server
-export RL_GAMES_PER_SERVER=2
+export RL_GAMES_PER_SERVER=1
 
 # 5 servers * 2 games = 10 concurrent games per coordinator
-export RL_GLOBAL_GAME_CAP_PER_COORD=10
-export RL_TOURNAMENT_CAP_PER_COORD=10
+export RL_GLOBAL_GAME_CAP_PER_COORD=5
+export RL_TOURNAMENT_CAP_PER_COORD=5
 
 export RL_CPU_SERVER_RATIO=0.925
 export RL_SERVER_MEM_MB=900
 export RL_NODE_HEAP_MB=512
-export RL_GAMES_PER_EVAL=20
+export RL_GAMES_PER_EVAL=10
 export RL_INFRA_OVERHEAD_MB=6144
 export RL_TM_GAME_TIMEOUT_SEC=2400
 export RL_INITIAL_CARDS_JITTER_MS=1200

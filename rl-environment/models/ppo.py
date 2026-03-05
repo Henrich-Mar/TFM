@@ -41,6 +41,50 @@ def _get_training_device() -> torch.device:
     return torch.device("cpu")
 
 
+def _is_cuda_oom(exc: BaseException) -> bool:
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    return "cuda out of memory" in str(exc).strip().lower()
+
+
+def _move_network_and_optimizer_to(
+    network: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+) -> None:
+    network.to(device)
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if isinstance(value, torch.Tensor):
+                state[key] = value.to(device)
+
+
+def _select_ppo_device(
+    network: torch.nn.Module,
+    requested_device: Optional[torch.device] = None,
+) -> torch.device:
+    device = requested_device or _get_training_device()
+    if device.type != "cuda":
+        return device
+
+    try:
+        param_bytes = sum(int(param.numel()) * int(param.element_size()) for param in network.parameters())
+        min_free_mb = max(128, int(os.getenv("PPO_CUDA_MIN_FREE_MB", "512")))
+        required_bytes = max(int(min_free_mb) * 1024 * 1024, int(param_bytes * 4))
+        free_mem, _ = torch.cuda.mem_get_info(device.index or 0)
+        if int(free_mem) < int(required_bytes):
+            _ppo_logger.warning(
+                "Skipping CUDA PPO due to low free VRAM: free=%.1f MiB required>=%.1f MiB device=%s",
+                float(free_mem) / (1024.0 * 1024.0),
+                float(required_bytes) / (1024.0 * 1024.0),
+                device,
+            )
+            return torch.device("cpu")
+    except Exception:
+        pass
+    return device
+
+
 @dataclass
 class PPORolloutStep:
     state: np.ndarray
@@ -278,12 +322,13 @@ def optimize_ppo_policy(
     steps: Sequence[PPORolloutStep],
     ppo: PPOHyperParameters,
     policy_temperature: float = 1.0,
+    ppo_device_override: Optional[torch.device] = None,
 ) -> Dict[str, Any]:
     if not steps:
         return {}
 
     # --- Device selection: move network + data to GPU for training, back to CPU after ---
-    device = _get_training_device()
+    device = _select_ppo_device(network, requested_device=ppo_device_override)
     network_was_on_cpu = next(network.parameters()).device.type == "cpu"
 
     def _move_network_to(dev: torch.device) -> None:

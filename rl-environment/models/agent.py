@@ -27,7 +27,14 @@ from scoring import calculate_terminal_reward, calculate_step_reward_decompositi
 import random
 import aiohttp
 
-from .ppo import PPORolloutStep, PPOHyperParameters, optimize_ppo_policy
+from .ppo import (
+    PPORolloutStep,
+    PPOHyperParameters,
+    _is_cuda_oom,
+    _move_network_and_optimizer_to,
+    _select_ppo_device,
+    optimize_ppo_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,13 +122,38 @@ def _run_ppo_update_sync(
 ) -> Dict[str, Any]:
     """Run PPO optimization synchronously (for executor). Must not call async code."""
     agent.ppo_hparams.entropy_coef = float(current_entropy_coef)
-    metrics = optimize_ppo_policy(
-        network=agent.network,
-        optimizer=agent.optimizer,
-        steps=steps,
-        ppo=agent.ppo_hparams,
-        policy_temperature=policy_temp,
-    )
+    requested_device = _select_ppo_device(agent.network)
+    try:
+        metrics = optimize_ppo_policy(
+            network=agent.network,
+            optimizer=agent.optimizer,
+            steps=steps,
+            ppo=agent.ppo_hparams,
+            policy_temperature=policy_temp,
+            ppo_device_override=requested_device,
+        )
+    except Exception as exc:
+        if requested_device.type != "cpu" and _is_cuda_oom(exc):
+            logger.warning(
+                "CUDA OOM during PPO update for agent %s; retrying on CPU.",
+                agent.id[:8],
+            )
+            try:
+                agent.optimizer.zero_grad(set_to_none=True)
+            except Exception:
+                pass
+            torch.cuda.empty_cache()
+            _move_network_and_optimizer_to(agent.network, agent.optimizer, torch.device("cpu"))
+            metrics = optimize_ppo_policy(
+                network=agent.network,
+                optimizer=agent.optimizer,
+                steps=steps,
+                ppo=agent.ppo_hparams,
+                policy_temperature=policy_temp,
+                ppo_device_override=torch.device("cpu"),
+            )
+        else:
+            raise
     if metrics:
         metrics.update(agent._adapt_ppo_learning_rate(float(metrics.get("ppo/approx_kl", 0.0))))
         metrics["ppo/learning_rate"] = float(agent.optimizer.param_groups[0].get("lr", 0.0))

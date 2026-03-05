@@ -149,6 +149,7 @@ async def optimize_population_with_ppo(
         except Exception:
             pass
         work.append((agent, per_agent_budget))
+        remaining_budget = max(0, remaining_budget - per_agent_budget)
         remaining_agents = max(0, remaining_agents - 1)
 
     if not work:

@@ -67,6 +67,24 @@ ESSENTIAL_ENV_DEFAULTS = [
     "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
 ]
 
+PASSTHROUGH_RUNTIME_ENV_KEYS = (
+    "PPO_PARALLEL_AGENTS",
+    "PPO_EXECUTOR_WORKERS",
+    "PPO_MINIBATCH_SIZE",
+    "PPO_DEVICE",
+    "PPO_CUDA_MIN_FREE_MB",
+    "PPO_GPU_MUTEX_ENABLE",
+    "PPO_GPU_MUTEX_PATH",
+    "PPO_GPU_MUTEX_TIMEOUT_SEC",
+    "PPO_GPU_MUTEX_POLL_SEC",
+    "AGENT_INFERENCE_DEVICE",
+    "AGENT_INFERENCE_BATCH",
+    "AGENT_INFERENCE_BATCH_SIZE",
+    "AGENT_INFERENCE_THREADS",
+    "GAME_OPTIONS_FILE",
+    "PYTORCH_CUDA_ALLOC_CONF",
+)
+
 
 @dataclass
 class CapacityPlan:
@@ -281,6 +299,19 @@ def _apply_env_overrides(env_items: Iterable[str], overrides: Dict[str, str]) ->
             positions[key] = len(items)
             items.append(token)
     return items
+
+
+def _runtime_env_passthrough_overrides() -> Dict[str, str]:
+    overrides: Dict[str, str] = {}
+    for key in PASSTHROUGH_RUNTIME_ENV_KEYS:
+        value = str(os.getenv(key, "")).strip()
+        if value:
+            overrides[key] = value
+
+    rl_game_options = str(os.getenv("RL_GAME_OPTIONS_FILE", "")).strip()
+    if rl_game_options:
+        overrides["GAME_OPTIONS_FILE"] = rl_game_options
+    return overrides
 
 
 def _coordinator_role_env_overrides(
@@ -1146,6 +1177,7 @@ def main() -> int:
                 num_coordinators=num_coordinators,
                 coordinators_share_gpu=coordinators_share_gpu,
             ))
+            coord_env = _apply_env_overrides(coord_env, _runtime_env_passthrough_overrides())
             coord_envs.append(coord_env)
         env_items = coord_envs[0]
     else:
@@ -1158,6 +1190,7 @@ def main() -> int:
             num_coordinators=num_coordinators,
         )
         env_items = _merge_env_lists(dynamic_env, base_env_filtered, ESSENTIAL_ENV_DEFAULTS)
+        env_items = _apply_env_overrides(env_items, _runtime_env_passthrough_overrides())
         coord_envs = None
     compose_text = _render_compose(
         capacity,

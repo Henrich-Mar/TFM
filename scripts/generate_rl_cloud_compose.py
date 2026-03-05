@@ -64,6 +64,7 @@ ESSENTIAL_ENV_DEFAULTS = [
     "RL_MODELS_DIR=/app/rl-models",
     "RL_CHECKPOINT_DIR=/app/rl-models/checkpoints",
     "TM_CARD_METADATA_PATH=/app/card_metadata.json",
+    "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
 ]
 
 

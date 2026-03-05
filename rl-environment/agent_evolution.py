@@ -212,7 +212,9 @@ class EvolutionManager:
         # Compare network parameters
         with torch.no_grad():
             for p1, p2 in zip(agent1.network.parameters(), agent2.network.parameters()):
-                param_distance = torch.norm(p1 - p2).item()
+                p1_cpu = p1.detach().float().cpu()
+                p2_cpu = p2.detach().float().cpu()
+                param_distance = torch.norm(p1_cpu - p2_cpu).item()
                 distance += param_distance
                 param_count += 1
         

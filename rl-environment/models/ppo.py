@@ -370,9 +370,11 @@ def optimize_ppo_policy(
             "rare_payload": _rare_payload,
         }
 
+    if next(network.parameters()).device != device:
+        _move_network_to(device)
+
     if device.type != "cpu":
         try:
-            _move_network_to(device)
             _ppo_logger.info("PPO training on device=%s (%d steps)", device, len(steps))
             action_dim, _d = _prepare_data(device)
         except (torch.cuda.OutOfMemoryError, RuntimeError) as e:

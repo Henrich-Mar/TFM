@@ -30,6 +30,14 @@ from training.fitness import (
     snapshot_population_behavior,
 )
 from training.ppo_cycle import optimize_population_with_ppo
+from training.ppo_coordinator_sync import (
+    is_serialize_enabled as _ppo_serialize_enabled,
+    acquire_coordinator_ppo_lock,
+    release_coordinator_ppo_lock,
+    signal_ppo_phase_active,
+    signal_ppo_done,
+    wait_ppo_phase_complete,
+)
 from training.league import LeagueConfig, LeagueManager
 from training.generation_quality import (
     annotate_generation_validity,
@@ -161,6 +169,9 @@ class RLCoordinator:
                 snapshot_interval=self._safe_env_int("LEAGUE_SNAPSHOT_INTERVAL", 5),
             )
         )
+        self.ppo_coordinator_serialize = _ppo_serialize_enabled()
+        self.coordinator_id = str(os.getenv("COORDINATOR_ID", "")).strip() or "coord-1"
+        self.num_coordinators = max(1, self._safe_env_int("NUM_COORDINATORS", 1))
 
     @staticmethod
     def _safe_env_float(name: str, default: float) -> float:
@@ -400,6 +411,8 @@ class RLCoordinator:
     
     async def evaluate_population(self) -> List[float]:
         """Evaluate entire population through tournaments"""
+        if self.ppo_coordinator_serialize:
+            await wait_ppo_phase_complete(self.coordinator_id)
         logger.info(f"Evaluating population of {len(self.population)} agents...")
         before_behavior = self._snapshot_population_behavior()
         payment_reject_before = int(getattr(self.game_cluster, "payment_reject_count", 0))
@@ -454,10 +467,19 @@ class RLCoordinator:
         # RL-first: optimize policies from collected rollouts after rollout collection.
         ppo_metrics: Dict[str, Any] = {}
         if self.ppo_enable:
-            ppo_metrics = await optimize_population_with_ppo(
-                population=self.population,
-                target_rollout_steps=int(self.ppo_rollout_steps),
-            )
+            coord_lock = None
+            try:
+                if self.ppo_coordinator_serialize:
+                    coord_lock = await acquire_coordinator_ppo_lock(self.coordinator_id)
+                    signal_ppo_phase_active()
+                ppo_metrics = await optimize_population_with_ppo(
+                    population=self.population,
+                    target_rollout_steps=int(self.ppo_rollout_steps),
+                )
+            finally:
+                if self.ppo_coordinator_serialize:
+                    signal_ppo_done(self.coordinator_id, self.num_coordinators)
+                    release_coordinator_ppo_lock(coord_lock)
 
         after_behavior = self._snapshot_population_behavior()
         payment_reject_after = int(getattr(self.game_cluster, "payment_reject_count", 0))

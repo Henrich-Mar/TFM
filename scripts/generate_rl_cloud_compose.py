@@ -282,15 +282,23 @@ def _apply_env_overrides(env_items: Iterable[str], overrides: Dict[str, str]) ->
     return items
 
 
-def _coordinator_role_env_overrides(coord_index: int) -> Dict[str, str]:
-    # All coordinators train with PPO and save checkpoints.
-    return {
+def _coordinator_role_env_overrides(
+    coord_index: int,
+    num_coordinators: int = 1,
+    coordinators_share_gpu: bool = False,
+) -> Dict[str, str]:
+    overrides: Dict[str, str] = {
         "PPO_ENABLE": "1",
         "SAVE_TOP_K": "2",
         "SAVE_EVERY_N_GENERATIONS": "1",
         "MAX_SAVED_GENERATIONS": "30",
         "TRAINING_POOL_EXTRA_CHECKPOINTS": "/app/rl-models-global/champion/current/champion.pth",
     }
+    if coordinators_share_gpu and num_coordinators > 1:
+        overrides["PPO_COORDINATOR_SERIALIZE"] = "1"
+        overrides["COORDINATOR_ID"] = f"coord-{coord_index + 1}"
+        overrides["NUM_COORDINATORS"] = str(num_coordinators)
+    return overrides
 
 
 def _build_orchestrator_coord_sources(num_coordinators: int) -> str:
@@ -813,6 +821,12 @@ def _render_compose(
                 "      - ORCH_KEEP_GENERATIONS_WORKER=15",
                 "      - TOURNAMENT_CONCURRENCY=2",
                 "      - GLOBAL_GAME_CONCURRENCY=2",
+            ]
+        )
+        if use_shared_gpu:
+            lines.append("      - ORCH_PAUSE_DURING_PPO=1")
+        lines.extend(
+            [
                 "    depends_on:",
                 "      - redis",
                 "      - postgres",
@@ -1105,6 +1119,8 @@ def main() -> int:
         if item.split("=", 1)[0].strip() not in DYNAMIC_ENV_KEYS
     ]
 
+    coordinators_share_gpu = bool(args.coordinators_share_gpu)
+
     if num_coordinators > 1:
         coord_envs = []
         for c in range(num_coordinators):
@@ -1124,7 +1140,11 @@ def main() -> int:
                 num_coordinators=num_coordinators,
             )
             coord_env = _merge_env_lists(dynamic_env, base_env_filtered, ESSENTIAL_ENV_DEFAULTS)
-            coord_env = _apply_env_overrides(coord_env, _coordinator_role_env_overrides(c))
+            coord_env = _apply_env_overrides(coord_env, _coordinator_role_env_overrides(
+                c,
+                num_coordinators=num_coordinators,
+                coordinators_share_gpu=coordinators_share_gpu,
+            ))
             coord_envs.append(coord_env)
         env_items = coord_envs[0]
     else:
@@ -1138,8 +1158,6 @@ def main() -> int:
         )
         env_items = _merge_env_lists(dynamic_env, base_env_filtered, ESSENTIAL_ENV_DEFAULTS)
         coord_envs = None
-
-    coordinators_share_gpu = bool(args.coordinators_share_gpu)
     compose_text = _render_compose(
         capacity,
         env_items=env_items,

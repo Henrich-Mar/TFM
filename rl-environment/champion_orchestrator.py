@@ -21,6 +21,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from game_interface import GameServerCluster
 from models.agent import RLAgent
 from tournament_manager import TournamentManager
+from training.ppo_coordinator_sync import is_ppo_phase_active
 
 
 LOG_LEVEL_NAME = str(os.getenv("LOG_LEVEL", "INFO")).strip().upper()
@@ -68,6 +69,7 @@ class OrchestratorConfig:
     win_rate_margin: float
     keep_generations_trainer: int
     keep_generations_worker: int
+    pause_during_ppo: bool = False
 
 
 def _utc_now_iso() -> str:
@@ -546,6 +548,9 @@ def _load_config() -> OrchestratorConfig:
     if trainer_coord_id not in coord_sources:
         trainer_coord_id = sorted(coord_sources.keys())[0]
 
+    pause_during_ppo_raw = str(os.getenv("ORCH_PAUSE_DURING_PPO", "0")).strip().lower()
+    pause_during_ppo = pause_during_ppo_raw not in ("0", "false", "no", "off")
+
     return OrchestratorConfig(
         coord_sources=coord_sources,
         trainer_coord_id=trainer_coord_id,
@@ -561,6 +566,7 @@ def _load_config() -> OrchestratorConfig:
         win_rate_margin=max(0.0, float(os.getenv("ORCH_WIN_RATE_MARGIN", "0.03"))),
         keep_generations_trainer=max(1, _safe_int(os.getenv("ORCH_KEEP_GENERATIONS_TRAINER", "30"), 30)),
         keep_generations_worker=max(1, _safe_int(os.getenv("ORCH_KEEP_GENERATIONS_WORKER", "15"), 15)),
+        pause_during_ppo=pause_during_ppo,
     )
 
 
@@ -590,6 +596,10 @@ def _coordinator_keep_window(config: OrchestratorConfig, coord_id: str) -> int:
 
 
 async def run_round(config: OrchestratorConfig, state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if config.pause_during_ppo and is_ppo_phase_active():
+        logger.info("PPO phase active; skipping champion round.")
+        return None
+
     progress = {
         coord_id: discover_coord_progress(coord_id, coord_root)
         for coord_id, coord_root in config.coord_sources.items()

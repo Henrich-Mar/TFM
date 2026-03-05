@@ -150,33 +150,47 @@ chmod +x start-rl-cloud-training.sh
 export PUBLIC_HOST=localhost
 
 export RL_TRAINING_PROFILE=saturate
-export RL_CPU_SERVER_RATIO=0.925
-export RL_GAMES_PER_SERVER=1
-export RL_SERVER_MEM_MB=900
-export RL_NODE_HEAP_MB=512
-export RL_GLOBAL_GAME_CAP_PER_COORD=6
-export RL_TOURNAMENT_CAP_PER_COORD=6
 export RL_NUM_COORDINATORS=6
 export RL_COORDINATOR_BASE_PORT=5100
 export RL_COORDINATORS_SHARE_GPU=1
-export RL_AGENT_POLL_INTERVAL_SEC=0.03
-export RL_AGENT_FAILURE_PAUSE_SEC=0.05
+
+# Force total servers = 30 => 5 per coordinator
+export RL_MIN_SERVERS=30
+export RL_MAX_SERVERS=30
+
+# 2 concurrent games per server
+export RL_GAMES_PER_SERVER=2
+
+# 5 servers * 2 games = 10 concurrent games per coordinator
+export RL_GLOBAL_GAME_CAP_PER_COORD=10
+export RL_TOURNAMENT_CAP_PER_COORD=10
+
+export RL_CPU_SERVER_RATIO=0.925
+export RL_SERVER_MEM_MB=900
+export RL_NODE_HEAP_MB=512
 export RL_GAMES_PER_EVAL=20
 export RL_INFRA_OVERHEAD_MB=6144
 export RL_TM_GAME_TIMEOUT_SEC=2400
 export RL_INITIAL_CARDS_JITTER_MS=1200
 export RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0
 export RL_POPULATION_SIZE=16
+
 export PPO_MINIBATCH_SIZE=2048
 export AGENT_INFERENCE_BATCH_SIZE=64
 export AGENT_INFERENCE_THREADS=8
-export PPO_PARALLEL_AGENTS=6
-export PPO_EXECUTOR_WORKERS=6
-#export TM_TRANSPORT_TIMING_DEBUG=1
+
+# Important for your current PPO-zero issue on shared GPU:
+export PPO_PARALLEL_AGENTS=1
+export PPO_EXECUTOR_WORKERS=1
+export RL_PPO_ROLLOUT_STEPS=24576
+
+export TM_TRANSPORT_TIMING_DEBUG=0
 export TM_HTTP_PREWARM_CONNECTIONS=4
 export RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7
+
 chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
+
 ```
 
 

@@ -4,8 +4,11 @@ Coordinator-facing PPO optimization cycle helpers.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import Any, Dict, List, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def _mean(values: List[float]) -> float:
@@ -28,6 +31,8 @@ async def optimize_population_with_ppo(
     optimized_agents = 0
     rollout_steps = 0
     schema_filtered = 0
+    exception_count = 0
+    agents_with_buffer = 0
 
     ppo_agents = [agent for agent in population if hasattr(agent, "optimize_from_rollout_buffer")]
     if not ppo_agents:
@@ -35,13 +40,19 @@ async def optimize_population_with_ppo(
             "ppo/agents_optimized": 0,
             "rollout/steps_collected": 0,
             "rollout/schema_filtered": 0,
+            "ppo/exception_count": 0,
+            "ppo/agents_with_rollout_buffer": 0,
+            "rollout/steps_available_before": 0,
         }
 
     total_available_steps = 0
     for agent in ppo_agents:
         try:
             if hasattr(agent, "get_rollout_buffer_size"):
-                total_available_steps += max(0, int(agent.get_rollout_buffer_size()))
+                agent_steps = max(0, int(agent.get_rollout_buffer_size()))
+                total_available_steps += agent_steps
+                if agent_steps > 0:
+                    agents_with_buffer += 1
         except Exception:
             continue
     min_steps_per_agent = max(0, int(os.getenv("PPO_MIN_STEPS_PER_AGENT", "1024")))
@@ -72,6 +83,9 @@ async def optimize_population_with_ppo(
             "ppo/agents_optimized": 0,
             "rollout/steps_collected": 0,
             "rollout/schema_filtered": 0,
+            "ppo/exception_count": 0,
+            "ppo/agents_with_rollout_buffer": int(agents_with_buffer),
+            "rollout/steps_available_before": int(total_available_steps),
         }
 
     # Run PPO updates in parallel (limited concurrency to avoid GPU OOM).
@@ -89,6 +103,8 @@ async def optimize_population_with_ppo(
 
     for result in results:
         if isinstance(result, Exception):
+            exception_count += 1
+            logger.exception("PPO update task failed; continuing with remaining agents.")
             continue
         metrics = result
         if not metrics:
@@ -116,4 +132,16 @@ async def optimize_population_with_ppo(
     merged["ppo/agents_optimized"] = int(optimized_agents)
     merged["rollout/steps_collected"] = int(rollout_steps)
     merged["rollout/schema_filtered"] = int(schema_filtered)
+    merged["ppo/exception_count"] = int(exception_count)
+    merged["ppo/agents_with_rollout_buffer"] = int(agents_with_buffer)
+    merged["rollout/steps_available_before"] = int(total_available_steps)
+
+    if int(rollout_steps) == 0 and int(total_available_steps) > 0:
+        logger.warning(
+            "PPO collected zero steps despite buffered rollout data: "
+            "available_steps=%d agents_with_buffer=%d exceptions=%d",
+            int(total_available_steps),
+            int(agents_with_buffer),
+            int(exception_count),
+        )
     return merged

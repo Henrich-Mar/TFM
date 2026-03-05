@@ -662,8 +662,11 @@
 
         renderKV(document.getElementById("policyLoop"), [
           ["Agents optimized", fmt(gm["ppo/agents_optimized"])],
+          ["Agents w/rollout buffer", fmt(gm["ppo/agents_with_rollout_buffer"])],
+          ["Steps available (pre-PPO)", fmt(gm["rollout/steps_available_before"])],
           ["Rollout steps", fmt(gm["rollout/steps_collected"])],
           ["Schema filtered", fmt(gm["rollout/schema_filtered"])],
+          ["PPO exceptions", fmt(gm["ppo/exception_count"])],
           ["Policy loss", f4(gm["ppo/policy_loss"])],
           ["Value loss", f4(gm["ppo/value_loss"])],
           ["Approx KL", f4(gm["ppo/approx_kl"])],

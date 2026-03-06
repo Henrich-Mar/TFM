@@ -121,62 +121,63 @@ def _run_ppo_update_sync(
     policy_temp: float,
 ) -> Dict[str, Any]:
     """Run PPO optimization synchronously (for executor). Must not call async code."""
-    agent.ppo_hparams.entropy_coef = float(current_entropy_coef)
-    requested_device = _select_ppo_device(agent.network)
-    try:
-        metrics = optimize_ppo_policy(
-            network=agent.network,
-            optimizer=agent.optimizer,
-            steps=steps,
-            ppo=agent.ppo_hparams,
-            policy_temperature=policy_temp,
-            ppo_device_override=requested_device,
-        )
-    except Exception as exc:
-        if requested_device.type != "cpu" and _is_cuda_oom(exc):
-            logger.warning(
-                "CUDA OOM during PPO update for agent %s; retrying on CPU.",
-                agent.id[:8],
-            )
-            try:
-                agent.optimizer.zero_grad(set_to_none=True)
-            except Exception:
-                pass
-            torch.cuda.empty_cache()
-            _move_network_and_optimizer_to(agent.network, agent.optimizer, torch.device("cpu"))
+    with agent._model_device_lock:
+        agent.ppo_hparams.entropy_coef = float(current_entropy_coef)
+        requested_device = _select_ppo_device(agent.network)
+        try:
             metrics = optimize_ppo_policy(
                 network=agent.network,
                 optimizer=agent.optimizer,
                 steps=steps,
                 ppo=agent.ppo_hparams,
                 policy_temperature=policy_temp,
-                ppo_device_override=torch.device("cpu"),
+                ppo_device_override=requested_device,
             )
-        else:
-            raise
-    if metrics:
-        metrics.update(agent._adapt_ppo_learning_rate(float(metrics.get("ppo/approx_kl", 0.0))))
-        metrics["ppo/learning_rate"] = float(agent.optimizer.param_groups[0].get("lr", 0.0))
-        metrics["ppo/target_kl"] = float(agent.ppo_hparams.target_kl)
-        metrics["ppo/entropy_coef"] = float(current_entropy_coef)
-    agent.network.eval()
+        except Exception as exc:
+            if requested_device.type != "cpu" and _is_cuda_oom(exc):
+                logger.warning(
+                    "CUDA OOM during PPO update for agent %s; retrying on CPU.",
+                    agent.id[:8],
+                )
+                try:
+                    agent.optimizer.zero_grad(set_to_none=True)
+                except Exception:
+                    pass
+                torch.cuda.empty_cache()
+                _move_network_and_optimizer_to(agent.network, agent.optimizer, torch.device("cpu"))
+                metrics = optimize_ppo_policy(
+                    network=agent.network,
+                    optimizer=agent.optimizer,
+                    steps=steps,
+                    ppo=agent.ppo_hparams,
+                    policy_temperature=policy_temp,
+                    ppo_device_override=torch.device("cpu"),
+                )
+            else:
+                raise
+        if metrics:
+            metrics.update(agent._adapt_ppo_learning_rate(float(metrics.get("ppo/approx_kl", 0.0))))
+            metrics["ppo/learning_rate"] = float(agent.optimizer.param_groups[0].get("lr", 0.0))
+            metrics["ppo/target_kl"] = float(agent.ppo_hparams.target_kl)
+            metrics["ppo/entropy_coef"] = float(current_entropy_coef)
+        agent.network.eval()
 
-    # PPO training may strand the network on CPU after a CUDA OOM fallback.
-    # Re-sync so _inference_device matches where the network actually lives,
-    # and opportunistically try to reclaim CUDA if enough VRAM is now free.
-    try:
-        actual_device = next(agent.network.parameters()).device
-        if actual_device != agent._inference_device:
-            logger.warning(
-                "Network device (%s) differs from inference device (%s) after PPO; re-syncing.",
-                actual_device, agent._inference_device,
-            )
-            agent._inference_device = actual_device
-    except StopIteration:
-        pass
-    agent._try_reclaim_cuda()
+        # PPO training may strand the network on CPU after a CUDA OOM fallback.
+        # Re-sync so _inference_device matches where the network actually lives,
+        # and opportunistically try to reclaim CUDA if enough VRAM is now free.
+        try:
+            actual_device = next(agent.network.parameters()).device
+            if actual_device != agent._inference_device:
+                logger.warning(
+                    "Network device (%s) differs from inference device (%s) after PPO; re-syncing.",
+                    actual_device, agent._inference_device,
+                )
+                agent._inference_device = actual_device
+        except StopIteration:
+            pass
+        agent._try_reclaim_cuda()
 
-    return metrics or {}
+        return metrics or {}
 
 
 # ---------------------------------------------------------------------------
@@ -238,67 +239,64 @@ class InferenceBatcher:
     def _run_batch_forward(
         self, batch: list, device: torch.device,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
-        try:
-            actual_net_device = next(self._agent.network.parameters()).device
-        except StopIteration:
-            actual_net_device = device
-        if actual_net_device != device:
-            device = actual_net_device
+        with self._agent._model_device_lock:
+            try:
+                actual_net_device = next(self._agent.network.parameters()).device
+            except StopIteration:
+                actual_net_device = device
+            if actual_net_device != device:
+                device = actual_net_device
 
-        states = torch.tensor(
-            np.stack([r[0] for r in batch]),
-            dtype=torch.float32, device=device,
-        )
-        phases = torch.tensor(
-            [r[1] for r in batch],
-            dtype=torch.long, device=device,
-        )
-        recurrent = torch.stack([r[2] for r in batch]).to(device)
+            states = torch.tensor(
+                np.stack([r[0] for r in batch]),
+                dtype=torch.float32, device=device,
+            )
+            phases = torch.tensor(
+                [r[1] for r in batch],
+                dtype=torch.long, device=device,
+            )
+            recurrent = torch.stack([r[2] for r in batch]).to(device)
 
-        try:
-            with torch.no_grad():
-                use_amp = device.type == "cuda"
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    out = self._agent._forward_network(
-                        states, phase_indices=phases, recurrent_state=recurrent,
-                    )
+            try:
+                with torch.no_grad():
+                    use_amp = device.type == "cuda"
+                    with torch.amp.autocast("cuda", enabled=use_amp):
+                        out = self._agent._forward_network(
+                            states, phase_indices=phases, recurrent_state=recurrent,
+                        )
 
-                policy_logits = out["policy_logits"].float()
-                value = out["value"].float()
-                recurrent_out = out.get("recurrent_state")
-                if recurrent_out is not None:
-                    recurrent_out = recurrent_out.float()
-                aux_preds = out.get("aux_predictions")
+                    policy_logits = out["policy_logits"].float()
+                    value = out["value"].float()
+                    recurrent_out = out.get("recurrent_state")
+                    if recurrent_out is not None:
+                        recurrent_out = recurrent_out.float()
+                    aux_preds = out.get("aux_predictions")
 
-                temperature = self._agent._effective_policy_temperature()
-                policy_logits = policy_logits / max(temperature, 1e-3)
-                policy_probs = F.softmax(policy_logits, dim=-1)
+                    temperature = self._agent._effective_policy_temperature()
+                    policy_logits = policy_logits / max(temperature, 1e-3)
+                    policy_probs = F.softmax(policy_logits, dim=-1)
 
-            if device.type != "cpu":
-                policy_logits = policy_logits.cpu()
-                value = value.cpu()
-                policy_probs = policy_probs.cpu()
-                if aux_preds is not None:
-                    aux_preds = aux_preds.cpu()
+                if device.type != "cpu":
+                    policy_logits = policy_logits.cpu()
+                    value = value.cpu()
+                    policy_probs = policy_probs.cpu()
+                    if aux_preds is not None:
+                        aux_preds = aux_preds.cpu()
 
-            return policy_logits, value, recurrent_out, aux_preds, policy_probs
+                return policy_logits, value, recurrent_out, aux_preds, policy_probs
 
-        except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
-            if device.type == "cpu":
-                raise
-            err_msg = str(exc)
-            if "CUDA" not in err_msg and "out of memory" not in err_msg:
-                raise
-            logger.warning("CUDA OOM in batched inference; clearing cache and falling back to CPU.")
-            torch.cuda.empty_cache()
-            cpu = torch.device("cpu")
-            self._agent.network.to(cpu)
-            for st in self._agent.optimizer.state.values():
-                for k, v in st.items():
-                    if isinstance(v, torch.Tensor):
-                        st[k] = v.to(cpu)
-            self._agent._inference_device = cpu
-            return self._run_batch_forward(batch, cpu)
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+                if device.type == "cpu":
+                    raise
+                err_msg = str(exc)
+                if "CUDA" not in err_msg and "out of memory" not in err_msg:
+                    raise
+                logger.warning("CUDA OOM in batched inference; clearing cache and falling back to CPU.")
+                torch.cuda.empty_cache()
+                cpu = torch.device("cpu")
+                _move_network_and_optimizer_to(self._agent.network, self._agent.optimizer, cpu)
+                self._agent._inference_device = cpu
+                return self._run_batch_forward(batch, cpu)
 
     # -- background worker ---------------------------------------------------
 
@@ -860,6 +858,7 @@ class RLAgent:
         self.network = TerraformingMarsNetwork(self.config)
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
         self.network.eval()
+        self._model_device_lock = threading.RLock()
 
         self._inference_device = _resolve_inference_device()
         self._move_network_to_inference_device()
@@ -1052,45 +1051,43 @@ class RLAgent:
 
     def _move_network_to_inference_device(self) -> None:
         """Move the network (and optimizer states) to ``self._inference_device``."""
-        target = self._inference_device
-        try:
-            current = next(self.network.parameters()).device
-        except StopIteration:
-            return
-        if current == target:
-            return
-        try:
-            self.network.to(target)
-            for state in self.optimizer.state.values():
-                for k, v in state.items():
-                    if isinstance(v, torch.Tensor):
-                        state[k] = v.to(target)
-        except Exception as exc:
-            logger.warning(
-                "Failed to move network to %s (%s); falling back to CPU",
-                target, exc,
-            )
-            self._inference_device = torch.device("cpu")
-            self.network.to(self._inference_device)
+        with self._model_device_lock:
+            target = self._inference_device
+            try:
+                current = next(self.network.parameters()).device
+            except StopIteration:
+                return
+            if current == target:
+                return
+            try:
+                _move_network_and_optimizer_to(self.network, self.optimizer, target)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to move network to %s (%s); falling back to CPU",
+                    target, exc,
+                )
+                self._inference_device = torch.device("cpu")
+                _move_network_and_optimizer_to(self.network, self.optimizer, self._inference_device)
 
     def _try_reclaim_cuda(self) -> None:
         """If currently on CPU after an OOM fallback, attempt to move back to CUDA."""
-        if self._inference_device.type != "cpu":
-            return
-        desired = _resolve_inference_device()
-        if desired.type == "cpu":
-            return
-        torch.cuda.empty_cache()
-        try:
-            free_mem, total_mem = torch.cuda.mem_get_info(desired.index or 0)
-        except Exception:
-            return
-        param_bytes = sum(p.numel() * p.element_size() for p in self.network.parameters())
-        if free_mem < param_bytes * 3:
-            return
-        logger.info("Reclaiming CUDA: %.0f MiB free, model ~%.0f MiB", free_mem / 1e6, param_bytes / 1e6)
-        self._inference_device = desired
-        self._move_network_to_inference_device()
+        with self._model_device_lock:
+            if self._inference_device.type != "cpu":
+                return
+            desired = _resolve_inference_device()
+            if desired.type == "cpu":
+                return
+            torch.cuda.empty_cache()
+            try:
+                free_mem, total_mem = torch.cuda.mem_get_info(desired.index or 0)
+            except Exception:
+                return
+            param_bytes = sum(p.numel() * p.element_size() for p in self.network.parameters())
+            if free_mem < param_bytes * 3:
+                return
+            logger.info("Reclaiming CUDA: %.0f MiB free, model ~%.0f MiB", free_mem / 1e6, param_bytes / 1e6)
+            self._inference_device = desired
+            self._move_network_to_inference_device()
 
     def _init_inference_batcher(self) -> None:
         """Create an ``InferenceBatcher`` when CUDA inference is active and
@@ -2775,67 +2772,64 @@ class RLAgent:
         recurrent_state: "torch.Tensor",
         device: torch.device,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
-        try:
-            actual_net_device = next(self.network.parameters()).device
-        except StopIteration:
-            actual_net_device = device
-        if actual_net_device != device:
-            device = actual_net_device
+        with self._model_device_lock:
+            try:
+                actual_net_device = next(self.network.parameters()).device
+            except StopIteration:
+                actual_net_device = device
+            if actual_net_device != device:
+                device = actual_net_device
 
-        state_tensor = torch.tensor(
-            state_vector, dtype=torch.float32, device=device,
-        ).unsqueeze(0)
-        phase_tensor = torch.tensor(
-            [phase_index], dtype=torch.long, device=device,
-        )
-        recurrent_state_tensor = recurrent_state.unsqueeze(0)
-        if recurrent_state_tensor.device != device:
-            recurrent_state_tensor = recurrent_state_tensor.to(device)
+            state_tensor = torch.tensor(
+                state_vector, dtype=torch.float32, device=device,
+            ).unsqueeze(0)
+            phase_tensor = torch.tensor(
+                [phase_index], dtype=torch.long, device=device,
+            )
+            recurrent_state_tensor = recurrent_state.unsqueeze(0)
+            if recurrent_state_tensor.device != device:
+                recurrent_state_tensor = recurrent_state_tensor.to(device)
 
-        try:
-            with torch.no_grad():
-                use_amp = device.type == "cuda"
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    out = self._forward_network(
-                        state_tensor,
-                        phase_indices=phase_tensor,
-                        recurrent_state=recurrent_state_tensor,
-                    )
+            try:
+                with torch.no_grad():
+                    use_amp = device.type == "cuda"
+                    with torch.amp.autocast("cuda", enabled=use_amp):
+                        out = self._forward_network(
+                            state_tensor,
+                            phase_indices=phase_tensor,
+                            recurrent_state=recurrent_state_tensor,
+                        )
 
-                policy_logits = out["policy_logits"].float()
-                value = out["value"].float()
-                recurrent_state_out = out.get("recurrent_state")
-                if recurrent_state_out is not None:
-                    recurrent_state_out = recurrent_state_out.float()
-                aux_predictions = out.get("aux_predictions")
+                    policy_logits = out["policy_logits"].float()
+                    value = out["value"].float()
+                    recurrent_state_out = out.get("recurrent_state")
+                    if recurrent_state_out is not None:
+                        recurrent_state_out = recurrent_state_out.float()
+                    aux_predictions = out.get("aux_predictions")
 
-                policy_temperature = self._effective_policy_temperature()
-                policy_logits = policy_logits / max(policy_temperature, 1e-3)
-                policy_probs = F.softmax(policy_logits, dim=-1)
+                    policy_temperature = self._effective_policy_temperature()
+                    policy_logits = policy_logits / max(policy_temperature, 1e-3)
+                    policy_probs = F.softmax(policy_logits, dim=-1)
 
-            if device.type != "cpu":
-                policy_logits = policy_logits.cpu()
-                value = value.cpu()
-                policy_probs = policy_probs.cpu()
+                if device.type != "cpu":
+                    policy_logits = policy_logits.cpu()
+                    value = value.cpu()
+                    policy_probs = policy_probs.cpu()
 
-            return policy_logits, value, recurrent_state_out, aux_predictions, policy_probs
+                return policy_logits, value, recurrent_state_out, aux_predictions, policy_probs
 
-        except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
-            if device.type == "cpu":
-                raise
-            err_msg = str(exc)
-            if "CUDA" not in err_msg and "out of memory" not in err_msg:
-                raise
-            logger.warning("CUDA OOM during inference; clearing cache and falling back to CPU.")
-            torch.cuda.empty_cache()
-            cpu = torch.device("cpu")
-            self.network.to(cpu)
-            for st in self.optimizer.state.values():
-                for k, v in st.items():
-                    if isinstance(v, torch.Tensor):
-                        st[k] = v.to(cpu)
-            self._inference_device = cpu
-            return self._sync_forward_impl(state_vector, phase_index, recurrent_state, cpu)
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+                if device.type == "cpu":
+                    raise
+                err_msg = str(exc)
+                if "CUDA" not in err_msg and "out of memory" not in err_msg:
+                    raise
+                logger.warning("CUDA OOM during inference; clearing cache and falling back to CPU.")
+                torch.cuda.empty_cache()
+                cpu = torch.device("cpu")
+                _move_network_and_optimizer_to(self.network, self.optimizer, cpu)
+                self._inference_device = cpu
+                return self._sync_forward_impl(state_vector, phase_index, recurrent_state, cpu)
 
     async def _get_action_from_network(
         self,

@@ -144,7 +144,7 @@ export RL_TM_GAME_TIMEOUT_SEC=1200   # if games cancelled unexpectedly
 chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
 ```
-### Low-latency optimized (1 game/server, 40 vCPU / 387 GB)
+### ryzen 9 - 12gb vram GPU 
 
 ```bash
 export PUBLIC_HOST=localhost
@@ -168,14 +168,22 @@ export RL_TOURNAMENT_CAP_PER_COORD=16
 export RL_CPU_SERVER_RATIO=0.90
 export RL_SERVER_MEM_MB=900
 export RL_NODE_HEAP_MB=512
-export RL_GAMES_PER_EVAL=2
+export RL_GAMES_PER_EVAL=6
 export RL_INFRA_OVERHEAD_MB=6144
 export RL_TM_GAME_TIMEOUT_SEC=2400
 export RL_INITIAL_CARDS_JITTER_MS=1200
 export RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0
 export RL_POPULATION_SIZE=16
 
-export PPO_MINIBATCH_SIZE=1024
+export PPO_EPOCHS=4
+export PPO_MINIBATCH_SIZE=2048
+export PPO_CLIP_EPS=0.15
+export PPO_TARGET_KL=0.015
+export PPO_LEARNING_RATE=0.00008
+export PPO_LR_MIN=0.00003
+export PPO_LR_MAX=0.00018
+export PPO_LR_ADAPT_UP=1.02
+export PPO_LR_ADAPT_DOWN=0.90
 export AGENT_INFERENCE_BATCH_SIZE=64
 export AGENT_INFERENCE_THREADS=8
 
@@ -246,6 +254,26 @@ Optional tuning:
 |----------|---------|--------|
 | `PPO_EXECUTOR_WORKERS` | `4` | Thread pool size for PPO. Increase if PPO becomes a bottleneck (1–16). |
 | `PPO_PARALLEL_AGENTS` | `4` | Max agents optimized in parallel. Higher = faster PPO phase; watch GPU memory (1–16). |
+
+### PPO health checks
+
+Use `/dashboard` or `/stats` to judge whether PPO is stable:
+
+| Metric | Healthy starting range | What your sample suggests |
+|--------|------------------------|---------------------------|
+| `Approx KL` | Around target, usually `0.5x-1.25x` of `PPO_TARGET_KL` | `coord-1` was borderline (`0.0212` on target `0.0200`), `coord-2` was too hot (`0.0618`), `coord-3` was acceptable (`0.0146`) |
+| `Early-stop ratio` | Usually well below `100%` | `100%` on all three coordinators means PPO pressure is too high; updates are stopping on KL every cycle |
+| `Clip fraction` | Roughly `0.05-0.25` | `0.29-0.40` is high; too many samples are hitting the clip boundary |
+| `Explained variance` | Rising over time; `>0.10` is a better sign than near zero | `0.025-0.042` is weak, so the value head is not explaining returns well yet |
+| `Entropy` | Should decline gradually, not collapse suddenly | `1.38-1.45` is not alarming by itself |
+
+If you see the same pattern as your sample (`early-stop ratio=100%`, high clip fraction, KL spikes), reduce PPO update pressure in this order:
+
+1. Lower `PPO_LEARNING_RATE`.
+2. Lower `PPO_EPOCHS`.
+3. Increase `PPO_MINIBATCH_SIZE`.
+4. Lower `PPO_CLIP_EPS` slightly (`0.15` is a safer cloud default than `0.20`).
+5. Tighten `PPO_TARGET_KL` only after the learning rate is under control.
 
 ### If games exceed ~1200s (long game duration)
 

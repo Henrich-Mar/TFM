@@ -328,8 +328,8 @@ def optimize_ppo_policy(
         return {}
 
     # --- Device selection: move network + data to GPU for training, back to CPU after ---
+    original_device = next(network.parameters()).device
     device = _select_ppo_device(network, requested_device=ppo_device_override)
-    network_was_on_cpu = next(network.parameters()).device.type == "cpu"
 
     def _move_network_to(dev: torch.device) -> None:
         network.to(dev)
@@ -616,7 +616,6 @@ def optimize_ppo_policy(
             explained_variance_value = 0.0
 
     # Restore network to its pre-training device.
-    original_device = torch.device("cpu") if network_was_on_cpu else _get_training_device()
     current_device = next(network.parameters()).device
     if current_device != original_device:
         try:

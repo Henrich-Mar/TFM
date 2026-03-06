@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Decision Explainer</title>
+  <style>
+    :root {
+      --bg: #f2ede2;
+      --panel: #fffaf1;
+      --panel-strong: #fff3d8;
+      --line: #d5c6a0;
+      --text: #1e1a15;
+      --muted: #665d4d;
+      --accent: #a1491b;
+      --accent-soft: #e7b787;
+      --good: #215732;
+      --bad: #8b1e22;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, #fff6dc 0, transparent 30%),
+        linear-gradient(135deg, #efe6d2, #ddd0b0);
+    }
+    header {
+      padding: 24px;
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+      background: rgba(255,250,241,0.82);
+      backdrop-filter: blur(6px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    h1, h2, h3 { margin: 0 0 10px; }
+    h1 { font-size: 30px; }
+    h2 { font-size: 18px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    main { padding: 24px; display: grid; gap: 18px; }
+    .hero { display: grid; gap: 12px; }
+    .subtle { color: var(--muted); }
+    .toolbar, .grid, .stack { display: grid; gap: 16px; }
+    .toolbar { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+    .grid.two { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .grid.three { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 10px 30px rgba(74, 49, 18, 0.08);
+    }
+    .panel.strong { background: var(--panel-strong); }
+    label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    input, select, button, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font: inherit;
+      background: #fffdf7;
+      color: var(--text);
+    }
+    textarea { min-height: 78px; resize: vertical; }
+    button {
+      cursor: pointer;
+      background: linear-gradient(135deg, #c85a1e, #8d3511);
+      color: white;
+      font-weight: 700;
+      border: none;
+    }
+    button.secondary {
+      background: #efe2c3;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: minmax(120px, 180px) 1fr;
+      gap: 8px 14px;
+      align-items: start;
+    }
+    .kv div:nth-child(odd) {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+    }
+    .pill {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .pill.good { background: rgba(33,87,50,0.12); color: var(--good); }
+    .pill.bad { background: rgba(139,30,34,0.12); color: var(--bad); }
+    .pill.warn { background: rgba(161,73,27,0.12); color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .mono { font-family: "Consolas", "SFMono-Regular", monospace; }
+    .cards, .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .card, .chip {
+      border: 1px solid var(--line);
+      background: #fffdf7;
+      border-radius: 12px;
+      padding: 10px 12px;
+    }
+    .card { width: min(100%, 280px); }
+    .chip { font-size: 13px; }
+    .muted-box {
+      background: rgba(0,0,0,0.03);
+      border-radius: 12px;
+      padding: 10px 12px;
+      color: var(--muted);
+    }
+    .empty { color: var(--muted); font-style: italic; }
+    .status { min-height: 20px; font-weight: 700; }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    @media (max-width: 720px) {
+      .kv { grid-template-columns: 1fr; }
+      header, main { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <div>
+        <h1>Agent Decision Explainer</h1>
+        <div class="subtle">Inspect one saved decision snapshot with state context, legal action ranking, chosen move, and model diagnostics.</div>
+      </div>
+      <div id="status" class="status subtle">Loading snapshots…</div>
+    </div>
+  </header>
+
+  <main>
+    <section class="toolbar">
+      <div class="panel">
+        <div class="section-head">
+          <h2>Load Snapshot</h2>
+          <button id="refreshList" type="button" class="secondary">Refresh</button>
+        </div>
+        <label for="snapshotSelect">Saved snapshots</label>
+        <select id="snapshotSelect">
+          <option value="">No snapshots yet</option>
+        </select>
+      </div>
+      <div class="panel">
+        <div class="section-head">
+          <h2>Arm Capture</h2>
+        </div>
+        <label for="agentId">Agent ID (optional)</label>
+        <input id="agentId" placeholder="leave empty for next matching decision">
+        <label for="gameId">Game ID (optional)</label>
+        <input id="gameId" placeholder="filter a specific live game">
+        <label for="playerId">Player ID (optional)</label>
+        <input id="playerId" placeholder="filter a specific player">
+        <label for="captureNote">Note</label>
+        <textarea id="captureNote" placeholder="why you are capturing this turn"></textarea>
+        <label><input id="includeStateVector" type="checkbox" style="width:auto; margin-right:8px;">Include raw state vector</label>
+        <button id="captureButton" type="button">Arm Next Snapshot</button>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <div class="panel strong">
+        <div class="section-head">
+          <h2>Decision Summary</h2>
+          <div id="decisionBadge"></div>
+        </div>
+        <div id="summary" class="kv"></div>
+      </div>
+      <div class="panel">
+        <div class="section-head">
+          <h2>Model View</h2>
+        </div>
+        <div id="diagnostics" class="kv"></div>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <div class="panel">
+        <div class="section-head">
+          <h2>Chosen Action</h2>
+        </div>
+        <div id="chosenAction" class="muted-box empty">No snapshot selected.</div>
+      </div>
+      <div class="panel">
+        <div class="section-head">
+          <h2>Aux Signals</h2>
+        </div>
+        <div id="auxSignals" class="kv"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2>Action Ranking</h2>
+      </div>
+      <div id="ranking" class="empty">No ranking available.</div>
+    </section>
+
+    <section class="grid two">
+      <div class="panel">
+        <div class="section-head">
+          <h2>Player State</h2>
+        </div>
+        <div id="playerState" class="kv"></div>
+      </div>
+      <div class="panel">
+        <div class="section-head">
+          <h2>Board Context</h2>
+        </div>
+        <div id="boardState" class="kv"></div>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <div class="panel">
+        <div class="section-head">
+          <h2>Hand</h2>
+        </div>
+        <div id="handCards" class="cards"></div>
+      </div>
+      <div class="panel">
+        <div class="section-head">
+          <h2>Tableau</h2>
+        </div>
+        <div id="tableauCards" class="cards"></div>
+      </div>
+    </section>
+
+    <section class="grid three">
+      <div class="panel">
+        <div class="section-head">
+          <h2>Opponents</h2>
+        </div>
+        <div id="opponents" class="cards"></div>
+      </div>
+      <div class="panel">
+        <div class="section-head">
+          <h2>Awards</h2>
+        </div>
+        <div id="awards" class="cards"></div>
+      </div>
+      <div class="panel">
+        <div class="section-head">
+          <h2>Milestones</h2>
+        </div>
+        <div id="milestones" class="cards"></div>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <div class="panel">
+        <div class="section-head">
+          <h2>Prompt Candidates</h2>
+        </div>
+        <div id="promptCandidates"></div>
+      </div>
+      <div class="panel">
+        <div class="section-head">
+          <h2>Map and Moon Candidates</h2>
+        </div>
+        <div id="mapCandidates"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const initialSnapshotId = {{ snapshot_id|tojson }};
+
+    const esc = (value) => {
+      const div = document.createElement("div");
+      div.textContent = String(value ?? "");
+      return div.innerHTML;
+    };
+
+    const fmt = (value, digits = 3) => {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return "0";
+      return num.toFixed(digits);
+    };
+
+    const pct = (value) => `${fmt((Number(value) || 0) * 100, 1)}%`;
+
+    const renderKV = (element, rows) => {
+      if (!rows.length) {
+        element.innerHTML = `<div class="empty">No data</div>`;
+        return;
+      }
+      element.innerHTML = rows.map(([key, value]) => `<div>${esc(key)}</div><div>${value}</div>`).join("");
+    };
+
+    const renderCards = (element, items, renderItem) => {
+      if (!items || !items.length) {
+        element.innerHTML = `<div class="empty">None</div>`;
+        return;
+      }
+      element.innerHTML = items.map(renderItem).join("");
+    };
+
+    const setStatus = (text, cls = "subtle") => {
+      const el = document.getElementById("status");
+      el.className = `status ${cls}`;
+      el.textContent = text;
+    };
+
+    async function loadSnapshotList() {
+      const resp = await fetch("/debug/decision-snapshots", { cache: "no-store" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const payload = await resp.json();
+      const select = document.getElementById("snapshotSelect");
+      const snapshots = Array.isArray(payload.snapshots) ? payload.snapshots : [];
+      select.innerHTML = snapshots.length
+        ? snapshots.map((item) => `<option value="${esc(item.snapshot_id)}">${esc(item.snapshot_id)} | ${esc(item.prompt_type)} | ${esc(item.player_name || item.player_id || item.agent_id)}</option>`).join("")
+        : `<option value="">No snapshots yet</option>`;
+      return payload;
+    }
+
+    function renderSnapshot(snapshot) {
+      const prompt = snapshot.prompt || {};
+      const state = snapshot.state || {};
+      const policy = snapshot.policy || {};
+      const diagnostics = snapshot.diagnostics || {};
+      const aux = snapshot.aux || {};
+      const player = state.this_player || {};
+      const board = state.board || {};
+
+      document.getElementById("decisionBadge").innerHTML =
+        `<span class="pill ${prompt.send_outcome === "accepted" ? "good" : "warn"}">${esc(prompt.send_outcome || "captured")}</span>`;
+
+      renderKV(document.getElementById("summary"), [
+        ["Snapshot ID", `<span class="mono">${esc(snapshot.snapshot_id || "")}</span>`],
+        ["Captured at", esc(snapshot.captured_at || "")],
+        ["Agent", `<span class="mono">${esc((snapshot.agent || {}).id || "")}</span>`],
+        ["Game", `<span class="mono">${esc(prompt.game_id || "")}</span>`],
+        ["Player", `${esc(prompt.player_name || "")} <span class="mono">${esc(prompt.player_id || "")}</span>`],
+        ["Phase / prompt", `${esc(prompt.phase || "")} / ${esc(prompt.prompt_type || "")}`],
+        ["Generation", esc(prompt.generation || 0)],
+        ["Turn action count", esc(prompt.turn_action_count || 0)],
+        ["Sample mode", prompt.sampled_from_policy ? `<span class="pill good">policy</span>` : `<span class="pill warn">epsilon/random</span>`],
+      ]);
+
+      const transformer = diagnostics.transformer || {};
+      const rare = diagnostics.rare_state || {};
+      renderKV(document.getElementById("diagnostics"), [
+        ["Value estimate", fmt(policy.value_estimate, 4)],
+        ["Policy temperature", fmt(policy.policy_temperature, 3)],
+        ["Transformer enabled", transformer.enabled ? "yes" : "no"],
+        ["Token count", esc(transformer.token_count ?? 0)],
+        ["Active token ratio", pct(transformer.active_token_ratio)],
+        ["Fusion share", fmt(transformer.fusion_share, 3)],
+        ["Attention norm", fmt(transformer.attention_context_norm, 3)],
+        ["Rare weight", fmt(rare.weight, 3)],
+        ["Rare award / milestone", `${fmt(rare.award_funding, 2)} / ${fmt(rare.milestone_timing, 2)}`],
+        ["Rare draft / payment", `${fmt(rare.draft_keep_buy, 2)} / ${fmt(rare.high_cost_payment, 2)}`],
+      ]);
+
+      document.getElementById("chosenAction").innerHTML = `
+        <div><strong>${esc(policy.chosen_action_label || "unknown")}</strong></div>
+        <pre class="mono">${esc(JSON.stringify(policy.chosen_action_payload || {}, null, 2))}</pre>
+      `;
+
+      const auxPred = (aux.predictions || {});
+      renderKV(document.getElementById("auxSignals"), [
+        ["Award EV", fmt(auxPred.award_ev, 4)],
+        ["Playable cards", fmt(auxPred.playable_cards, 4)],
+        ["Steel target", fmt(auxPred.steel_target, 4)],
+        ["Titanium target", fmt(auxPred.titanium_target, 4)],
+        ["Top milestone preds", (auxPred.top_milestone_predictions || []).slice(0, 5).map((row) => `#${row.index}:${fmt(row.value, 3)}`).join(", ") || "none"],
+      ]);
+
+      const ranking = Array.isArray(policy.action_rankings) ? policy.action_rankings : [];
+      document.getElementById("ranking").innerHTML = ranking.length ? `
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Action</th>
+              <th>Masked Prob</th>
+              <th>Raw Prob</th>
+              <th>Logit</th>
+              <th>Chosen</th>
+              <th>Payload</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${ranking.map((row, idx) => `
+              <tr>
+                <td>${idx + 1}</td>
+                <td><span class="mono">${esc(row.label || "")}</span></td>
+                <td>${fmt(row.masked_probability, 4)}</td>
+                <td>${fmt(row.raw_probability, 4)}</td>
+                <td>${fmt(row.logit, 4)}</td>
+                <td>${row.chosen ? `<span class="pill good">yes</span>` : ""}</td>
+                <td><span class="mono">${esc(JSON.stringify(row.decoded_action || {}))}</span></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      ` : `<div class="empty">No ranking available.</div>`;
+
+      renderKV(document.getElementById("playerState"), [
+        ["Name", esc(player.name || "")],
+        ["Color", esc(player.color || "")],
+        ["TR", fmt(player.terraform_rating, 1)],
+        ["MC", fmt((player.resources || {}).mc, 1)],
+        ["Steel", fmt((player.resources || {}).steel, 1)],
+        ["Titanium", fmt((player.resources || {}).titanium, 1)],
+        ["Plants", fmt((player.resources || {}).plants, 1)],
+        ["Energy", fmt((player.resources || {}).energy, 1)],
+        ["Heat", fmt((player.resources || {}).heat, 1)],
+      ]);
+
+      renderKV(document.getElementById("boardState"), [
+        ["Map", esc(board.map_name || "")],
+        ["Temperature", fmt(board.temperature, 1)],
+        ["Oxygen", fmt(board.oxygen, 1)],
+        ["Oceans", fmt(board.oceans, 1)],
+        ["Venus", fmt(board.venus, 1)],
+      ]);
+
+      renderCards(document.getElementById("handCards"), state.hand || [], (card) => `
+        <div class="card">
+          <strong>${esc(card.name || card.label || "card")}</strong>
+          <div class="subtle">Cost ${fmt(card.cost, 0)} | VP ${fmt(card.victory_points, 0)}</div>
+          <div>${esc((card.tags || []).join(", "))}</div>
+        </div>
+      `);
+
+      renderCards(document.getElementById("tableauCards"), state.tableau || [], (card) => `
+        <div class="card">
+          <strong>${esc(card.name || card.label || "card")}</strong>
+          <div class="subtle">${esc(card.type || "")}</div>
+          <div>${esc((card.tags || []).join(", "))}</div>
+        </div>
+      `);
+
+      renderCards(document.getElementById("opponents"), state.opponents || [], (opp) => `
+        <div class="card">
+          <strong>${esc(opp.name || opp.color || "opponent")}</strong>
+          <div>TR ${fmt(opp.terraform_rating, 1)}</div>
+          <div class="subtle">MC ${fmt((opp.resources || {}).mc, 1)} | Steel ${fmt((opp.resources || {}).steel, 1)} | Titanium ${fmt((opp.resources || {}).titanium, 1)}</div>
+        </div>
+      `);
+
+      renderCards(document.getElementById("awards"), state.awards || [], (award) => `
+        <div class="card">
+          <strong>${esc(award.name || "award")}</strong>
+          <div class="subtle">Funded by ${esc(award.funded_by || "nobody")}</div>
+          <div>${esc((award.scores || []).map((row) => `${row.player_name || row.player_color}:${fmt(row.score, 1)}`).join(" | "))}</div>
+        </div>
+      `);
+
+      renderCards(document.getElementById("milestones"), state.milestones || [], (milestone) => `
+        <div class="card">
+          <strong>${esc(milestone.name || "milestone")}</strong>
+          <div class="subtle">Claimed by ${esc(milestone.claimed_by || "nobody")}</div>
+          <div>${esc((milestone.scores || []).map((row) => `${row.player_name || row.player_color}:${fmt(row.score, 1)}`).join(" | "))}</div>
+        </div>
+      `);
+
+      const promptCandidates = state.prompt_candidates || {};
+      document.getElementById("promptCandidates").innerHTML = `
+        <div class="stack">
+          <div><strong>Option candidates</strong></div>
+          <div class="cards">${(promptCandidates.options || []).map((row) => `<div class="chip">${esc(row.label || row.type || row.index)}</div>`).join("") || `<div class="empty">None</div>`}</div>
+          <div><strong>Card candidates</strong></div>
+          <div class="cards">${(promptCandidates.cards || []).map((row) => `<div class="chip">${esc(row.name || row.label || "card")}</div>`).join("") || `<div class="empty">None</div>`}</div>
+          <div><strong>Payment context</strong></div>
+          <pre class="mono">${esc(JSON.stringify(promptCandidates.payment_context || {}, null, 2))}</pre>
+        </div>
+      `;
+
+      document.getElementById("mapCandidates").innerHTML = `
+        <div class="stack">
+          <div><strong>Map candidates</strong></div>
+          <div class="cards">${(promptCandidates.map_candidates || []).map((row) => `<div class="chip">${esc(row.name || row.id || row.index)} (${row.x},${row.y})</div>`).join("") || `<div class="empty">None</div>`}</div>
+          <div><strong>Moon candidates</strong></div>
+          <div class="cards">${(promptCandidates.moon_candidates || []).map((row) => `<div class="chip">${esc(row.name || row.id || row.index)}</div>`).join("") || `<div class="empty">None</div>`}</div>
+          <div><strong>Other prompt lists</strong></div>
+          <pre class="mono">${esc(JSON.stringify({
+            players: promptCandidates.players || [],
+            colonies: promptCandidates.colonies || [],
+            parties: promptCandidates.parties || [],
+            global_events: promptCandidates.global_events || [],
+            policies: promptCandidates.policies || [],
+            resource_types: promptCandidates.resource_types || []
+          }, null, 2))}</pre>
+        </div>
+      `;
+    }
+
+    async function loadSnapshot(snapshotId) {
+      if (!snapshotId) {
+        setStatus("No snapshot selected.");
+        return;
+      }
+      const resp = await fetch(`/debug/decision-snapshots/${encodeURIComponent(snapshotId)}`, { cache: "no-store" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const snapshot = await resp.json();
+      renderSnapshot(snapshot);
+      setStatus(`Loaded snapshot ${snapshotId}`, "subtle");
+      const url = new URL(window.location.href);
+      url.searchParams.set("snapshot_id", snapshotId);
+      window.history.replaceState({}, "", url);
+    }
+
+    async function armCapture() {
+      const payload = {
+        agent_id: document.getElementById("agentId").value || null,
+        game_id: document.getElementById("gameId").value || null,
+        player_id: document.getElementById("playerId").value || null,
+        note: document.getElementById("captureNote").value || "",
+        include_state_vector: document.getElementById("includeStateVector").checked,
+      };
+      const resp = await fetch("/debug/decision-snapshots/capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const out = await resp.json();
+      setStatus(`Armed request ${out.request.request_id}. Capture will happen on the next matching decision.`, "subtle");
+      await loadSnapshotList();
+    }
+
+    async function init() {
+      try {
+        const payload = await loadSnapshotList();
+        const snapshots = Array.isArray(payload.snapshots) ? payload.snapshots : [];
+        const selected = initialSnapshotId || (snapshots[0] && snapshots[0].snapshot_id) || "";
+        if (selected) {
+          document.getElementById("snapshotSelect").value = selected;
+          await loadSnapshot(selected);
+        } else {
+          setStatus("No snapshots saved yet.");
+        }
+      } catch (err) {
+        setStatus(`Failed to load snapshots: ${err}`, "bad");
+      }
+    }
+
+    document.getElementById("refreshList").addEventListener("click", async () => {
+      try {
+        await loadSnapshotList();
+        setStatus("Snapshot list refreshed.");
+      } catch (err) {
+        setStatus(`Refresh failed: ${err}`, "bad");
+      }
+    });
+
+    document.getElementById("snapshotSelect").addEventListener("change", async (event) => {
+      try {
+        await loadSnapshot(event.target.value);
+      } catch (err) {
+        setStatus(`Failed to load snapshot: ${err}`, "bad");
+      }
+    });
+
+    document.getElementById("captureButton").addEventListener("click", async () => {
+      try {
+        await armCapture();
+      } catch (err) {
+        setStatus(`Capture request failed: ${err}`, "bad");
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>

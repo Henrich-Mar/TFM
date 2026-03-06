@@ -16,6 +16,12 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import uvicorn
+from debug_decision_snapshot import (
+    create_capture_request,
+    list_capture_requests,
+    list_saved_snapshots,
+    load_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,14 @@ class HumanVsBestRequest(BaseModel):
     human_name: str = "You"
     bot_count: int = 3
     seed: Optional[int] = None
+
+
+class DecisionSnapshotCaptureRequest(BaseModel):
+    agent_id: Optional[str] = None
+    game_id: Optional[str] = None
+    player_id: Optional[str] = None
+    note: str = ""
+    include_state_vector: bool = False
 
 
 def _utc_now_iso() -> str:
@@ -781,6 +795,39 @@ async def run_debug_game(request: DebugGameRequest):
     return result
 
 
+@app.post("/debug/decision-snapshots/capture")
+async def capture_decision_snapshot(request: DecisionSnapshotCaptureRequest):
+    capture_request = create_capture_request(
+        agent_id=request.agent_id,
+        game_id=request.game_id,
+        player_id=request.player_id,
+        note=request.note,
+        include_state_vector=bool(request.include_state_vector),
+    )
+    return {
+        "message": "Decision snapshot request armed",
+        "request": capture_request,
+    }
+
+
+@app.get("/debug/decision-snapshots")
+async def get_decision_snapshots():
+    return {
+        "requests": list_capture_requests(),
+        "snapshots": list_saved_snapshots(),
+    }
+
+
+@app.get("/debug/decision-snapshots/{snapshot_id}")
+async def get_decision_snapshot(snapshot_id: str):
+    try:
+        return load_snapshot(snapshot_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Snapshot not found: {snapshot_id}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/play/human-vs-generation")
 async def play_human_vs_generation(request: HumanVsGenerationRequest):
     """Start a game with one human and saved-generation AI opponents."""
@@ -821,6 +868,17 @@ async def play_human_vs_best(request: HumanVsBestRequest):
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+@app.get("/decision-explainer", response_class=HTMLResponse)
+async def decision_explainer(request: Request):
+    return templates.TemplateResponse(
+        "decision_explainer.html",
+        {
+            "request": request,
+            "snapshot_id": str(request.query_params.get("snapshot_id", "") or "").strip(),
+        },
+    )
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):

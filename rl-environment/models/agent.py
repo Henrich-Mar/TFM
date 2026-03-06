@@ -35,6 +35,14 @@ from .ppo import (
     _select_ppo_device,
     optimize_ppo_policy,
 )
+from debug_decision_snapshot import (
+    build_decision_snapshot,
+    complete_capture_request,
+    fail_capture_request,
+    has_pending_capture_request,
+    reserve_pending_capture_request,
+    save_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2074,6 +2082,18 @@ class RLAgent:
                                     "reward_shaping_coef": float(reward_shaping_coef),
                                 }
                             )
+                    self._maybe_capture_decision_snapshot(
+                        game_instance=game_instance,
+                        player_id=player_id,
+                        player_state=player_state,
+                        action_input=policy_action,
+                        action_index=policy_action_idx,
+                        action_meta=action_meta,
+                        sampled_from_policy=sampled_from_policy,
+                        send_outcome="accepted",
+                        turn_action_count=turn_action_count,
+                        state_vector=state_vector,
+                    )
                     await self._sleep_if_needed(self.post_move_sleep_sec)
                     return True
                 else:
@@ -2085,6 +2105,18 @@ class RLAgent:
                         self._remember_rejected_action(player_id, player_state, action_idx)
                     logger.warning(f"Agent {self.id[:8]} policy action was rejected by game")
                     self._log_stuck_context(game_instance, player_id, player_state, "policy_action_rejected")
+                    self._maybe_capture_decision_snapshot(
+                        game_instance=game_instance,
+                        player_id=player_id,
+                        player_state=player_state,
+                        action_input=policy_action,
+                        action_index=policy_action_idx,
+                        action_meta=action_meta,
+                        sampled_from_policy=sampled_from_policy,
+                        send_outcome="rejected",
+                        turn_action_count=turn_action_count,
+                        state_vector=state_vector,
+                    )
                     pause_after_reject = self.failure_pause_sec
                     if is_initial_cards_prompt:
                         pause_after_reject = max(pause_after_reject, self.initial_cards_reject_pause_sec)
@@ -2622,6 +2654,110 @@ class RLAgent:
 
         return f"OTHER({action_index})"
 
+    def _build_policy_ranking(
+        self,
+        player_state: Dict[str, Any],
+        available_actions: List[int],
+        policy_logits: torch.Tensor,
+        policy_probs: torch.Tensor,
+        masked_distribution: Optional[torch.Tensor],
+        chosen_action_index: Optional[int],
+    ) -> List[Dict[str, Any]]:
+        ranking: List[Dict[str, Any]] = []
+        logits_vec = policy_logits.detach().cpu().reshape(-1)
+        probs_vec = policy_probs.detach().cpu().reshape(-1)
+        masked_vec = masked_distribution.detach().cpu().reshape(-1) if isinstance(masked_distribution, torch.Tensor) else None
+
+        for action_idx in available_actions:
+            idx = int(action_idx)
+            if idx < 0 or idx >= int(probs_vec.numel()):
+                continue
+            try:
+                decoded_action = self.action_decoder.decode_action(idx, player_state)
+            except Exception:
+                decoded_action = None
+            ranking.append(
+                {
+                    "action_index": idx,
+                    "label": self._describe_action(idx, player_state),
+                    "decoded_action": decoded_action,
+                    "raw_probability": float(probs_vec[idx].item()),
+                    "masked_probability": float(masked_vec[idx].item()) if masked_vec is not None and idx < int(masked_vec.numel()) else 0.0,
+                    "logit": float(logits_vec[idx].item()) if idx < int(logits_vec.numel()) else 0.0,
+                    "chosen": bool(chosen_action_index is not None and idx == int(chosen_action_index)),
+                    "legal": True,
+                }
+            )
+
+        ranking.sort(
+            key=lambda item: (
+                float(item.get("masked_probability", 0.0)),
+                float(item.get("raw_probability", 0.0)),
+                float(item.get("logit", 0.0)),
+            ),
+            reverse=True,
+        )
+        return ranking
+
+    def _maybe_capture_decision_snapshot(
+        self,
+        game_instance: GameInstance,
+        player_id: Optional[str],
+        player_state: Dict[str, Any],
+        action_input: Optional[Dict[str, Any]],
+        action_index: Optional[int],
+        action_meta: Optional[Dict[str, Any]],
+        sampled_from_policy: bool,
+        send_outcome: str,
+        turn_action_count: int,
+        state_vector: Optional[np.ndarray],
+    ) -> None:
+        if not isinstance(action_meta, dict):
+            return
+
+        request = reserve_pending_capture_request(
+            agent_id=self.id,
+            game_id=getattr(game_instance, "game_id", None),
+            player_id=player_id,
+        )
+        if request is None:
+            return
+
+        try:
+            try:
+                game_url = game_instance.get_public_game_url()
+            except Exception:
+                game_url = ""
+            snapshot = build_decision_snapshot(
+                request=request,
+                agent_id=self.id,
+                game_id=getattr(game_instance, "game_id", None),
+                game_url=game_url,
+                player_id=player_id,
+                player_state=player_state,
+                action_input=action_input,
+                action_index=action_index,
+                action_meta=action_meta,
+                sampled_from_policy=sampled_from_policy,
+                send_outcome=send_outcome,
+                turn_action_count=turn_action_count,
+                state_vector=state_vector,
+            )
+            saved = save_snapshot(snapshot)
+            complete_capture_request(
+                request_id=str(request.get("request_id", "") or ""),
+                snapshot_id=str(saved.get("snapshot_id", "") or ""),
+                snapshot_path=str(saved.get("snapshot_path", "") or ""),
+            )
+            logger.info(
+                "Captured decision snapshot %s for agent %s",
+                str(saved.get("snapshot_id", "") or ""),
+                self.id[:8],
+            )
+        except Exception as exc:
+            fail_capture_request(str(request.get("request_id", "") or ""), str(exc))
+            logger.warning("Failed to capture decision snapshot for agent %s: %s", self.id[:8], exc)
+
     def _extract_standard_project_name(
         self,
         action_index: int,
@@ -2998,13 +3134,37 @@ class RLAgent:
                 "payment_value_estimate": float(rare_flags.get("payment_value", 0.0)),
                 "available_actions_raw": [int(a) for a in raw_available_actions],
                 "available_actions_filtered": [int(a) for a in available_actions],
+                "chosen_action_label": self._describe_action(int(action_index), player_state),
+                "sampled_from_policy": bool(sampled_from_policy),
             }
-            if sampled_from_policy and sampled_distribution is not None:
-                action_prob = float(sampled_distribution[int(action_index)].item())
-                action_meta["logp_old"] = float(np.log(max(1e-8, action_prob)))
+            if has_pending_capture_request(agent_id=self.id):
+                transformer_stats = dict(getattr(self.network, "last_transformer_stats", {}) or {})
+                transformer_stats.update(
+                    {
+                        "hand_token_count": int(getattr(self.config, "hand_token_count", 0)),
+                        "tableau_token_count": int(getattr(self.config, "tableau_token_count", 0)),
+                        "opponent_token_count": int(getattr(self.config, "opponent_token_count", 0)),
+                        "card_token_dim": int(getattr(self.config, "card_token_dim", 0)),
+                    }
+                )
+                ranking = self._build_policy_ranking(
+                    player_state=player_state,
+                    available_actions=available_actions,
+                    policy_logits=policy_logits.squeeze(),
+                    policy_probs=policy_probs.squeeze(),
+                    masked_distribution=sampled_distribution,
+                    chosen_action_index=int(action_index),
+                )
+                action_meta["transformer_stats"] = transformer_stats
+                action_meta["policy_ranking"] = ranking
+                action_meta["policy_top_actions"] = ranking[:12]
+            if sampled_distribution is not None:
                 action_meta["value_old"] = float(value.squeeze().item())
                 action_meta["legal_actions"] = [int(a) for a in available_actions]
                 action_meta["policy_temperature"] = float(policy_temperature)
+            if sampled_from_policy and sampled_distribution is not None:
+                action_prob = float(sampled_distribution[int(action_index)].item())
+                action_meta["logp_old"] = float(np.log(max(1e-8, action_prob)))
 
             return action_input, action_index, sampled_from_policy, action_meta
              
@@ -3034,10 +3194,6 @@ class RLAgent:
           3. Contextual OR-menu title adjustments (action_weight_adjustments).
           4. Mild prefer_project_cards boost (kept small; network learns the rest).
         """
-        effective_epsilon = self._effective_policy_epsilon(force_random=force_random)
-        if np.random.random() < float(effective_epsilon):
-            return np.random.choice(available_actions), False, None
-
         # Mask unavailable actions (strict mask; never sample hidden actions).
         masked_probs = torch.zeros_like(policy_probs)
         valid_actions = [
@@ -3083,6 +3239,10 @@ class RLAgent:
         if total_prob <= 0:
             return np.random.choice(valid_actions), False, None
         masked_probs = masked_probs / total_prob
+
+        effective_epsilon = self._effective_policy_epsilon(force_random=force_random)
+        if np.random.random() < float(effective_epsilon):
+            return np.random.choice(available_actions), False, masked_probs
 
         try:
             return torch.multinomial(masked_probs, 1).item(), True, masked_probs

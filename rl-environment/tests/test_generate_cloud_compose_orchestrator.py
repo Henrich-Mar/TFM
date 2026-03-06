@@ -94,6 +94,10 @@ def test_generated_compose_passes_through_runtime_tuning_env(tmp_path: Path, mon
     monkeypatch.setenv("FIXED_BENCHMARK_INTERVAL", "3")
     monkeypatch.setenv("MIN_EVAL_COMPLETION_RATIO", "0.80")
     monkeypatch.setenv("MIN_FROZEN_POOL_COMPLETION_RATE", "0.80")
+    monkeypatch.setenv("BOOTSTRAP_CHECKPOINT_PATH", "/app/rl-models-global/champion/current/champion.pth")
+    monkeypatch.setenv("BOOTSTRAP_POPULATION_MODE", "mutated_copies")
+    monkeypatch.setenv("BOOTSTRAP_MUTATION_RATE", "0.08")
+    monkeypatch.setenv("TRAINING_START_GENERATION", "0")
     monkeypatch.setenv("RL_GAME_OPTIONS_FILE", "/app/game_options.fast_training.json")
 
     cmd = [
@@ -127,4 +131,8 @@ def test_generated_compose_passes_through_runtime_tuning_env(tmp_path: Path, mon
     assert "FIXED_BENCHMARK_INTERVAL=3" in generated
     assert "MIN_EVAL_COMPLETION_RATIO=0.80" in generated
     assert "MIN_FROZEN_POOL_COMPLETION_RATE=0.80" in generated
+    assert "BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models-global/champion/current/champion.pth" in generated
+    assert "BOOTSTRAP_POPULATION_MODE=mutated_copies" in generated
+    assert "BOOTSTRAP_MUTATION_RATE=0.08" in generated
+    assert "TRAINING_START_GENERATION=0" in generated
     assert "GAME_OPTIONS_FILE=/app/game_options.fast_training.json" in generated

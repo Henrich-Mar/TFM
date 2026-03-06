@@ -207,6 +207,12 @@ export RL_PPO_ROLLOUT_STEPS=16384
 export TM_TRANSPORT_TIMING_DEBUG=0
 export TM_HTTP_PREWARM_CONNECTIONS=4
 export RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7
+# test naciatania
+export BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models-global/champion/current/champion.pth
+export BOOTSTRAP_POPULATION_MODE=clone
+export BOOTSTRAP_MUTATION_RATE=0.08
+export TRAINING_START_GENERATION=15
+
 
 chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh

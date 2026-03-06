@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TFM RL Global Dashboard</title>
+  <style>
+    :root {
+      --bg: #08111c;
+      --panel: #0f1b2d;
+      --panel-2: #12233a;
+      --line: #27425f;
+      --text: #dfebff;
+      --muted: #8ca5c6;
+      --accent: #53b5ff;
+      --good: #22c55e;
+      --warn: #f59e0b;
+      --bad: #ef4444;
+      --chip: #11253b;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, rgba(83, 181, 255, 0.14), transparent 28%),
+        radial-gradient(circle at top right, rgba(34, 197, 94, 0.10), transparent 22%),
+        linear-gradient(180deg, #07101a, #08111c 55%, #060d16);
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, sans-serif;
+    }
+
+    .wrap {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+    }
+
+    .title {
+      font-size: 1.7rem;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .mono {
+      font-family: Consolas, Menlo, monospace;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    button,
+    .btn {
+      border: 0;
+      border-radius: 10px;
+      padding: 9px 13px;
+      background: #1f5fbf;
+      color: white;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    button:hover,
+    .btn:hover {
+      background: #2870dc;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, var(--panel), var(--panel-2));
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px 10px;
+      font-size: .92rem;
+      margin-top: 10px;
+    }
+
+    .status-chip {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: var(--chip);
+      border: 1px solid var(--line);
+      font-size: .78rem;
+      margin-top: 8px;
+    }
+
+    .good {
+      color: var(--good);
+    }
+
+    .warn {
+      color: var(--warn);
+    }
+
+    .bad {
+      color: var(--bad);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .88rem;
+    }
+
+    th,
+    td {
+      padding: 9px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      vertical-align: top;
+    }
+
+    th:first-child,
+    td:first-child {
+      text-align: left;
+    }
+
+    a {
+      color: #a9d8ff;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: .72rem;
+      background: rgba(83, 181, 255, 0.12);
+      color: #bfe4ff;
+    }
+
+    .small-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .small-item {
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(8, 17, 28, 0.45);
+    }
+
+    .empty {
+      color: var(--muted);
+      font-size: .9rem;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <h1 class="title">Terraforming Mars RL Global Dashboard</h1>
+        <div class="muted">Aggregate coordinator and orchestrator view. Auto-refresh every {{ auto_refresh_ms }} ms.</div>
+        <div id="status" class="muted">Loading...</div>
+      </div>
+      <div class="actions">
+        <button onclick="refreshAll()">Refresh</button>
+        <a class="btn" href="/dashboard/local">Local Detail</a>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Cluster Summary</h3>
+        <div id="summary"></div>
+      </div>
+      <div class="card">
+        <h3>Champion Orchestrator</h3>
+        <div id="orchestrator"></div>
+      </div>
+      <div class="card">
+        <h3>Coordinator Progress</h3>
+        <div id="coordProgress"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Coordinators</h3>
+      <div id="coordinators"></div>
+    </div>
+  </div>
+
+  <script>
+    const AUTO_REFRESH_MS = {{ auto_refresh_ms }};
+
+    function n(v, d = 0) { return Number(v ?? d); }
+    function pct(v) { return `${(100 * n(v)).toFixed(1)}%`; }
+    function fmt(v) { return Number(v || 0).toLocaleString(); }
+    function f2(v) { return n(v).toFixed(2); }
+    function esc(v) {
+      return String(v ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function renderKV(target, pairs) {
+      target.innerHTML = `<div class="kv">${pairs.map(([k, v]) => `<div>${esc(k)}</div><div>${v}</div>`).join("")}</div>`;
+    }
+
+    function statusClass(status) {
+      const raw = String(status || "").toLowerCase();
+      if (raw.includes("error")) return "bad";
+      if (raw.includes("wait")) return "warn";
+      if (raw === "idle" || raw === "healthy" || raw === "running") return "good";
+      return "";
+    }
+
+    function renderCoordinatorProgress(progress) {
+      const target = document.getElementById("coordProgress");
+      const entries = Object.entries(progress || {});
+      if (!entries.length) {
+        target.innerHTML = `<div class="empty">No coordinator progress published yet.</div>`;
+        return;
+      }
+      target.innerHTML = `<div class="small-list">${entries.map(([coordId, item]) => `
+        <div class="small-item">
+          <div><strong>${esc(coordId)}</strong></div>
+          <div class="muted mono">signal=${fmt(item?.generation_signal)} latest=${fmt(item?.latest_saved_generation)} next=${fmt(item?.next_generation)}</div>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function renderOrchestrator(orchestrator) {
+      const summary = orchestrator?.summary || {};
+      renderKV(document.getElementById("orchestrator"), [
+        ["Status", `<span class="${statusClass(summary.status)}">${esc(summary.status || "unknown")}</span>`],
+        ["Updated", esc(summary.updated_at || "n/a")],
+        ["Last round", esc(summary.last_round_id || "n/a")],
+        ["Winner coordinator", esc(summary.winner_coordinator_id || "n/a")],
+        ["Winner generation", fmt(summary.winner_generation)],
+        ["Winner win rate", pct(summary.winner_win_rate)],
+        ["Winner avg VP", f2(summary.winner_avg_vp)],
+        ["Promotion", esc(summary.promotion_applied ? `applied (${summary.promotion_reason || "unknown"})` : `held (${summary.promotion_reason || "n/a"})`)],
+      ]);
+      renderCoordinatorProgress(summary.coord_progress || {});
+    }
+
+    function renderSummary(summary) {
+      renderKV(document.getElementById("summary"), [
+        ["Coordinators", fmt(summary?.coordinator_count)],
+        ["Paused", fmt(summary?.paused_count)],
+        ["Generation min", fmt(summary?.generation_min)],
+        ["Generation max", fmt(summary?.generation_max)],
+        ["Generation spread", fmt(summary?.generation_spread)],
+        ["Population total", fmt(summary?.population_total)],
+        ["Active tournaments", fmt(summary?.active_tournaments_total)],
+        ["Active games", fmt(summary?.active_games_total)],
+        ["Healthy servers", `${fmt(summary?.healthy_servers_total)} / ${fmt(summary?.servers_total)}`],
+      ]);
+    }
+
+    function renderCoordinators(rows) {
+      const target = document.getElementById("coordinators");
+      if (!Array.isArray(rows) || rows.length === 0) {
+        target.innerHTML = `<div class="empty">No coordinator rows available.</div>`;
+        return;
+      }
+      target.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Coordinator</th>
+              <th>Status</th>
+              <th>Generation</th>
+              <th>Population</th>
+              <th>Best eval</th>
+              <th>Avg eval</th>
+              <th>Rollout</th>
+              <th>PPO agents</th>
+              <th>Tournaments</th>
+              <th>Games</th>
+              <th>Servers</th>
+              <th>Links</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>
+                  <strong>${esc(row.coordinator_id)}</strong>
+                  ${row.error ? `<div class="bad">${esc(row.error)}</div>` : ``}
+                </td>
+                <td>
+                  <span class="pill ${row.paused ? "warn" : "good"}">${row.paused ? "paused" : "running"}</span>
+                </td>
+                <td>${fmt(row.current_generation)}</td>
+                <td>${fmt(row.population_size)}</td>
+                <td>${f2(row.best_eval_fitness)}</td>
+                <td>${f2(row.avg_eval_fitness)}</td>
+                <td>${fmt(row.rollout_steps)}</td>
+                <td>${fmt(row.ppo_agents_optimized)}</td>
+                <td>${fmt(row.tournaments_active)}</td>
+                <td>${fmt(row.active_games)} active / ${pct(row.completion_rate)}</td>
+                <td>${fmt(row.healthy_servers)} / ${fmt(row.total_servers)}</td>
+                <td>
+                  <a href="${esc(row.dashboard_url)}" target="_blank" rel="noopener noreferrer">dashboard</a>
+                  <span class="muted"> · </span>
+                  <a href="${esc(row.stats_url)}" target="_blank" rel="noopener noreferrer">stats</a>
+                  <span class="muted"> · </span>
+                  <a href="${esc(row.population_url)}" target="_blank" rel="noopener noreferrer">population</a>
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    async function refreshAll() {
+      const status = document.getElementById("status");
+      status.textContent = "Refreshing...";
+      try {
+        const resp = await fetch("/global/stats", { cache: "no-store" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const payload = await resp.json();
+        status.textContent = `Updated ${payload.generated_at || "just now"}`;
+        renderSummary(payload.summary || {});
+        renderOrchestrator(payload.orchestrator || {});
+        renderCoordinators(payload.coordinators || []);
+      } catch (err) {
+        status.textContent = `Refresh failed: ${err}`;
+      }
+    }
+
+    refreshAll();
+    setInterval(refreshAll, AUTO_REFRESH_MS);
+  </script>
+</body>
+
+</html>

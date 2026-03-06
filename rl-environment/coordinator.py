@@ -172,6 +172,15 @@ class RLCoordinator:
         self.ppo_coordinator_serialize = _ppo_serialize_enabled()
         self.coordinator_id = str(os.getenv("COORDINATOR_ID", "")).strip() or "coord-1"
         self.num_coordinators = max(1, self._safe_env_int("NUM_COORDINATORS", 1))
+        self.bootstrap_checkpoint_path = str(os.getenv("BOOTSTRAP_CHECKPOINT_PATH", "") or "").strip()
+        self.bootstrap_population_mode = (
+            str(os.getenv("BOOTSTRAP_POPULATION_MODE", "mutated_copies") or "").strip().lower()
+            or "mutated_copies"
+        )
+        self.bootstrap_mutation_rate = max(0.0, self._safe_env_float("BOOTSTRAP_MUTATION_RATE", 0.08))
+        self.training_start_generation_override = self._optional_env_int("TRAINING_START_GENERATION")
+        if self.training_start_generation_override is None:
+            self.training_start_generation_override = self._optional_env_int("BOOTSTRAP_START_GENERATION")
 
     @staticmethod
     def _safe_env_float(name: str, default: float) -> float:
@@ -186,6 +195,107 @@ class RLCoordinator:
             return int(os.getenv(name, str(default)))
         except Exception:
             return int(default)
+
+    @staticmethod
+    def _optional_env_int(name: str) -> Optional[int]:
+        raw = str(os.getenv(name, "") or "").strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except Exception:
+            return None
+
+    def _apply_start_generation_override(self, default_generation: int, source_label: str) -> int:
+        requested = self.training_start_generation_override
+        resolved = max(0, min(int(default_generation), int(self.config.generations)))
+        if requested is None:
+            return resolved
+        overridden = max(0, min(int(requested), int(self.config.generations)))
+        if overridden != resolved:
+            logger.info(
+                "Overriding start generation for %s: %d -> %d",
+                source_label,
+                resolved,
+                overridden,
+            )
+        return overridden
+
+    def _reset_training_progress_state(self) -> None:
+        self.last_eval_fitness = {}
+        self.last_raw_eval_fitness = {}
+        self.last_gated_eval_fitness = {}
+        self.last_generation_behavior_metrics = {}
+        self.last_generation_gate = {}
+        self.last_selection_diagnostics = {}
+        self.generation_behavior_history = []
+        self.league_manager.load_state({})
+        self.metrics_tracker.elo_ratings = {}
+
+    @staticmethod
+    def _clone_agent_for_training(agent: RLAgent) -> Optional[RLAgent]:
+        try:
+            clone = RLAgent(config=type(agent.config)(**asdict(agent.config)))
+            clone.network.load_state_dict(agent.network.state_dict())
+            clone.network.eval()
+            return clone
+        except Exception:
+            return None
+
+    async def _load_population_from_bootstrap_checkpoint(self) -> bool:
+        raw_path = str(self.bootstrap_checkpoint_path or "").strip()
+        if not raw_path:
+            return False
+        checkpoint_path = os.path.abspath(raw_path)
+        if not os.path.isfile(checkpoint_path):
+            logger.warning("BOOTSTRAP_CHECKPOINT_PATH does not exist: %s", checkpoint_path)
+            return False
+
+        mode = str(self.bootstrap_population_mode or "mutated_copies").strip().lower()
+        if mode not in ("clone", "mutated_copies", "seed_and_fresh"):
+            logger.warning("Unknown BOOTSTRAP_POPULATION_MODE=%s; falling back to mutated_copies", mode)
+            mode = "mutated_copies"
+
+        try:
+            seed_agent = RLAgent()
+            seed_agent.load_model(checkpoint_path)
+        except Exception as e:
+            logger.warning("Failed loading bootstrap checkpoint %s: %s", checkpoint_path, e)
+            return False
+
+        population: List[RLAgent] = [seed_agent]
+        if mode == "seed_and_fresh":
+            fresh_agents = await self.evolution_manager.create_initial_population(
+                max(0, int(self.config.population_size) - 1)
+            )
+            population.extend(fresh_agents)
+        else:
+            while len(population) < int(self.config.population_size):
+                clone = self._clone_agent_for_training(seed_agent)
+                if clone is None:
+                    break
+                if mode == "mutated_copies" and float(self.bootstrap_mutation_rate) > 0.0:
+                    clone.mutate(mutation_rate=float(self.bootstrap_mutation_rate))
+                population.append(clone)
+
+        if not population:
+            return False
+
+        self.population = population[: int(self.config.population_size)]
+        self._reset_training_progress_state()
+        start_generation = self._apply_start_generation_override(0, "bootstrap checkpoint")
+        self.current_generation = int(start_generation)
+        self.evolution_manager.generation_count = int(start_generation)
+        self.fixed_benchmark_checkpoints = self._resolve_fixed_benchmark_checkpoints()
+        self._save_training_checkpoint(next_generation=int(start_generation))
+        logger.info(
+            "Bootstrapped population from %s using mode=%s population=%d start_generation=%d",
+            checkpoint_path,
+            mode,
+            len(self.population),
+            int(start_generation),
+        )
+        return True
 
     def _resolve_global_game_concurrency(self) -> int:
         configured = str(os.getenv("GLOBAL_GAME_CONCURRENCY", "0")).strip()
@@ -259,7 +369,9 @@ class RLCoordinator:
         await self.game_cluster.health_check()
 
         resumed = False
-        if self.resume_training_enabled:
+        if self.bootstrap_checkpoint_path:
+            resumed = await self._load_population_from_bootstrap_checkpoint()
+        if not resumed and self.resume_training_enabled:
             resumed = self._load_training_checkpoint()
             if not resumed:
                 resumed = self._load_population_from_latest_saved_generation()
@@ -282,9 +394,10 @@ class RLCoordinator:
                 )
                 self.population.extend(
                     await self.evolution_manager.create_initial_population(missing)
-                )
+            )
             logger.info(
-                "Resumed training at generation %d with %d agents",
+                "%s at generation %d with %d agents",
+                "Bootstrapped training" if self.bootstrap_checkpoint_path else "Resumed training",
                 self.current_generation,
                 len(self.population),
             )
@@ -292,13 +405,13 @@ class RLCoordinator:
             return
 
         # No checkpoint found or resume disabled: start fresh.
-        self.current_generation = 0
-        self.evolution_manager.generation_count = 0
+        self.current_generation = self._apply_start_generation_override(0, "fresh start")
+        self.evolution_manager.generation_count = int(self.current_generation)
         self.population = await self.evolution_manager.create_initial_population(
             self.config.population_size
         )
         logger.info(f"Created initial population of {len(self.population)} agents")
-        self._save_training_checkpoint(next_generation=0)
+        self._save_training_checkpoint(next_generation=int(self.current_generation))
     
     async def run_evolution_cycle(self):
         """Main evolution loop"""
@@ -1414,7 +1527,10 @@ class RLCoordinator:
             return False
 
         self.population = loaded_population
-        self.current_generation = max(0, min(next_generation, self.config.generations))
+        self.current_generation = self._apply_start_generation_override(
+            max(0, min(next_generation, self.config.generations)),
+            "checkpoint resume",
+        )
         self.evolution_manager.generation_count = int(self.current_generation)
         return True
 
@@ -1440,9 +1556,12 @@ class RLCoordinator:
                 return False
 
             self.population = loaded_population
-            self.current_generation = max(
-                0,
-                min(int(latest_generation) + 1, self.config.generations),
+            self.current_generation = self._apply_start_generation_override(
+                max(
+                    0,
+                    min(int(latest_generation) + 1, self.config.generations),
+                ),
+                "latest saved generation bootstrap",
             )
             self.evolution_manager.generation_count = int(self.current_generation)
             logger.info(

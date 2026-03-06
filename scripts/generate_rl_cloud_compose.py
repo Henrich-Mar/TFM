@@ -326,10 +326,13 @@ def _coordinator_role_env_overrides(
         "MAX_SAVED_GENERATIONS": "30",
         "TRAINING_POOL_EXTRA_CHECKPOINTS": "/app/rl-models-global/champion/current/champion.pth",
     }
-    if coordinators_share_gpu and num_coordinators > 1:
-        overrides["PPO_COORDINATOR_SERIALIZE"] = "1"
+    if num_coordinators > 1:
         overrides["COORDINATOR_ID"] = f"coord-{coord_index + 1}"
         overrides["NUM_COORDINATORS"] = str(num_coordinators)
+        overrides["GLOBAL_DASHBOARD_COORDINATOR_URLS"] = _build_coordinator_dashboard_sources(num_coordinators)
+        overrides["GLOBAL_DASHBOARD_ORCH_OUTPUT_ROOT"] = "/app/rl-models-global"
+    if coordinators_share_gpu and num_coordinators > 1:
+        overrides["PPO_COORDINATOR_SERIALIZE"] = "1"
     return overrides
 
 
@@ -337,6 +340,16 @@ def _build_orchestrator_coord_sources(num_coordinators: int) -> str:
     return ",".join(
         f"coord-{idx}=/app/coord-models/coord-{idx}"
         for idx in range(1, max(1, int(num_coordinators)) + 1)
+    )
+
+
+def _build_coordinator_dashboard_sources(num_coordinators: int) -> str:
+    count = max(1, int(num_coordinators))
+    if count <= 1:
+        return "coord-1=http://rl-coordinator:5000"
+    return ",".join(
+        f"coord-{idx}=http://rl-coordinator-{idx}:5000"
+        for idx in range(1, count + 1)
     )
 
 

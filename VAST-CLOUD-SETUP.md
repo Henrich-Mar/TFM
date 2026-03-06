@@ -185,7 +185,7 @@ export PPO_DEVICE=cpu
 # Important for your current PPO-zero issue on shared GPU:
 export PPO_PARALLEL_AGENTS=1
 export PPO_EXECUTOR_WORKERS=1
-export RL_PPO_ROLLOUT_STEPS=8192
+export RL_PPO_ROLLOUT_STEPS=16384
 
 export TM_TRANSPORT_TIMING_DEBUG=0
 export TM_HTTP_PREWARM_CONNECTIONS=4
@@ -195,6 +195,21 @@ chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
 
 ```
+
+### Bootstrap from a saved champion
+
+If you want a new machine to start from an existing champion checkpoint instead of a random population:
+
+```bash
+export BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models-global/champion/current/champion.pth
+export BOOTSTRAP_POPULATION_MODE=mutated_copies   # clone | mutated_copies | seed_and_fresh
+export BOOTSTRAP_MUTATION_RATE=0.08
+export TRAINING_START_GENERATION=0
+```
+
+Typical uses:
+- Continue numbering from a chosen point: `export TRAINING_START_GENERATION=100`
+- Start from the imported champion as a fresh run: `export TRAINING_START_GENERATION=0`
 
 
 You can verify the generated training volume in `docker-compose.rl_cloud.generated.yml`:
@@ -254,6 +269,10 @@ docker compose -f docker-compose.rl_cloud.generated.yml logs -f rl-coordinator  
 Dashboard (use 127.0.0.1 when accessing via SSH port forwarding, e.g. Vast.ai):
 - `http://127.0.0.1:5000/dashboard`
 - `http://127.0.0.1:5000/stats`
+- In multi-coordinator mode, `/dashboard` now opens a global aggregate view by default.
+- `http://127.0.0.1:5100/dashboard` -> global dashboard
+- `http://127.0.0.1:5100/dashboard/local` -> coordinator 1 local detail
+- `http://127.0.0.1:5101/dashboard/local` -> coordinator 2 local detail
 
 For port forwarding: forward ports 5000 and 8081â€“8098 (or 8081â€“8098 for 18 game servers), then use the 127.0.0.1 URLs. Set `PUBLIC_HOST=localhost` when running so game links in the dashboard work.
 
@@ -284,39 +303,6 @@ If the coordinator cannot keep up with many game servers and games are dropped (
 | `RL_TM_GAME_TIMEOUT_SEC=600` | 600 | Game timeout in seconds (default 420); increase if games are slow or "cancelled unexpectedly" |
 | `RL_TM_HTTP_FORCE_CLOSE_CONNECTIONS=0` | 0 (cloud default) | HTTP keep-alive for better async I/O; 1 = close after each request |
 
-### Async I/O tuning (connection reuse)
-
-For cloud/saturate mode, HTTP connection reuse is enabled by default (`TM_HTTP_FORCE_CLOSE_CONNECTIONS=0`). This keeps TCP connections open across requests instead of closing after each `get_player_state` / `send_player_input` call, reducing latency and connection churn. The base compose uses `1`; the cloud generator overrides to `0`. DNS caching is enabled with 300s TTL (`TM_HTTP_DNS_CACHE_TTL_SEC`) to avoid repeated lookups for Docker service names.
-
-### "Game task cancelled unexpectedly" / "play_game task cancelled"
-
-These appear when game tasks are cancelled before completion. Common causes:
-- **Game timeout**: Games run longer than `TM_GAME_TIMEOUT_SEC`. Increase it (e.g. 600) for high-concurrency saturate mode.
-- **Event-loop blocking**: With multi-coordinator GPU sharing, ensure PPO runs in a thread pool and does not block the event loop.
-- **Process signal**: Container or host interrupting the process.
-
-If logs include `play_game task cancelled due to game timeout`, the cancellation was triggered by tournament timeout handling (not a random agent failure).
-
-Try: `export RL_TM_GAME_TIMEOUT_SEC=600` (add to saturate env) and ensure `TM_GAME_TIMEOUT_SEC` is passed into the coordinator container.
-
-### Multi-coordinator (if single coordinator still times out)
-
-With 18 servers and persistent `get_player_state` timeouts, run 2â€“3 coordinators in parallel, each with a subset of servers.
-
-**Option A â€“ Dedicated GPUs** (default): Each coordinator gets its own GPU. Requires N GPUs for N coordinators.
-
-**Option B â€“ Shared GPU**: When the bottleneck is the pipeline (game servers, HTTP), not GPU compute, coordinators can share one GPU:
-
-```bash
-export RL_NUM_COORDINATORS=2   # or 3
-export RL_TRAINING_PROFILE=saturate
-# ... other saturate vars ...
-./start-rl-cloud-training.sh
-```
-
-**Note:** Multiple coordinators on one GPU share VRAM. Ensure the GPU has enough (e.g. 2 coordinators typically need 8GB+ total). Use `RL_GPU_INDEX=0` (default) or another index if you have multiple GPUs and want coordinators to share a specific one.
-
-Dashboards: `http://127.0.0.1:5000`, `http://127.0.0.1:5001`, etc.
 
 ### Global champion orchestrator (multi-coordinator)
 
@@ -359,7 +345,3 @@ Troubleshooting:
 - If orchestrator competes too much with training throughput, lower `ORCH_GLOBAL_GAME_CONCURRENCY` (default `2`).
 - If host port `5000` is occupied, set `RL_COORDINATOR_BASE_PORT` (e.g. `5100`) before `./start-rl-cloud-training.sh`.
 
-Check coordinator logs for:
-- `No game server capacity available` (slot timeout)
-- `Failed to create game` (create_game retries exhausted)
-- High `payment_reject_count` (server overload)

@@ -420,6 +420,12 @@ def _default_state() -> Dict[str, Any]:
         "last_evaluated_generation_by_coord": {},
         "incumbent_checkpoint_path": "",
         "last_round_id": "",
+        "status": "starting",
+        "updated_at": "",
+        "last_error": "",
+        "coord_progress": {},
+        "last_round_summary": {},
+        "config": {},
     }
 
 
@@ -438,6 +444,58 @@ def load_orchestrator_state(output_root: str) -> Dict[str, Any]:
 
 def save_orchestrator_state(output_root: str, state: Dict[str, Any]) -> None:
     _atomic_write_json(_state_path(output_root), dict(state))
+
+
+def _coord_progress_payload(progress: Dict[str, CoordProgress]) -> Dict[str, Dict[str, Any]]:
+    payload: Dict[str, Dict[str, Any]] = {}
+    for coord_id, item in dict(progress or {}).items():
+        payload[str(coord_id)] = {
+            "coord_root": str(item.coord_root),
+            "next_generation": item.next_generation,
+            "latest_saved_generation": item.latest_saved_generation,
+            "generation_signal": int(item.generation_signal),
+        }
+    return payload
+
+
+def _config_payload(config: OrchestratorConfig) -> Dict[str, Any]:
+    return {
+        "trainer_coord_id": str(config.trainer_coord_id),
+        "poll_interval_sec": float(config.poll_interval_sec),
+        "trigger_every_n_gens": int(config.trigger_every_n_gens),
+        "top_k_per_coord": int(config.top_k_per_coord),
+        "games_per_candidate": int(config.games_per_candidate),
+        "global_game_concurrency": int(config.global_game_concurrency),
+        "tournament_concurrency": int(config.tournament_concurrency),
+        "min_games_for_promotion": int(config.min_games_for_promotion),
+        "min_completion_rate": float(config.min_completion_rate),
+        "win_rate_margin": float(config.win_rate_margin),
+        "keep_generations_trainer": int(config.keep_generations_trainer),
+        "keep_generations_worker": int(config.keep_generations_worker),
+        "pause_during_ppo": bool(config.pause_during_ppo),
+        "coord_sources": dict(config.coord_sources),
+    }
+
+
+def _persist_runtime_state(
+    config: OrchestratorConfig,
+    state: Dict[str, Any],
+    *,
+    status: str,
+    progress: Optional[Dict[str, CoordProgress]] = None,
+    last_error: Optional[str] = None,
+    last_round_summary: Optional[Dict[str, Any]] = None,
+) -> None:
+    state["status"] = str(status or "idle")
+    state["updated_at"] = _utc_now_iso()
+    state["config"] = _config_payload(config)
+    if progress is not None:
+        state["coord_progress"] = _coord_progress_payload(progress)
+    if last_error is not None:
+        state["last_error"] = str(last_error or "")
+    if last_round_summary is not None:
+        state["last_round_summary"] = dict(last_round_summary)
+    save_orchestrator_state(config.output_root, state)
 
 
 def _current_manifest_path(output_root: str) -> str:
@@ -598,23 +656,34 @@ def _coordinator_keep_window(config: OrchestratorConfig, coord_id: str) -> int:
 async def run_round(config: OrchestratorConfig, state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if config.pause_during_ppo and is_ppo_phase_active():
         logger.info("PPO phase active; skipping champion round.")
+        _persist_runtime_state(config, state, status="waiting_for_ppo")
         return None
 
     progress = {
         coord_id: discover_coord_progress(coord_id, coord_root)
         for coord_id, coord_root in config.coord_sources.items()
     }
+    _persist_runtime_state(config, state, status="scanning", progress=progress, last_error="")
     trainer_progress = progress.get(config.trainer_coord_id)
     if trainer_progress is None:
         logger.warning("Trainer coordinator %s is missing from coord sources", config.trainer_coord_id)
+        _persist_runtime_state(
+            config,
+            state,
+            status="error_missing_trainer",
+            progress=progress,
+            last_error=f"missing trainer coordinator {config.trainer_coord_id}",
+        )
         return None
 
     last_eval_map = dict(state.get("last_evaluated_generation_by_coord", {}) or {})
     last_eval_trainer = _safe_int(last_eval_map.get(config.trainer_coord_id, -1), -1)
     if trainer_progress.generation_signal < 0:
         logger.info("Trainer has no generation signal yet. Waiting.")
+        _persist_runtime_state(config, state, status="waiting_for_generation", progress=progress)
         return None
     if trainer_progress.generation_signal < (last_eval_trainer + int(config.trigger_every_n_gens)):
+        _persist_runtime_state(config, state, status="waiting_for_trigger", progress=progress)
         return None
 
     all_candidates: List[CandidateRef] = []
@@ -637,10 +706,11 @@ async def run_round(config: OrchestratorConfig, state: Dict[str, Any]) -> Option
             coord_id: int(item.generation_signal)
             for coord_id, item in progress.items()
         }
-        save_orchestrator_state(config.output_root, state)
+        _persist_runtime_state(config, state, status="waiting_for_candidates", progress=progress)
         return None
 
     round_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    _persist_runtime_state(config, state, status="evaluating", progress=progress)
     os.environ["TOURNAMENT_CONCURRENCY"] = str(config.tournament_concurrency)
     os.environ["GLOBAL_GAME_CONCURRENCY"] = str(config.global_game_concurrency)
     game_servers = [s.strip() for s in str(os.getenv("GAME_SERVERS", "")).split(",") if s.strip()]
@@ -715,7 +785,23 @@ async def run_round(config: OrchestratorConfig, state: Dict[str, Any]) -> Option
     }
     state["incumbent_checkpoint_path"] = os.path.abspath(_current_checkpoint_path(config.output_root))
     state["last_round_id"] = str(round_id)
-    save_orchestrator_state(config.output_root, state)
+    _persist_runtime_state(
+        config,
+        state,
+        status="idle",
+        progress=progress,
+        last_round_summary={
+            "round_id": str(round_id),
+            "planned_games": int(planned_games),
+            "successful_games": int(successful_games),
+            "completion_rate": float(completion_rate),
+            "winner_candidate_id": str(active_winner.candidate_id),
+            "winner_coordinator_id": str(active_winner.coordinator_id),
+            "winner_generation": int(active_winner.generation),
+            "promotion_applied": bool(promotion.get("applied", False)),
+            "promotion_reason": str(promotion.get("reason", "")),
+        },
+    )
 
     # Post-round prune of coordinator generation directories.
     active_champion = dict(manifest_payload.get("winner", {}) or {})
@@ -755,11 +841,18 @@ async def orchestrator_loop(*, once: bool = False) -> None:
     config = _load_config()
     os.makedirs(config.output_root, exist_ok=True)
     state = load_orchestrator_state(config.output_root)
+    _persist_runtime_state(config, state, status="idle", last_error="")
 
     while True:
         try:
             await run_round(config, state)
-        except Exception:
+        except Exception as exc:
+            _persist_runtime_state(
+                config,
+                state,
+                status="error",
+                last_error=f"{type(exc).__name__}: {exc}",
+            )
             logger.exception("Champion orchestrator round failed")
 
         if once:

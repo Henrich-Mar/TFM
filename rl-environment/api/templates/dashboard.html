@@ -263,6 +263,9 @@
       <div class="actions">
         <div class="row-btns">
           <button onclick="refreshAll()">Refresh</button>
+          {% if global_dashboard_enabled %}
+          <a href="/dashboard/global"><button type="button">Global View</button></a>
+          {% endif %}
           <button id="btnPlayBest" onclick="startHumanVsBest()">Play vs Best Agent</button>
         </div>
         <div id="playBestStatus" class="muted action-status"></div>

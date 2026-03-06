@@ -34,6 +34,10 @@ def test_generated_compose_includes_orchestrator_for_multi_coordinator(tmp_path:
     generated = output_path.read_text(encoding="utf-8")
     assert "rl-champion-orchestrator:" in generated
     assert "ORCH_COORD_SOURCES=coord-1=/app/coord-models/coord-1,coord-2=/app/coord-models/coord-2" in generated
+    assert "GLOBAL_DASHBOARD_COORDINATOR_URLS=coord-1=http://rl-coordinator-1:5000,coord-2=http://rl-coordinator-2:5000" in generated
+    assert generated.count("NUM_COORDINATORS=2") == 2
+    assert "COORDINATOR_ID=coord-1" in generated
+    assert "COORDINATOR_ID=coord-2" in generated
     assert "SAVE_EVERY_N_GENERATIONS=1" in generated
     assert "TRAINING_POOL_EXTRA_CHECKPOINTS=/app/rl-models-global/champion/current/champion.pth" in generated
 

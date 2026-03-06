@@ -89,6 +89,11 @@ def test_generated_compose_passes_through_runtime_tuning_env(tmp_path: Path, mon
     monkeypatch.setenv("PPO_MINIBATCH_SIZE", "512")
     monkeypatch.setenv("AGENT_INFERENCE_BATCH_SIZE", "64")
     monkeypatch.setenv("AGENT_INFERENCE_THREADS", "8")
+    monkeypatch.setenv("TRAINING_POOL_GENERATION_WINDOW", "10")
+    monkeypatch.setenv("TRAINING_POOL_GAMES_PER_AGENT", "1")
+    monkeypatch.setenv("FIXED_BENCHMARK_INTERVAL", "3")
+    monkeypatch.setenv("MIN_EVAL_COMPLETION_RATIO", "0.80")
+    monkeypatch.setenv("MIN_FROZEN_POOL_COMPLETION_RATE", "0.80")
     monkeypatch.setenv("RL_GAME_OPTIONS_FILE", "/app/game_options.fast_training.json")
 
     cmd = [
@@ -117,4 +122,9 @@ def test_generated_compose_passes_through_runtime_tuning_env(tmp_path: Path, mon
     assert "PPO_MINIBATCH_SIZE=512" in generated
     assert "AGENT_INFERENCE_BATCH_SIZE=64" in generated
     assert "AGENT_INFERENCE_THREADS=8" in generated
+    assert "TRAINING_POOL_GENERATION_WINDOW=10" in generated
+    assert "TRAINING_POOL_GAMES_PER_AGENT=1" in generated
+    assert "FIXED_BENCHMARK_INTERVAL=3" in generated
+    assert "MIN_EVAL_COMPLETION_RATIO=0.80" in generated
+    assert "MIN_FROZEN_POOL_COMPLETION_RATE=0.80" in generated
     assert "GAME_OPTIONS_FILE=/app/game_options.fast_training.json" in generated

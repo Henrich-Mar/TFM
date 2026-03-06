@@ -175,22 +175,31 @@ export RL_INITIAL_CARDS_JITTER_MS=1200
 export RL_TM_RECYCLE_SESSION_ON_DISCONNECT=0
 export RL_POPULATION_SIZE=16
 
-export PPO_EPOCHS=4
+export PPO_EPOCHS=3
 export PPO_MINIBATCH_SIZE=2048
 export PPO_CLIP_EPS=0.15
-export PPO_TARGET_KL=0.015
-export PPO_LEARNING_RATE=0.00008
+export PPO_TARGET_KL=0.020
+export PPO_LEARNING_RATE=0.00010
 export PPO_LR_MIN=0.00003
-export PPO_LR_MAX=0.00018
+export PPO_LR_MAX=0.00015
 export PPO_LR_ADAPT_UP=1.02
 export PPO_LR_ADAPT_DOWN=0.90
 export AGENT_INFERENCE_BATCH_SIZE=64
 export AGENT_INFERENCE_THREADS=8
 
-# Force PPO off the shared GPU; keep inference on GPU.
-export PPO_DEVICE=cpu
+# Run PPO on CUDA, keep inference on CPU on high-core Ryzen hosts.
+export PPO_DEVICE=cuda
 
-# Important for your current PPO-zero issue on shared GPU:
+export AGENT_INFERENCE_DEVICE=cpu
+export AGENT_INFERENCE_BATCH=0
+# Safe rollout for frozen-pool checks and periodic fixed benchmark.
+export TRAINING_POOL_GENERATION_WINDOW=10
+export TRAINING_POOL_GAMES_PER_AGENT=1
+export FIXED_BENCHMARK_INTERVAL=3
+export MIN_EVAL_COMPLETION_RATIO=0.80
+export MIN_FROZEN_POOL_COMPLETION_RATE=0.80
+
+# Important for shared-device stability:
 export PPO_PARALLEL_AGENTS=1
 export PPO_EXECUTOR_WORKERS=1
 export RL_PPO_ROLLOUT_STEPS=16384

@@ -150,25 +150,25 @@ chmod +x start-rl-cloud-training.sh
 export PUBLIC_HOST=localhost
 
 export RL_TRAINING_PROFILE=saturate
-export RL_NUM_COORDINATORS=3
+export RL_NUM_COORDINATORS=2
 export RL_COORDINATOR_BASE_PORT=5100
 export RL_COORDINATORS_SHARE_GPU=1
 
-# Force total servers = 30  => 8 per coordinator
-export RL_MIN_SERVERS=24
-export RL_MAX_SERVERS=24
+# Force total servers = 16  => 8 per coordinator
+export RL_MIN_SERVERS=16
+export RL_MAX_SERVERS=16
 
 # 2 concurrent games per server
 export RL_GAMES_PER_SERVER=2
 
-# 5 servers * 2 games = 10 concurrent games per coordinator
+# 8 servers * 2 games = 16 concurrent games per coordinator
 export RL_GLOBAL_GAME_CAP_PER_COORD=16
 export RL_TOURNAMENT_CAP_PER_COORD=16
 
 export RL_CPU_SERVER_RATIO=0.90
 export RL_SERVER_MEM_MB=900
 export RL_NODE_HEAP_MB=512
-export RL_GAMES_PER_EVAL=6
+export RL_GAMES_PER_EVAL=8
 export RL_INFRA_OVERHEAD_MB=6144
 export RL_TM_GAME_TIMEOUT_SEC=2400
 export RL_INITIAL_CARDS_JITTER_MS=1200
@@ -194,7 +194,7 @@ export AGENT_INFERENCE_DEVICE=cpu
 export AGENT_INFERENCE_BATCH=0
 # Safe rollout for frozen-pool checks and periodic fixed benchmark.
 export TRAINING_POOL_GENERATION_WINDOW=10
-export TRAINING_POOL_GAMES_PER_AGENT=0
+export TRAINING_POOL_GAMES_PER_AGENT=1
 export FIXED_BENCHMARK_INTERVAL=3
 export MIN_EVAL_COMPLETION_RATIO=0.80
 export MIN_FROZEN_POOL_COMPLETION_RATE=0.80
@@ -207,6 +207,9 @@ export RL_PPO_ROLLOUT_STEPS=16384
 export TM_TRANSPORT_TIMING_DEBUG=0
 export TM_HTTP_PREWARM_CONNECTIONS=4
 export RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7
+# pouzitie training poolu na trenovanie
+export SELECTION_INCLUDE_TRAINING_POOL=1
+
 # test naciatania
 unset BOOTSTRAP_CHECKPOINT_PATH
 unset BOOTSTRAP_POPULATION_MODE

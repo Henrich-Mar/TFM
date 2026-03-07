@@ -505,7 +505,9 @@ class RLCoordinator:
 
                 # Evolve population for the next generation
                 self.population = await self.evolution_manager.evolve_population(
-                    self.population, fitness_scores
+                    self.population,
+                    fitness_scores,
+                    gate_results=per_agent_gate,
                 )
 
                 next_generation = generation + 1

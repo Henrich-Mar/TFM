@@ -4,7 +4,7 @@ Agent Evolution - Manages evolutionary algorithm for agent breeding
 import numpy as np
 import random
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from dataclasses import dataclass, asdict
 import asyncio
 import torch
@@ -38,6 +38,9 @@ class EvolutionManager:
         self.immigrant_ratio = self._safe_env_float("EVOLUTION_IMMIGRANT_RATIO", 0.10)
         self.immigrant_interval = self._safe_env_int("EVOLUTION_IMMIGRANT_INTERVAL", 3)
         self.immigrant_mutation_rate = self._safe_env_float("EVOLUTION_IMMIGRANT_MUTATION_RATE", 0.30)
+        self.gate_parent_filter_enabled = str(os.getenv("EVOLUTION_GATE_PARENT_FILTER_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off")
+        self.gate_failed_replacement_enabled = str(os.getenv("EVOLUTION_GATE_REPLACE_FAILED_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off")
+        self.gate_replacement_mutation_rate = self._safe_env_float("EVOLUTION_GATE_REPLACEMENT_MUTATION_RATE", 0.05)
         self.epsilon_init_min = self._safe_env_float("EVOLUTION_INIT_EPSILON_MIN", 0.01)
         self.epsilon_init_max = self._safe_env_float("EVOLUTION_INIT_EPSILON_MAX", 0.12)
         self.temperature_init_min = self._safe_env_float("EVOLUTION_INIT_TEMPERATURE_MIN", 0.7)
@@ -90,9 +93,10 @@ class EvolutionManager:
         logger.info(f"Created initial population of {len(population)} diverse agents")
         return population
     
-    async def evolve_population(self, 
-                              population: List[RLAgent], 
-                              fitness_scores: List[float]) -> List[RLAgent]:
+    async def evolve_population(self,
+                              population: List[RLAgent],
+                              fitness_scores: List[float],
+                              gate_results: Optional[Dict[str, Dict[str, Any]]] = None) -> List[RLAgent]:
         """Evolve population using genetic algorithm"""
         self.generation_count += 1
         
@@ -113,13 +117,21 @@ class EvolutionManager:
                    f"Diversity: {diversity:.3f}")
 
         if self.rl_first_enabled:
-            return await self._evolve_population_rl_first(population, fitness_scores)
+            return await self._evolve_population_rl_first(
+                population,
+                fitness_scores,
+                gate_results=gate_results,
+            )
         
         # Apply diversity bonus to fitness scores
         adjusted_fitness = self._apply_diversity_bonus(population, fitness_scores)
         
         # Selection
-        elite_agents, breeding_pool = self._selection(population, adjusted_fitness)
+        elite_agents, breeding_pool = self._selection(
+            population,
+            adjusted_fitness,
+            gate_results=gate_results,
+        )
         
         # Create new generation
         new_population = await self._create_new_generation(elite_agents, breeding_pool)
@@ -130,6 +142,7 @@ class EvolutionManager:
         self,
         population: List[RLAgent],
         fitness_scores: List[float],
+        gate_results: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> List[RLAgent]:
         """RL-first mode: keep PPO-trained population, inject immigrants periodically."""
         if not population:
@@ -142,27 +155,57 @@ class EvolutionManager:
         )
         ranked_population = [population[i] for i in ranked_indices]
         new_population = ranked_population[: self.population_size]
+        passed_ranked = ranked_population
+        failed_count = 0
+
+        if gate_results and (self.gate_parent_filter_enabled or self.gate_failed_replacement_enabled):
+            passed_ranked, failed_ranked = self._partition_ranked_population_by_gate(
+                ranked_population,
+                gate_results,
+            )
+            failed_count = len(failed_ranked)
+            if passed_ranked:
+                if self.gate_failed_replacement_enabled:
+                    new_population = list(passed_ranked[: self.population_size])
+                    replacement_parent_pool = self._parent_pool_from_ranked(passed_ranked)
+                    while len(new_population) < self.population_size:
+                        new_population.append(self._create_gate_replacement(replacement_parent_pool))
+                else:
+                    new_population = ranked_population[: self.population_size]
+                logger.info(
+                    "RL-first evolution: retained %d gate-passed agents and replaced %d gate-failed slots.",
+                    min(len(passed_ranked), self.population_size),
+                    max(0, self.population_size - min(len(passed_ranked), self.population_size)),
+                )
+            else:
+                logger.warning(
+                    "RL-first evolution: all %d ranked agents failed promotion gates; falling back to pure fitness ordering.",
+                    failed_count,
+                )
 
         interval = max(1, int(self.immigrant_interval))
         if (self.generation_count % interval) != 0:
             logger.info(
-                "RL-first evolution: no immigrants this generation (interval=%d).",
+                "RL-first evolution: no immigrants this generation (interval=%d, gate_failed=%d).",
                 interval,
+                failed_count,
             )
             return new_population
 
         immigrant_count = max(1, int(len(new_population) * max(0.0, min(0.5, float(self.immigrant_ratio)))))
-        parent_pool = new_population[: max(2, len(new_population) // 2)]
+        parent_pool_source = passed_ranked if passed_ranked else new_population
+        parent_pool = self._parent_pool_from_ranked(parent_pool_source)
         for idx in range(immigrant_count):
             immigrant = self._create_immigrant(parent_pool)
             replace_idx = max(0, len(new_population) - 1 - idx)
             new_population[replace_idx] = immigrant
 
         logger.info(
-            "RL-first evolution: introduced %d immigrants (ratio=%.2f, interval=%d).",
+            "RL-first evolution: introduced %d immigrants (ratio=%.2f, interval=%d, gate_failed=%d).",
             immigrant_count,
             float(self.immigrant_ratio),
             interval,
+            failed_count,
         )
         return new_population
 
@@ -178,6 +221,51 @@ class EvolutionManager:
             child = self._clone_agent(random.choice(parent_pool))
         child.mutate(mutation_rate=max(0.01, float(self.immigrant_mutation_rate)))
         return child
+
+    def _create_gate_replacement(self, parent_pool: List[RLAgent]) -> RLAgent:
+        if not parent_pool:
+            raise ValueError("parent_pool must not be empty")
+        if len(parent_pool) >= 2 and random.random() < float(self.crossover_rate):
+            parent1 = random.choice(parent_pool)
+            parent2 = random.choice(parent_pool)
+            if parent1.id != parent2.id:
+                child = parent1.crossover(parent2)
+            else:
+                child = self._clone_agent(parent1)
+        else:
+            child = self._clone_agent(random.choice(parent_pool))
+        child.mutate(mutation_rate=max(0.0, float(self.gate_replacement_mutation_rate)))
+        return child
+
+    @staticmethod
+    def _gate_passed(agent_id: str, gate_results: Optional[Dict[str, Dict[str, Any]]]) -> bool:
+        if not gate_results:
+            return True
+        gate_info = gate_results.get(agent_id, {})
+        if not isinstance(gate_info, dict):
+            return True
+        return bool(gate_info.get("passed", True))
+
+    def _partition_ranked_population_by_gate(
+        self,
+        ranked_population: List[RLAgent],
+        gate_results: Optional[Dict[str, Dict[str, Any]]],
+    ) -> Tuple[List[RLAgent], List[RLAgent]]:
+        passed_ranked: List[RLAgent] = []
+        failed_ranked: List[RLAgent] = []
+        for agent in ranked_population:
+            if self._gate_passed(getattr(agent, "id", ""), gate_results):
+                passed_ranked.append(agent)
+            else:
+                failed_ranked.append(agent)
+        return passed_ranked, failed_ranked
+
+    @staticmethod
+    def _parent_pool_from_ranked(ranked_population: List[RLAgent]) -> List[RLAgent]:
+        if not ranked_population:
+            return []
+        top_count = max(1, len(ranked_population) // 2)
+        return ranked_population[:top_count]
     
     def _apply_diversity_bonus(self, population: List[RLAgent], fitness_scores: List[float]) -> List[float]:
         """Apply bonus for genetic diversity"""
@@ -245,21 +333,43 @@ class EvolutionManager:
         
         return total_distance / comparisons if comparisons > 0 else 0.0
     
-    def _selection(self, population: List[RLAgent], fitness_scores: List[float]) -> Tuple[List[RLAgent], List[RLAgent]]:
+    def _selection(
+        self,
+        population: List[RLAgent],
+        fitness_scores: List[float],
+        gate_results: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Tuple[List[RLAgent], List[RLAgent]]:
         """Select elite agents and breeding pool"""
         # Sort by fitness
-        sorted_indices = sorted(range(len(fitness_scores)), 
-                              key=lambda i: fitness_scores[i], 
+        sorted_indices = sorted(range(len(fitness_scores)),
+                              key=lambda i: fitness_scores[i],
                               reverse=True)
-        
+        selection_indices = list(sorted_indices)
+        if gate_results and self.gate_parent_filter_enabled:
+            passed_indices = [
+                idx for idx in sorted_indices
+                if self._gate_passed(getattr(population[idx], "id", ""), gate_results)
+            ]
+            if passed_indices:
+                selection_indices = passed_indices
+                logger.info(
+                    "Evolution selection: filtered parent pool to %d gate-passed agents (excluded %d gate-failed agents).",
+                    len(selection_indices),
+                    max(0, len(sorted_indices) - len(selection_indices)),
+                )
+            else:
+                logger.warning(
+                    "Evolution selection: no gate-passed agents available; falling back to pure fitness ordering."
+                )
+
         # Elite selection
-        elite_count = max(1, int(len(population) * self.elite_percentage))
-        elite_indices = sorted_indices[:elite_count]
+        elite_count = min(len(selection_indices), max(1, int(len(population) * self.elite_percentage)))
+        elite_indices = selection_indices[:elite_count]
         elite_agents = [population[i] for i in elite_indices]
-        
+
         # Breeding pool: top 50% for crossover
-        breeding_count = max(2, len(population) // 2)
-        breeding_indices = sorted_indices[:breeding_count]
+        breeding_count = min(len(selection_indices), max(1, len(population) // 2))
+        breeding_indices = selection_indices[:breeding_count]
         breeding_pool = [population[i] for i in breeding_indices]
         
         logger.info(f"Selected {len(elite_agents)} elite agents and {len(breeding_pool)} for breeding")

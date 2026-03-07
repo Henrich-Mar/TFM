@@ -8,6 +8,7 @@ import json
 import logging
 
 from .rust_backend import get_rust_module
+from .requirement_planning import RequirementPlanner
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class StateEncoder:
         
         # Load authoritative card metadata first; derive common_cards from it when available
         self.card_metadata_by_name: Dict[str, Dict[str, Any]] = self._load_card_metadata()
+        self.requirement_planner = RequirementPlanner(self.card_metadata_by_name)
         self.common_cards = self._get_common_cards(self.card_metadata_by_name)
         self.card_to_index = {card: i for i, card in enumerate(self.common_cards)}
 
@@ -474,6 +476,8 @@ class StateEncoder:
             cost_norm = min(max(cost, 0.0) / 40.0, 1.0)
             affordable = _affordability(cost, tags)
             vp_proxy = self._get_card_vp_proxy(card, tags)
+            requirement_plan = self._evaluate_card_requirement_plan(card, player_state)
+            readiness_score, reachability_score, unmet_requirement_penalty = self._requirement_penalty_details(requirement_plan)
 
             key_tags = ['Science', 'Building', 'Space', 'Earth', 'Jovian']
             key_tag_density = sum(1 for tag in key_tags if tags.get(tag, 0) > 0) / float(len(key_tags))
@@ -504,6 +508,9 @@ class StateEncoder:
                     + (0.95 * vp_proxy)
                     + (0.55 * key_tag_density)
                     + (0.85 * resource_synergy)
+                    + (0.85 * readiness_score)
+                    + (0.35 * reachability_score)
+                    - (0.60 * unmet_requirement_penalty)
                     + (0.35 * (1.0 - cost_norm))
                 ) / 3.0,
                 1.0,
@@ -523,6 +530,10 @@ class StateEncoder:
                 'vp_proxy': vp_proxy,
                 'key_tag_density': key_tag_density,
                 'resource_synergy': resource_synergy,
+                'requirement_plan': requirement_plan,
+                'readiness_score': readiness_score,
+                'reachability_score': reachability_score,
+                'unmet_requirement_penalty': unmet_requirement_penalty,
                 'utility': utility,
                 'tags': tags,
             })
@@ -695,6 +706,43 @@ class StateEncoder:
         if not name:
             return {}
         return self.card_metadata_by_name.get(name, {}) or {}
+
+    def _evaluate_card_requirement_plan(
+        self,
+        card: Dict[str, Any],
+        player_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        try:
+            return self.requirement_planner.evaluate_card(card, player_state)
+        except Exception:
+            return {
+                'requirements': [],
+                'requirement_plan': [],
+                'all_satisfied': True,
+                'blocking_count': 0,
+                'primary_gap_label': '',
+                'primary_gap_axis': '',
+                'reachability_score': 1.0,
+                'readiness_score': 1.0,
+                'plan_summary': 'Requirement planning unavailable.',
+                'server_override': False,
+                'masked_by_server': False,
+            }
+
+    def _requirement_penalty_details(self, requirement_plan: Dict[str, Any]) -> Tuple[float, float, float]:
+        readiness = float(requirement_plan.get('readiness_score', 1.0) or 1.0)
+        reachability = float(requirement_plan.get('reachability_score', 1.0) or 1.0)
+        blocking_count = int(requirement_plan.get('blocking_count', 0) or 0)
+        unmet_penalty = min(1.0, float(blocking_count) / 3.0)
+        for row in requirement_plan.get('requirement_plan', []) or []:
+            if not isinstance(row, dict) or bool(row.get('satisfied', False)):
+                continue
+            axis = str(row.get('type', '') or '')
+            if axis == 'temperature' and int(row.get('remaining_steps', 0) or 0) > 4:
+                unmet_penalty += 0.15
+            elif axis in ('oxygen', 'oceans', 'venus') and int(row.get('remaining', 0) or 0) > 3:
+                unmet_penalty += 0.10
+        return readiness, reachability, min(1.0, unmet_penalty)
 
     def _get_numeric_resource_count(self, card: Dict[str, Any]) -> float:
         try:
@@ -942,6 +990,7 @@ class StateEncoder:
         cards: List[Dict[str, Any]],
         count: int,
         player: Dict[str, Any],
+        player_state: Optional[Dict[str, Any]],
         own_tag_profile: Dict[str, int],
         opponent_tag_profile: Dict[str, int],
         card_group: str,
@@ -978,6 +1027,12 @@ class StateEncoder:
             opponent_pressure = 0.0
             if resource_type and isinstance(opponent_resource_totals, dict):
                 opponent_pressure = min(float(opponent_resource_totals.get(resource_type, 0.0)) / 12.0, 1.0)
+            readiness_score = 1.0
+            reachability_score = 1.0
+            unmet_requirement_penalty = 0.0
+            if card_group not in ('tableau', 'opponent') and isinstance(player_state, dict):
+                requirement_plan = self._evaluate_card_requirement_plan(card, player_state)
+                readiness_score, reachability_score, unmet_requirement_penalty = self._requirement_penalty_details(requirement_plan)
 
             resource_score = 0.0
             if behavior == 'vp_accumulation':
@@ -1014,6 +1069,9 @@ class StateEncoder:
                     + (0.55 * own_overlap_norm)
                     + (0.40 * hate_signal)
                     + (0.55 * resource_score)
+                    + (0.85 * readiness_score)
+                    + (0.35 * reachability_score)
+                    - (0.60 * unmet_requirement_penalty)
                     + (0.20 * (1.0 - cost_norm))
                 )
 
@@ -1067,6 +1125,7 @@ class StateEncoder:
             tableau_cards,
             min(self.tableau_token_count, token_slots),
             player,
+            player_state,
             own_tag_profile,
             opponent_tag_profile,
             card_group='tableau',
@@ -1077,6 +1136,7 @@ class StateEncoder:
             hand_candidates,
             min(self.hand_token_count, remaining_slots),
             player,
+            player_state,
             own_tag_profile,
             opponent_tag_profile,
             card_group='hand',
@@ -1087,6 +1147,7 @@ class StateEncoder:
             opponent_tableau_cards,
             min(self.opponent_token_count, remaining_slots),
             player,
+            player_state,
             own_tag_profile,
             opponent_tag_profile,
             card_group='opponent',
@@ -1114,6 +1175,125 @@ class StateEncoder:
 
         write_len = min(usable_length, flat_tokens.size)
         state_vector[start:start + write_len] = flat_tokens[:write_len]
+
+    def build_prompt_card_rankings(
+        self,
+        player_state: Dict[str, Any],
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        waiting_for = player_state.get('waitingFor', {}) or {}
+        waiting_type = str(waiting_for.get('type', '') or '')
+        if waiting_type not in ['card', 'projectCard', 'selectCard', 'selectProjectCardToPlay']:
+            return []
+
+        player = player_state.get('thisPlayer', {}) or {}
+        prompt_cards = [card for card in (waiting_for.get('cards', []) or []) if isinstance(card, dict)]
+        if not prompt_cards:
+            return []
+
+        players = player_state.get('players', []) or []
+        own_id = str(player.get('id', '') or '')
+        own_color = str(player.get('color', '') or '').strip().lower()
+        tableau_cards = [card for card in (player.get('tableau', []) or []) if isinstance(card, dict)]
+        opponent_tableau_cards: List[Dict[str, Any]] = []
+        for rival in players:
+            if not isinstance(rival, dict):
+                continue
+            rival_id = str(rival.get('id', '') or '')
+            rival_color = str(rival.get('color', '') or '').strip().lower()
+            if own_id and rival_id == own_id:
+                continue
+            if own_color and rival_color and rival_color == own_color:
+                continue
+            opponent_tableau_cards.extend([card for card in (rival.get('tableau', []) or []) if isinstance(card, dict)])
+
+        own_tag_profile = self._build_tag_profile_from_cards(tableau_cards)
+        opponent_tag_profile = self._build_tag_profile_from_cards(opponent_tableau_cards)
+        opponent_resource_totals = self._aggregate_opponent_resource_totals(players, own_id, own_color)
+
+        ranked: List[Dict[str, Any]] = []
+        for card in prompt_cards:
+            name = str(card.get('name', '') or '')
+            tags = self._get_card_tags(name, fallback=card.get('tags', {}))
+            cost_norm = min(self._get_card_cost(card) / 50.0, 1.0)
+            vp_proxy = self._get_card_vp_proxy(card, tags)
+            affordability = self._estimate_affordability_for_card(player, card, tags)
+            key_tag_density = sum(
+                1 for tag_name in ['Science', 'Building', 'Space', 'Earth', 'Jovian'] if tags.get(tag_name, 0) > 0
+            ) / 5.0
+            own_overlap = sum(float(own_tag_profile.get(tag_name, 0)) for tag_name, present in tags.items() if present)
+            opp_overlap = sum(float(opponent_tag_profile.get(tag_name, 0)) for tag_name, present in tags.items() if present)
+            own_overlap_norm = min(own_overlap / 8.0, 1.0)
+            opp_overlap_norm = min(opp_overlap / 8.0, 1.0)
+            hate_signal = max(0.0, opp_overlap_norm - own_overlap_norm)
+
+            behavior = self._classify_card_resource_behavior(card)
+            resource_type = self._get_card_resource_type(card)
+            resources_norm = min(self._get_numeric_resource_count(card) / 12.0, 1.0)
+            vp_per_resource = self._extract_vp_per_resource(card)
+            vp_resource_value = min((self._get_numeric_resource_count(card) * max(vp_per_resource, 0.0)) / 12.0, 1.0)
+            threshold = self._get_conversion_threshold(card)
+            conversion_ready = min((self._get_numeric_resource_count(card) / threshold), 2.0) / 2.0 if threshold > 0.0 else 0.0
+            opponent_pressure = min(float(opponent_resource_totals.get(resource_type, 0.0)) / 12.0, 1.0) if resource_type else 0.0
+
+            resource_score = 0.0
+            if behavior == 'vp_accumulation':
+                resource_score = (0.65 * vp_resource_value) + (0.35 * resources_norm)
+            elif behavior == 'conversion':
+                threshold_norm = min(threshold / 8.0, 1.0) if threshold > 0.0 else 0.0
+                resource_score = (0.55 * conversion_ready) + (0.25 * resources_norm) + (0.20 * (1.0 - threshold_norm))
+            elif behavior == 'stealing':
+                resource_score = (0.50 * opponent_pressure) + (0.25 * resources_norm) + (0.25 * hate_signal)
+            elif behavior == 'adding':
+                resource_score = (0.45 * resources_norm) + (0.35 * opponent_pressure)
+
+            requirement_plan = self._evaluate_card_requirement_plan(card, player_state)
+            readiness_score, reachability_score, unmet_requirement_penalty = self._requirement_penalty_details(requirement_plan)
+            selection_score = (
+                (1.15 * affordability)
+                + (0.90 * vp_proxy)
+                + (0.60 * key_tag_density)
+                + (0.55 * own_overlap_norm)
+                + (0.40 * hate_signal)
+                + (0.55 * resource_score)
+                + (0.85 * readiness_score)
+                + (0.35 * reachability_score)
+                - (0.60 * unmet_requirement_penalty)
+                + (0.20 * (1.0 - cost_norm))
+            )
+
+            ranked.append({
+                'name': name,
+                'cost': self._get_card_cost(card),
+                'tags': sorted([tag_name for tag_name, present in tags.items() if present]),
+                'disabled': bool(card.get('isDisabled', False)),
+                'warnings': list(card.get('warnings', []) or []),
+                'selection_score': float(selection_score),
+                'affordability': float(affordability),
+                'vp_proxy': float(vp_proxy),
+                'requirements': list(requirement_plan.get('requirements', []) or []),
+                'requirement_plan': list(requirement_plan.get('requirement_plan', []) or []),
+                'plan_summary': str(requirement_plan.get('plan_summary', '') or ''),
+                'reachability_score': float(requirement_plan.get('reachability_score', 1.0) or 1.0),
+                'readiness_score': float(requirement_plan.get('readiness_score', 1.0) or 1.0),
+                'all_satisfied': bool(requirement_plan.get('all_satisfied', True)),
+                'blocking_count': int(requirement_plan.get('blocking_count', 0) or 0),
+                'server_override': bool(requirement_plan.get('server_override', False)),
+                'masked_by_server': bool(requirement_plan.get('masked_by_server', False)),
+            })
+
+        ranked.sort(
+            key=lambda item: (
+                float(item.get('selection_score', 0.0)),
+                float(item.get('readiness_score', 0.0)),
+                float(item.get('reachability_score', 0.0)),
+                -float(item.get('cost', 0.0)),
+            ),
+            reverse=True,
+        )
+        if limit is not None:
+            return ranked[:max(0, int(limit))]
+        return ranked
     
     def _encode_board_state(
         self,

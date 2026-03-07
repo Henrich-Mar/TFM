@@ -96,7 +96,7 @@ def test_hate_draft_low_hand_ev_threshold_flips_around_default() -> None:
     assert high_reward["hate_draft_low_hand_ev"] == pytest.approx(0.0)
 
 
-def test_hate_draft_bonus_behavior_is_unchanged_for_zero_gap_fixture() -> None:
+def test_hate_draft_zero_gap_signal_stays_small() -> None:
     state = _build_draft_state(
         prompt_cards=[{"name": "Neutral Card", "cost": 10, "tags": [], "victoryPoints": 0}],
         opponent_tableau=[],
@@ -108,4 +108,14 @@ def test_hate_draft_bonus_behavior_is_unchanged_for_zero_gap_fixture() -> None:
         action_input={"type": "card", "cards": ["Neutral Card"]},
     )
     assert reward["hate_draft_bonus_applied"] is False
-    assert reward["other_component"] == pytest.approx(0.01, abs=1e-6)
+    assert 0.0 < reward["other_component"] < 0.01
+
+
+def test_project_card_action_gets_stronger_cards_vp_bonus() -> None:
+    state = _build_draft_state(prompt_cards=[])
+    reward = calculate_step_reward_decomposition(
+        before_state=state,
+        after_state=state,
+        action_input={"type": "projectCard", "card": "Asteroid"},
+    )
+    assert reward["cards_vp_component"] == pytest.approx(0.22)

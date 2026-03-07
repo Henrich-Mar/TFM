@@ -3158,6 +3158,7 @@ class RLAgent:
                 action_meta["transformer_stats"] = transformer_stats
                 action_meta["policy_ranking"] = ranking
                 action_meta["policy_top_actions"] = ranking[:12]
+                action_meta["prompt_card_rankings"] = self.state_encoder.build_prompt_card_rankings(player_state)
             if sampled_distribution is not None:
                 action_meta["value_old"] = float(value.squeeze().item())
                 action_meta["legal_actions"] = [int(a) for a in available_actions]

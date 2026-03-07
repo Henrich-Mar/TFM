@@ -25,6 +25,8 @@ if [ "$NUM_COORDS" -gt 1 ]; then
   for i in $(seq 1 "$NUM_COORDS"); do mkdir -p "rl-models-coord-${i}"; done
 fi
 
+python3 scripts/refresh_card_metadata.py
+
 python3 scripts/generate_rl_cloud_compose.py \
   --base-compose "$BASE_COMPOSE" \
   --output "$COMPOSE_FILE" \

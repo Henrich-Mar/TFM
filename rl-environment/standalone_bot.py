@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 import aiohttp
 
+from metadata_refresh import ensure_card_metadata
 from models.agent import RLAgent
 from models.state_encoder import StateEncoder
 
@@ -310,6 +311,7 @@ def _resolve_target(
 
 
 async def _run(args: argparse.Namespace):
+    ensure_card_metadata(quiet=True)
     checkpoint = str(args.checkpoint or "").strip() or _find_best_checkpoint(args.models)
     if not os.path.isfile(checkpoint):
         raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint}")

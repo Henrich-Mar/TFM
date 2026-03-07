@@ -290,6 +290,13 @@
         <div id="mapCandidates"></div>
       </div>
     </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2>Requirement Plan</h2>
+      </div>
+      <div id="requirementPlan" class="cards"></div>
+    </section>
   </main>
 
   <script>
@@ -323,6 +330,21 @@
         return;
       }
       element.innerHTML = items.map(renderItem).join("");
+    };
+
+    const requirementLine = (row) => {
+      if (!row || typeof row !== "object") return "";
+      const flags = [
+        row.advisory_only ? `<span class="pill warn">advisory</span>` : "",
+        row.server_override ? `<span class="pill warn">server override</span>` : "",
+        row.masked_by_server ? `<span class="pill warn">masked</span>` : "",
+      ].filter(Boolean).join(" ");
+      const remaining = row.type === "temperature" && Number(row.remaining_steps || 0) > 0
+        ? `need +${esc(row.remaining_steps)} steps`
+        : Number(row.remaining || 0) > 0
+          ? `need ${esc(row.remaining)}`
+          : "ready";
+      return `<div>${esc(row.label || row.type || "requirement")}: ${esc(row.text || remaining)} ${flags}</div>`;
     };
 
     const setStatus = (text, cls = "subtle") => {
@@ -451,6 +473,7 @@
           <strong>${esc(card.name || card.label || "card")}</strong>
           <div class="subtle">Cost ${fmt(card.cost, 0)} | VP ${fmt(card.victory_points, 0)}</div>
           <div>${esc((card.tags || []).join(", "))}</div>
+          ${card.plan_summary ? `<div class="subtle">${esc(card.plan_summary)}</div>` : ""}
         </div>
       `);
 
@@ -487,12 +510,13 @@
       `);
 
       const promptCandidates = state.prompt_candidates || {};
+      const promptRankings = Array.isArray(state.prompt_card_rankings) ? state.prompt_card_rankings : [];
       document.getElementById("promptCandidates").innerHTML = `
         <div class="stack">
           <div><strong>Option candidates</strong></div>
           <div class="cards">${(promptCandidates.options || []).map((row) => `<div class="chip">${esc(row.label || row.type || row.index)}</div>`).join("") || `<div class="empty">None</div>`}</div>
           <div><strong>Card candidates</strong></div>
-          <div class="cards">${(promptCandidates.cards || []).map((row) => `<div class="chip">${esc(row.name || row.label || "card")}</div>`).join("") || `<div class="empty">None</div>`}</div>
+          <div class="cards">${(promptCandidates.cards || []).map((row) => `<div class="chip">${esc(row.name || row.label || "card")}${row.all_satisfied === false ? ` | ${esc(row.plan_summary || "locked")}` : ""}</div>`).join("") || `<div class="empty">None</div>`}</div>
           <div><strong>Payment context</strong></div>
           <pre class="mono">${esc(JSON.stringify(promptCandidates.payment_context || {}, null, 2))}</pre>
         </div>
@@ -515,6 +539,16 @@
           }, null, 2))}</pre>
         </div>
       `;
+
+      document.getElementById("requirementPlan").innerHTML = promptRankings.length ? promptRankings.slice(0, 5).map((card, idx) => `
+        <div class="card">
+          <strong>#${idx + 1} ${esc(card.name || "card")}</strong>
+          <div class="subtle">score ${fmt(card.selection_score, 3)} | ready ${fmt(card.readiness_score, 3)} | reach ${fmt(card.reachability_score, 3)}</div>
+          <div>${card.all_satisfied ? `<span class="pill good">ready now</span>` : `<span class="pill warn">${esc(card.blocking_count || 0)} blockers</span>`} ${card.server_override ? `<span class="pill warn">server override</span>` : ""} ${card.masked_by_server ? `<span class="pill warn">masked by server</span>` : ""}</div>
+          <div class="subtle">${esc(card.plan_summary || "")}</div>
+          <div class="stack">${(card.requirement_plan || []).map((row) => requirementLine(row)).join("") || `<div class="empty">No requirements</div>`}</div>
+        </div>
+      `).join("") : `<div class="empty">No prompt-card ranking available for this snapshot.</div>`;
     }
 
     async function loadSnapshot(snapshotId) {

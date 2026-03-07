@@ -585,21 +585,21 @@ def _hate_draft_adjustment(
     Bonus when the agent drafts/keeps cards that hurt opponents (high opp overlap, low own overlap).
     Returns (adjustment, applied).
 
-    Reduced magnitude to prevent over-hate-drafting: empirical data shows hate draft
-    rates above ~55% negatively correlate with VP and rank.
+    Reduced magnitude to prevent over-hate-drafting: empirical data shows heavier
+    hate-draft behavior is negatively correlated with win rate.
     """
     diag = diagnostics if isinstance(diagnostics, dict) else _compute_hate_draft_diagnostics(before_state, action_input)
     if float(diag.get("selected_card_count", 0.0)) <= 0.0:
         return 0.0, False
 
     avg_hate = max(0.0, float(diag.get("hate_draft_deny_self_gap", 0.0)))
-    # Reduced bonuses (~40% lower) to prevent over-hate-drafting.
+    # Keep the signal small so drafting denial does not outrank board-building EV.
     if avg_hate < 0.12:
-        # Small bonus for any hate signal
-        bonus = min(0.025, 0.012 * avg_hate + 0.006)
-        applied = avg_hate > 0.05
+        # Small bonus for any hate signal.
+        bonus = min(0.012, 0.006 * avg_hate + 0.003)
+        applied = avg_hate > 0.06
     else:
-        bonus = min(0.15, 0.06 * avg_hate + 0.03)
+        bonus = min(0.07, 0.03 * avg_hate + 0.015)
         applied = True
 
     return float(bonus), applied
@@ -1343,7 +1343,7 @@ def calculate_step_reward_decomposition(
     city_greenery_component += max(-0.20, min(0.30, 0.12 * combo_delta))   # 0.05 â†’ 0.12 (2.4x)
 
     cards_vp_delta = _vp_component(after_player, 'cards') - _vp_component(before_player, 'cards')
-    cards_vp_component += max(-0.20, min(0.35, 0.12 * cards_vp_delta))     # 0.045 â†’ 0.12 (2.7x)
+    cards_vp_component += max(-0.20, min(0.35, 0.15 * cards_vp_delta))     # 0.045 -> 0.15 (3.3x)
     # Reward card quality improvements in hand.
     before_hand = _extract_hand(before_state, before_player)
     after_hand = _extract_hand(after_state, after_player)
@@ -1368,7 +1368,7 @@ def calculate_step_reward_decomposition(
     if isinstance(action_input, dict):
         action_type = str(action_input.get('type', '') or '').lower()
     if action_type == 'projectcard' or (action_type == 'card' and 'card' in action_input):
-        cards_vp_component += 0.14
+        cards_vp_component += 0.22
     elif action_type == 'standardproject':
         other_component -= 0.05
         affordable_cards = sum(1 for card in before_hand if _can_afford_card_now(card, before_player))

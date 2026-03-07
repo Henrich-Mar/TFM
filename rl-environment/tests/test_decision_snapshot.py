@@ -138,6 +138,39 @@ def _base_action_meta() -> dict:
                 "legal": True,
             },
         ],
+        "prompt_card_rankings": [
+            {
+                "name": "AI Central",
+                "selection_score": 2.4,
+                "requirements": [{"tag": "science", "count": 3}],
+                "requirement_plan": [
+                    {
+                        "type": "tag",
+                        "label": "science tags",
+                        "satisfied": False,
+                        "target": 3,
+                        "current": 2,
+                        "remaining": 1,
+                        "remaining_steps": None,
+                        "is_max": False,
+                        "all_players": False,
+                        "count": 3,
+                        "next_to": False,
+                        "text": "science tags >= 3, now 2, need 1",
+                        "advisory_only": False,
+                        "server_override": False,
+                        "masked_by_server": False,
+                    }
+                ],
+                "plan_summary": "science tags >= 3, now 2, need 1",
+                "reachability_score": 0.8,
+                "readiness_score": 0.66,
+                "all_satisfied": False,
+                "blocking_count": 1,
+                "server_override": False,
+                "masked_by_server": False,
+            }
+        ],
         "policy_top_actions": [],
     }
 
@@ -179,13 +212,19 @@ def test_snapshot_serialization_supports_prompt_types(monkeypatch, tmp_path: Pat
         assert "prompt_candidates" in snapshot["state"]
         assert "map_candidates" in snapshot["state"]["prompt_candidates"]
         assert "payment_context" in snapshot["state"]["prompt_candidates"]
+        assert "prompt_card_rankings" in snapshot["state"]
 
 
 def test_policy_ranking_contains_chosen_action_and_matching_labels() -> None:
     torch = pytest.importorskip("torch")
     from models.agent import RLAgent  # noqa: E402
 
-    agent = RLAgent()
+    try:
+        agent = RLAgent()
+    except RuntimeError as exc:
+        if "rust_tfm_rl" in str(exc):
+            pytest.skip("rust_tfm_rl backend not installed")
+        raise
     player_state = _make_player_state(
         "projectCard",
         {"cards": [{"name": "Asteroid Mining", "cost": 30}, {"name": "Open City", "cost": 23}]},
@@ -251,3 +290,4 @@ def test_snapshot_routes_and_page_render(monkeypatch, tmp_path: Path) -> None:
     assert listed[0]["snapshot_id"] == saved["snapshot_id"]
     loaded = load_snapshot(saved["snapshot_id"])
     assert loaded["policy"]["chosen_action_label"] == "PLAY_CARD(Asteroid Mining)"
+    assert loaded["state"]["prompt_card_rankings"][0]["name"] == "AI Central"

@@ -15,6 +15,7 @@ import uuid
 from typing import List, Optional
 
 from game_interface import GameServerCluster, GameInstance
+from metadata_refresh import ensure_card_metadata
 from models.agent import RLAgent
 
 
@@ -176,6 +177,7 @@ def _print_standings(final_state: dict):
 
 
 async def _run_match(args: argparse.Namespace):
+    ensure_card_metadata(quiet=True)
     rng = random.Random(args.seed)
     if args.best:
         all_checkpoints = _all_saved_checkpoints(args.models)

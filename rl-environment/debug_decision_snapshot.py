@@ -181,6 +181,19 @@ def _card_summary(card: Any) -> Dict[str, Any]:
         "disabled": bool(card.get("isDisabled", False)),
         "label": str(card.get("name", "") or card.get("type", "") or "card").strip(),
     }
+    for key in (
+        "requirements",
+        "requirement_plan",
+        "plan_summary",
+        "reachability_score",
+        "readiness_score",
+        "all_satisfied",
+        "blocking_count",
+        "server_override",
+        "masked_by_server",
+    ):
+        if key in card:
+            summary[key] = card.get(key)
     description = _message_text(card.get("description", ""))
     if description:
         summary["description"] = description
@@ -368,6 +381,38 @@ def _summarize_prompt_candidates(waiting_for: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _attach_requirement_rankings(cards: List[Dict[str, Any]], rankings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not cards or not rankings:
+        return cards
+    ranking_by_name = {
+        str(item.get("name", "") or "").strip(): item
+        for item in rankings
+        if isinstance(item, dict) and str(item.get("name", "") or "").strip()
+    }
+    out: List[Dict[str, Any]] = []
+    for card in cards:
+        merged = dict(card)
+        name = str(card.get("name", "") or "").strip()
+        ranked = ranking_by_name.get(name)
+        if ranked:
+            for key in (
+                "requirements",
+                "requirement_plan",
+                "plan_summary",
+                "reachability_score",
+                "readiness_score",
+                "all_satisfied",
+                "blocking_count",
+                "server_override",
+                "masked_by_server",
+                "selection_score",
+            ):
+                if key in ranked:
+                    merged[key] = ranked.get(key)
+        out.append(merged)
+    return out
+
+
 def build_decision_snapshot(
     request: Dict[str, Any],
     agent_id: str,
@@ -392,8 +437,14 @@ def build_decision_snapshot(
         if isinstance(player, dict) and str(player.get("id", "") or "") != str(player_id or "")
     ]
     prompt_candidates = _summarize_prompt_candidates(waiting_for)
+    prompt_card_rankings = list(action_meta.get("prompt_card_rankings", []) or [])
+    if prompt_card_rankings:
+        prompt_candidates["cards"] = _attach_requirement_rankings(list(prompt_candidates.get("cards", []) or []), prompt_card_rankings)
     aux_predictions = list(action_meta.get("aux_predictions", []) or [])
     aux_targets = dict(action_meta.get("aux_targets", {}) or {})
+    hand_cards = [_card_summary(card) for card in (this_player.get("cardsInHand", waiting_for.get("cards", [])) or [])]
+    if prompt_card_rankings:
+        hand_cards = _attach_requirement_rankings(hand_cards, prompt_card_rankings)
 
     snapshot = {
         "schema_version": "decision_snapshot.v1",
@@ -422,7 +473,7 @@ def build_decision_snapshot(
         },
         "state": {
             "this_player": _player_summary(this_player),
-            "hand": [_card_summary(card) for card in (this_player.get("cardsInHand", waiting_for.get("cards", [])) or [])],
+            "hand": hand_cards,
             "tableau": [_card_summary(card) for card in (this_player.get("tableau", []) or [])],
             "opponents": other_players,
             "board": {
@@ -435,6 +486,7 @@ def build_decision_snapshot(
             "awards": [_award_summary(award, idx) for idx, award in enumerate(game.get("awards", []) or [])],
             "milestones": [_milestone_summary(milestone, idx) for idx, milestone in enumerate(game.get("milestones", []) or [])],
             "prompt_candidates": prompt_candidates,
+            "prompt_card_rankings": prompt_card_rankings,
         },
         "policy": {
             "chosen_action_index": _safe_int(action_index, -1),

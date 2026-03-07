@@ -194,7 +194,7 @@ export AGENT_INFERENCE_DEVICE=cpu
 export AGENT_INFERENCE_BATCH=0
 # Safe rollout for frozen-pool checks and periodic fixed benchmark.
 export TRAINING_POOL_GENERATION_WINDOW=10
-export TRAINING_POOL_GAMES_PER_AGENT=1
+export TRAINING_POOL_GAMES_PER_AGENT=0
 export FIXED_BENCHMARK_INTERVAL=3
 export MIN_EVAL_COMPLETION_RATIO=0.80
 export MIN_FROZEN_POOL_COMPLETION_RATE=0.80
@@ -216,10 +216,10 @@ chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
 
 ```
-export BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models-global/champion/current/champion.pth
-export BOOTSTRAP_POPULATION_MODE=clone
+export BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models-global/champion.pth
+export BOOTSTRAP_POPULATION_MODE=mutated_copies
 export BOOTSTRAP_MUTATION_RATE=0.08
-export TRAINING_START_GENERATION=15
+export TRAINING_START_GENERATION=30
 
 ### Bootstrap from a saved champion
 

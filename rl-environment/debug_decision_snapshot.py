@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 import threading
@@ -42,6 +43,35 @@ def _message_text(value: Any) -> str:
     if isinstance(value, dict):
         value = value.get("message", "")
     return str(value or "").strip()
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        try:
+            return _json_safe(tolist())
+        except Exception:
+            pass
+
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _json_safe(item())
+        except Exception:
+            pass
+
+    if isinstance(value, Path):
+        return str(value)
+    return str(value)
 
 
 def _sanitize_id(value: Any) -> str:
@@ -548,7 +578,7 @@ def save_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     )
     path = root / f"{snapshot_id}.json"
 
-    payload = dict(snapshot)
+    payload = _json_safe(dict(snapshot))
     payload["snapshot_id"] = snapshot_id
     payload["snapshot_path"] = str(path)
 

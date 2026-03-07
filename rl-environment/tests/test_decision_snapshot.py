@@ -215,6 +215,51 @@ def test_snapshot_serialization_supports_prompt_types(monkeypatch, tmp_path: Pat
         assert "prompt_card_rankings" in snapshot["state"]
 
 
+def test_snapshot_save_normalizes_numpy_payloads(monkeypatch, tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+
+    monkeypatch.setenv("DECISION_SNAPSHOT_DIR", str(tmp_path))
+    reset_capture_state()
+    action_meta = _base_action_meta()
+    action_meta["transformer_stats"]["attention_map"] = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
+    action_meta["aux_targets"]["milestone_claimability"] = np.array([0.25, 0.5, 0.75], dtype=np.float32)
+    action_meta["policy_top_actions"] = [
+        {
+            "action_index": np.int64(7),
+            "score": np.float32(0.9),
+            "weights": np.array([0.6, 0.3, 0.1], dtype=np.float32),
+        }
+    ]
+
+    saved = save_snapshot(
+        build_decision_snapshot(
+            request=create_capture_request(note="numpy-normalization"),
+            agent_id="agent-numpy",
+            game_id="game-1",
+            game_url="http://localhost:8081/game?id=game-1",
+            player_id="player-red",
+            player_state=_make_player_state(
+                "projectCard",
+                {"cards": [{"name": "Asteroid Mining", "cost": 30}, {"name": "Open City", "cost": 23}]},
+            ),
+            action_input={"type": "option"},
+            action_index=0,
+            action_meta=action_meta,
+            sampled_from_policy=True,
+            send_outcome="accepted",
+            turn_action_count=1,
+        )
+    )
+
+    loaded = load_snapshot(saved["snapshot_id"])
+    assert loaded["diagnostics"]["transformer"]["attention_map"][0] == pytest.approx([0.1, 0.2])
+    assert loaded["diagnostics"]["transformer"]["attention_map"][1] == pytest.approx([0.3, 0.4])
+    assert loaded["aux"]["targets"]["milestone_claimability"] == pytest.approx([0.25, 0.5, 0.75])
+    assert loaded["policy"]["top_actions"][0]["action_index"] == 7
+    assert loaded["policy"]["top_actions"][0]["score"] == pytest.approx(0.9)
+    assert loaded["policy"]["top_actions"][0]["weights"] == pytest.approx([0.6, 0.3, 0.1])
+
+
 def test_policy_ranking_contains_chosen_action_and_matching_labels() -> None:
     torch = pytest.importorskip("torch")
     from models.agent import RLAgent  # noqa: E402

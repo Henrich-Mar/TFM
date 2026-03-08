@@ -153,6 +153,7 @@ export RL_TRAINING_PROFILE=saturate
 export RL_NUM_COORDINATORS=2
 export RL_COORDINATOR_BASE_PORT=5100
 export RL_COORDINATORS_SHARE_GPU=1
+export RL_COORDINATOR_LATENCY_BIAS=1
 
 # Force total servers = 16  => 8 per coordinator
 export RL_MIN_SERVERS=16
@@ -160,10 +161,13 @@ export RL_MAX_SERVERS=16
 
 # 2 concurrent games per server
 export RL_GAMES_PER_SERVER=2
-
-# 8 servers * 2 games = 16 concurrent games per coordinator
-export RL_GLOBAL_GAME_CAP_PER_COORD=16
-export RL_TOURNAMENT_CAP_PER_COORD=16
+# Important: 8 servers * 2 games = 16 is only raw server-side slot capacity.
+# It is not a safe low-latency coordinator target on this host. With
+# RL_COORDINATOR_LATENCY_BIAS=1 the generator defaults each coordinator to:
+#   GLOBAL_GAME_CONCURRENCY=6
+#   TOURNAMENT_CONCURRENCY=6
+#   MAX_ACTIVE_GAMES_PER_SERVER=1
+# This keeps coordinator transport latency much lower.
 
 export RL_CPU_SERVER_RATIO=0.90
 export RL_SERVER_MEM_MB=900
@@ -205,7 +209,6 @@ export PPO_EXECUTOR_WORKERS=1
 export RL_PPO_ROLLOUT_STEPS=16384
 
 export TM_TRANSPORT_TIMING_DEBUG=0
-export TM_HTTP_PREWARM_CONNECTIONS=4
 export RL_TM_SEND_INPUT_TRANSPORT_RETRY_ATTEMPTS_INITIAL=7
 # pouzitie training poolu na trenovanie
 export SELECTION_INCLUDE_TRAINING_POOL=1
@@ -219,6 +222,11 @@ chmod +x start-rl-cloud-training.sh
 ./start-rl-cloud-training.sh
 
 ```
+Why this preset is lower-latency:
+- The champion orchestrator usually looks faster because it only runs `ORCH_GLOBAL_GAME_CONCURRENCY=2`, so it never drives the same request volume as the coordinators.
+- Your repo logs already show the coordinator transport path improving sharply when per-coordinator cap drops from overloaded settings to `6` games.
+- This preset is for smoother coordinator game responsiveness, not for maximizing total games/hour.
+
 export BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models-global/champion.pth
 export BOOTSTRAP_POPULATION_MODE=mutated_copies
 export BOOTSTRAP_MUTATION_RATE=0.08

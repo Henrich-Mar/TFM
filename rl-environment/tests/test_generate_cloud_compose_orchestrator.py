@@ -2,9 +2,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Dict, Optional
 
 
-def test_generated_compose_includes_orchestrator_for_multi_coordinator(tmp_path: Path) -> None:
+def _run_generator(tmp_path: Path, *extra_args: str, env: Optional[Dict[str, str]] = None) -> str:
     repo_root = Path(__file__).resolve().parents[2]
     script_path = repo_root / "scripts" / "generate_rl_cloud_compose.py"
     output_path = tmp_path / "docker-compose.generated.yml"
@@ -20,6 +21,15 @@ def test_generated_compose_includes_orchestrator_for_multi_coordinator(tmp_path:
         "localhost",
         "--base-port",
         "8081",
+        *extra_args,
+    ]
+    subprocess.run(cmd, check=True, cwd=str(repo_root), env=env)
+    return output_path.read_text(encoding="utf-8")
+
+
+def test_generated_compose_includes_orchestrator_for_multi_coordinator(tmp_path: Path) -> None:
+    generated = _run_generator(
+        tmp_path,
         "--num-coordinators",
         "2",
         "--min-servers",
@@ -28,10 +38,7 @@ def test_generated_compose_includes_orchestrator_for_multi_coordinator(tmp_path:
         "2",
         "--games-per-server",
         "1",
-    ]
-    subprocess.run(cmd, check=True, cwd=str(repo_root))
-
-    generated = output_path.read_text(encoding="utf-8")
+    )
     assert "rl-champion-orchestrator:" in generated
     assert "ORCH_COORD_SOURCES=coord-1=/app/coord-models/coord-1,coord-2=/app/coord-models/coord-2" in generated
     assert "GLOBAL_DASHBOARD_COORDINATOR_URLS=coord-1=http://rl-coordinator-1:5000,coord-2=http://rl-coordinator-2:5000" in generated
@@ -43,21 +50,8 @@ def test_generated_compose_includes_orchestrator_for_multi_coordinator(tmp_path:
 
 
 def test_generated_compose_applies_per_coordinator_concurrency_caps(tmp_path: Path) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    script_path = repo_root / "scripts" / "generate_rl_cloud_compose.py"
-    output_path = tmp_path / "docker-compose.generated.yml"
-
-    cmd = [
-        sys.executable,
-        str(script_path),
-        "--base-compose",
-        str(repo_root / "docker-compose.rl_hard.yml"),
-        "--output",
-        str(output_path),
-        "--public-host",
-        "localhost",
-        "--base-port",
-        "8081",
+    generated = _run_generator(
+        tmp_path,
         "--num-coordinators",
         "6",
         "--min-servers",
@@ -70,20 +64,81 @@ def test_generated_compose_applies_per_coordinator_concurrency_caps(tmp_path: Pa
         "20",
         "--tournament-cap-per-coord",
         "20",
-    ]
-    subprocess.run(cmd, check=True, cwd=str(repo_root))
-
-    generated = output_path.read_text(encoding="utf-8")
+    )
     assert generated.count("GLOBAL_GAME_CONCURRENCY=20") == 6
     assert generated.count("TOURNAMENT_CONCURRENCY=20") == 6
     assert generated.count("MAX_ACTIVE_GAMES_PER_SERVER=5") == 6
 
 
-def test_generated_compose_passes_through_runtime_tuning_env(tmp_path: Path, monkeypatch) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    script_path = repo_root / "scripts" / "generate_rl_cloud_compose.py"
-    output_path = tmp_path / "docker-compose.generated.yml"
+def test_generated_compose_latency_bias_is_opt_in(tmp_path: Path) -> None:
+    generated = _run_generator(
+        tmp_path,
+        "--num-coordinators",
+        "2",
+        "--min-servers",
+        "16",
+        "--max-servers",
+        "16",
+        "--games-per-server",
+        "2",
+    )
 
+    assert generated.count("GLOBAL_GAME_CONCURRENCY=16") == 2
+    assert generated.count("TOURNAMENT_CONCURRENCY=16") == 2
+    assert generated.count("MAX_ACTIVE_GAMES_PER_SERVER=2") == 2
+    assert "AGENT_POLL_INTERVAL_SEC=0.050" not in generated
+    assert "TM_HTTP_PREWARM_CONNECTIONS=4" not in generated
+
+
+def test_generated_compose_latency_bias_lowers_coord_concurrency(tmp_path: Path) -> None:
+    generated = _run_generator(
+        tmp_path,
+        "--num-coordinators",
+        "2",
+        "--min-servers",
+        "16",
+        "--max-servers",
+        "16",
+        "--games-per-server",
+        "2",
+        "--coordinator-latency-bias",
+        "1",
+    )
+
+    assert generated.count("GLOBAL_GAME_CONCURRENCY=6") == 2
+    assert generated.count("TOURNAMENT_CONCURRENCY=6") == 2
+    assert generated.count("MAX_ACTIVE_GAMES_PER_SERVER=1") == 2
+    assert generated.count("AGENT_POLL_INTERVAL_SEC=0.050") == 2
+    assert generated.count("TM_HTTP_PREWARM_CONNECTIONS=4") == 2
+
+
+def test_generated_compose_latency_bias_respects_explicit_caps(tmp_path: Path) -> None:
+    generated = _run_generator(
+        tmp_path,
+        "--num-coordinators",
+        "2",
+        "--min-servers",
+        "16",
+        "--max-servers",
+        "16",
+        "--games-per-server",
+        "2",
+        "--coordinator-latency-bias",
+        "1",
+        "--global-game-cap-per-coord",
+        "10",
+        "--tournament-cap-per-coord",
+        "8",
+    )
+
+    assert generated.count("GLOBAL_GAME_CONCURRENCY=10") == 2
+    assert generated.count("TOURNAMENT_CONCURRENCY=8") == 2
+    assert generated.count("MAX_ACTIVE_GAMES_PER_SERVER=2") == 2
+    assert generated.count("AGENT_POLL_INTERVAL_SEC=0.050") == 2
+    assert generated.count("TM_HTTP_PREWARM_CONNECTIONS=4") == 2
+
+
+def test_generated_compose_passes_through_runtime_tuning_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("PPO_PARALLEL_AGENTS", "1")
     monkeypatch.setenv("PPO_EXECUTOR_WORKERS", "1")
     monkeypatch.setenv("PPO_MINIBATCH_SIZE", "512")
@@ -100,27 +155,16 @@ def test_generated_compose_passes_through_runtime_tuning_env(tmp_path: Path, mon
     monkeypatch.setenv("TRAINING_START_GENERATION", "0")
     monkeypatch.setenv("RL_GAME_OPTIONS_FILE", "/app/game_options.fast_training.json")
 
-    cmd = [
-        sys.executable,
-        str(script_path),
-        "--base-compose",
-        str(repo_root / "docker-compose.rl_hard.yml"),
-        "--output",
-        str(output_path),
-        "--public-host",
-        "localhost",
-        "--base-port",
-        "8081",
+    generated = _run_generator(
+        tmp_path,
         "--min-servers",
         "2",
         "--max-servers",
         "2",
         "--games-per-server",
         "1",
-    ]
-    subprocess.run(cmd, check=True, cwd=str(repo_root), env=os.environ.copy())
-
-    generated = output_path.read_text(encoding="utf-8")
+        env=os.environ.copy(),
+    )
     assert "PPO_PARALLEL_AGENTS=1" in generated
     assert "PPO_EXECUTOR_WORKERS=1" in generated
     assert "PPO_MINIBATCH_SIZE=512" in generated

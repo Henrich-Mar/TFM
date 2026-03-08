@@ -30,6 +30,7 @@ DYNAMIC_ENV_KEYS = {
     "TM_HTTP_CONNECTOR_LIMIT",
     "TM_HTTP_CONNECTOR_LIMIT_PER_HOST",
     "TM_HTTP_DNS_CACHE_TTL_SEC",
+    "TM_HTTP_PREWARM_CONNECTIONS",
     "POPULATION_SIZE",
     "TOURNAMENT_SIZE",
     "GAMES_PER_EVAL",
@@ -156,6 +157,11 @@ def _read_cpu_count() -> int:
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
+
+
+def _latency_bias_enabled(args: argparse.Namespace) -> bool:
+    return bool(int(getattr(args, "coordinator_latency_bias", 0) or 0))
+
 
 def _auto_num_coordinators(
     global_game_concurrency: int,
@@ -503,7 +509,8 @@ def _build_dynamic_env(
     )
 
     raw_subset_global = subset_count * capacity.games_per_server
-    default_global_cap_per_coord = 20 if training.profile == "saturate" else 24
+    latency_bias = _latency_bias_enabled(args)
+    default_global_cap_per_coord = 6 if latency_bias else (20 if training.profile == "saturate" else 24)
     global_cap_per_coord = int(args.global_game_cap_per_coord)
     if global_cap_per_coord <= 0:
         global_cap_per_coord = int(default_global_cap_per_coord)
@@ -549,7 +556,10 @@ def _build_dynamic_env(
 
     poll_interval = float(args.agent_poll_interval_sec)
     if poll_interval < 0:
-        poll_interval = 0.03 if training.profile == "saturate" else -1.0
+        if latency_bias:
+            poll_interval = 0.05
+        else:
+            poll_interval = 0.03 if training.profile == "saturate" else -1.0
     if poll_interval >= 0:
         env_items.append(f"AGENT_POLL_INTERVAL_SEC={poll_interval:.3f}")
 
@@ -650,6 +660,8 @@ def _build_dynamic_env(
     prewarm = os.getenv("TM_HTTP_PREWARM_CONNECTIONS", "").strip()
     if prewarm and prewarm.isdigit():
         env_items.append(f"TM_HTTP_PREWARM_CONNECTIONS={prewarm}")
+    elif latency_bias:
+        env_items.append("TM_HTTP_PREWARM_CONNECTIONS=4")
 
     if rl_models_subdir != "rl-models":
         env_items.append(f"RL_MODELS_DIR=/app/{rl_models_subdir}")
@@ -1144,6 +1156,12 @@ def parse_args() -> argparse.Namespace:
         default=int(os.getenv("RL_GPU_INDEX", "0")),
         help="GPU index to use when coordinators share GPU (e.g. 0 -> device_ids: ['0'])",
     )
+    parser.add_argument(
+        "--coordinator-latency-bias",
+        type=int,
+        default=int(os.getenv("RL_COORDINATOR_LATENCY_BIAS", "0")),
+        help="1=opt in to lower-latency coordinator defaults (lower per-coordinator game caps and poll interval)",
+    )
     return parser.parse_args()
 
 
@@ -1314,6 +1332,10 @@ def main() -> int:
                 str(env_map.get("TOURNAMENT_CONCURRENCY", "")),
                 str(env_map.get("MAX_ACTIVE_GAMES_PER_SERVER", "")),
             )
+        )
+    if _latency_bias_enabled(args):
+        print(
+            "Coordinator latency bias enabled: favoring lower transport latency/responsiveness over maximum concurrent games."
         )
     return 0
 

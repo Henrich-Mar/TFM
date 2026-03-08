@@ -303,8 +303,52 @@ def test_snapshot_uses_or_project_card_options_as_hand_when_cards_in_hand_are_em
         turn_action_count=0,
     )
 
-    assert [card["name"] for card in snapshot["state"]["hand"]] == ["Venus Governor", "Food Factory"]
+    assert snapshot["state"]["hand"] == []
+    assert [card["name"] for card in snapshot["state"]["prompt_candidates"]["cards"]] == ["Venus Governor", "Food Factory"]
     assert snapshot["state"]["prompt_candidates"]["options"][1]["title"] == "Play project card"
+
+
+def test_snapshot_uses_top_level_cards_in_hand_for_owned_hand_display() -> None:
+    request = create_capture_request(note="top-level-hand")
+    player_state = _make_player_state(
+        "card",
+        {
+            "cards": [
+                {"name": "Luna Resort", "cost": 21},
+                {"name": "Immigrant City", "cost": 13},
+                {"name": "Luna Project Office", "cost": 17},
+            ]
+        },
+    )
+    player_state["cardsInHand"] = [
+        {"name": "Dust Seals", "cost": 2},
+        {"name": "Gyropolis", "cost": 20},
+        {"name": "Earth Embassy", "cost": 16},
+    ]
+    player_state["thisPlayer"]["cardsInHand"] = []
+
+    snapshot = build_decision_snapshot(
+        request=request,
+        agent_id="agent-top-level-hand",
+        game_id="game-hand",
+        game_url="http://localhost:8081/game?id=game-hand",
+        player_id="player-red",
+        player_state=player_state,
+        action_input={"type": "card", "card": "Luna Resort"},
+        action_index=0,
+        action_meta=_base_action_meta(),
+        sampled_from_policy=True,
+        send_outcome="accepted",
+        turn_action_count=0,
+    )
+
+    assert [card["name"] for card in snapshot["state"]["hand"]] == ["Dust Seals", "Gyropolis", "Earth Embassy"]
+    assert snapshot["state"]["this_player"]["hand_count"] == 3
+    assert [card["name"] for card in snapshot["state"]["prompt_candidates"]["cards"]] == [
+        "Luna Resort",
+        "Immigrant City",
+        "Luna Project Office",
+    ]
 
 
 def test_policy_ranking_contains_chosen_action_and_matching_labels() -> None:

@@ -204,6 +204,10 @@ services:
       - RL_MODELS_DIR=/app/rl-models
       - RL_CHECKPOINT_DIR=/app/rl-models/checkpoints
       - TM_CARD_METADATA_PATH=/app/card_metadata.json
+      - AGENT_INFERENCE_DEVICE=cpu
+      - PPO_DEVICE=cuda
+      - PPO_PARALLEL_AGENTS=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       # BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models/start/agent_0_fitness_187.19.pth
       # BOOTSTRAP_POPULATION_MODE=mutated_copies
       # BOOTSTRAP_MUTATION_RATE=0.08
@@ -215,7 +219,7 @@ services:
       - AGENT_NUM_LAYERS=8
       - AGENT_CARD_TOKEN_DIM=20
       - AGENT_TABLEAU_TOKEN_COUNT=10
-      - AGENT_HAND_TOKEN_COUNT=4
+      - AGENT_HAND_TOKEN_COUNT=64
       - AGENT_OPPONENT_TOKEN_COUNT=6
       - AGENT_TRANSFORMER_EMBED_DIM=256
       - AGENT_TRANSFORMER_HEADS=16

@@ -7,7 +7,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from models.ppo import PPOHyperParameters, PPORolloutStep, optimize_ppo_policy
+from models.ppo import (
+    PPOHyperParameters,
+    PPORolloutStep,
+    _select_restore_device,
+    optimize_ppo_policy,
+)
 
 
 class _TinyNet(torch.nn.Module):
@@ -56,3 +61,16 @@ def test_ppo_device_override_moves_network_to_cpu() -> None:
 
     assert next(network.parameters()).device.type == "cpu"
     assert int(metrics["rollout/steps"]) == 2
+
+
+def test_select_restore_device_skips_cuda_restore_when_vram_unavailable(monkeypatch) -> None:
+    network = _TinyNet()
+
+    monkeypatch.setattr(
+        "models.ppo._select_ppo_device",
+        lambda network, requested_device=None: torch.device("cpu"),
+    )
+
+    restore = _select_restore_device(network, torch.device("cuda:0"))
+
+    assert restore is None

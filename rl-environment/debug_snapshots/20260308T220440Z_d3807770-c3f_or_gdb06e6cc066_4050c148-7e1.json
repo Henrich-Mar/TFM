@@ -1,0 +1,3155 @@
+{
+  "schema_version": "decision_snapshot.v1",
+  "captured_at": "2026-03-08T22:04:40Z",
+  "request": {
+    "request_id": "4050c148-7e1e-4893-9983-b7cc2da3844f",
+    "note": "",
+    "include_state_vector": true
+  },
+  "agent": {
+    "id": "d3807770-c3f5-477d-8a7a-a6f87257eb7d"
+  },
+  "prompt": {
+    "game_id": "gdb06e6cc066",
+    "game_url": "http://localhost:8081/game?id=gdb06e6cc066",
+    "player_id": "p9722a9ba6e6b",
+    "player_name": "A2_d3807770",
+    "phase": "action",
+    "phase_index": 2,
+    "generation": 6,
+    "prompt_type": "or",
+    "prompt_title": "Take your first action",
+    "turn_action_count": 0,
+    "sampled_from_policy": true,
+    "send_outcome": "accepted"
+  },
+  "state": {
+    "this_player": {
+      "id": "",
+      "name": "A2_d3807770",
+      "color": "blue",
+      "terraform_rating": 30.0,
+      "resources": {
+        "mc": 27.0,
+        "steel": 2.0,
+        "titanium": 1.0,
+        "plants": 5.0,
+        "energy": 5.0,
+        "heat": 9.0
+      },
+      "production": {
+        "mc": 1.0,
+        "steel": 2.0,
+        "titanium": 1.0,
+        "plants": 1.0,
+        "energy": 5.0,
+        "heat": 3.0
+      },
+      "hand_count": 0,
+      "tableau_count": 12,
+      "cities_count": 0,
+      "greeneries_count": 0
+    },
+    "hand": [
+      {
+        "name": "Rover Construction",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Rover Construction",
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false,
+        "selection_score": 3.22425
+      },
+      {
+        "name": "Deep Well Heating",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Deep Well Heating",
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false,
+        "selection_score": 3.141
+      },
+      {
+        "name": "Maxwell Base",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Maxwell Base",
+        "requirements": [
+          {
+            "venus": 12,
+            "count": 12
+          }
+        ],
+        "requirement_plan": [
+          {
+            "type": "venus",
+            "label": "venus",
+            "satisfied": true,
+            "target": 12,
+            "current": 18,
+            "remaining": 0,
+            "remaining_steps": null,
+            "is_max": false,
+            "all_players": false,
+            "count": 12,
+            "next_to": false,
+            "text": "venus >= 12, now 18",
+            "advisory_only": false,
+            "server_override": false,
+            "masked_by_server": false
+          }
+        ],
+        "plan_summary": "All requirements satisfied.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false,
+        "selection_score": 3.22425
+      },
+      {
+        "name": "Gyropolis",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Gyropolis",
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false,
+        "selection_score": 3.1492500000000003
+      },
+      {
+        "name": "Stratospheric Expedition",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Stratospheric Expedition",
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false,
+        "selection_score": 3.29575
+      },
+      {
+        "name": "Towing A Comet",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Towing A Comet",
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false,
+        "selection_score": 3.04425
+      }
+    ],
+    "tableau": [
+      {
+        "name": "Intragen Sanctuary Headquarters",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Intragen Sanctuary Headquarters",
+        "requirements": []
+      },
+      {
+        "name": "Martian Industries",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Martian Industries",
+        "requirements": []
+      },
+      {
+        "name": "UNMI Contractor",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "UNMI Contractor",
+        "requirements": []
+      },
+      {
+        "name": "Imported GHG",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Imported GHG",
+        "requirements": []
+      },
+      {
+        "name": "Search For Life",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Search For Life",
+        "requirements": [
+          {
+            "oxygen": 6,
+            "max": true,
+            "count": 6
+          }
+        ]
+      },
+      {
+        "name": "Floating Refinery",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Floating Refinery",
+        "requirements": []
+      },
+      {
+        "name": "Forced Precipitation",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Forced Precipitation",
+        "requirements": []
+      },
+      {
+        "name": "Solar Panel Foundry",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Solar Panel Foundry",
+        "requirements": []
+      },
+      {
+        "name": "Equatorial Magnetizer",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Equatorial Magnetizer",
+        "requirements": []
+      },
+      {
+        "name": "Stratospheric Birds",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Stratospheric Birds",
+        "requirements": [
+          {
+            "venus": 12,
+            "count": 12
+          }
+        ]
+      },
+      {
+        "name": "Rust Eating Bacteria",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Rust Eating Bacteria",
+        "requirements": []
+      },
+      {
+        "name": "Giant Space Mirror",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Giant Space Mirror",
+        "requirements": []
+      }
+    ],
+    "opponents": [
+      {
+        "id": "",
+        "name": "A2_d3807770",
+        "color": "blue",
+        "terraform_rating": 30.0,
+        "resources": {
+          "mc": 27.0,
+          "steel": 2.0,
+          "titanium": 1.0,
+          "plants": 5.0,
+          "energy": 5.0,
+          "heat": 9.0
+        },
+        "production": {
+          "mc": 1.0,
+          "steel": 2.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 5.0,
+          "heat": 3.0
+        },
+        "hand_count": 0,
+        "tableau_count": 12,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A3_e9a9432b",
+        "color": "green",
+        "terraform_rating": 27.0,
+        "resources": {
+          "mc": 26.0,
+          "steel": 2.0,
+          "titanium": 2.0,
+          "plants": 7.0,
+          "energy": 4.0,
+          "heat": 3.0
+        },
+        "production": {
+          "mc": 0.0,
+          "steel": 2.0,
+          "titanium": 1.0,
+          "plants": 4.0,
+          "energy": 4.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 10,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A4_35802ce0",
+        "color": "yellow",
+        "terraform_rating": 27.0,
+        "resources": {
+          "mc": 25.0,
+          "steel": 3.0,
+          "titanium": 6.0,
+          "plants": 5.0,
+          "energy": 4.0,
+          "heat": 7.0
+        },
+        "production": {
+          "mc": 1.0,
+          "steel": 1.0,
+          "titanium": 3.0,
+          "plants": 1.0,
+          "energy": 4.0,
+          "heat": 3.0
+        },
+        "hand_count": 0,
+        "tableau_count": 11,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A1_4f68b501",
+        "color": "red",
+        "terraform_rating": 32.0,
+        "resources": {
+          "mc": 26.0,
+          "steel": 4.0,
+          "titanium": 3.0,
+          "plants": 3.0,
+          "energy": 0.0,
+          "heat": 5.0
+        },
+        "production": {
+          "mc": 2.0,
+          "steel": 1.0,
+          "titanium": 3.0,
+          "plants": 3.0,
+          "energy": 0.0,
+          "heat": 4.0
+        },
+        "hand_count": 0,
+        "tableau_count": 10,
+        "cities_count": 0,
+        "greeneries_count": 0
+      }
+    ],
+    "board": {
+      "temperature": -12.0,
+      "oxygen": 5.0,
+      "oceans": 4.0,
+      "venus": 18.0,
+      "map_name": ""
+    },
+    "awards": [
+      {
+        "index": 0,
+        "name": "Traveller",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 1,
+        "name": "Landscaper",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 2,
+        "name": "Highlander",
+        "funded_by": "A2_d3807770",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Promoter",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 4,
+        "name": "Manufacturer",
+        "funded_by": "A1_4f68b501",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 4.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Venuphile",
+        "funded_by": "A4_35802ce0",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 6,
+        "name": "Full Moon",
+        "funded_by": "",
+        "scores": []
+      }
+    ],
+    "milestones": [
+      {
+        "index": 0,
+        "name": "Agronomist",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Spacefarer",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Geologist",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 2.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Engineer",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 8.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 7.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Farmer",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Hoverlord",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 6,
+        "name": "Lunarchitect",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      }
+    ],
+    "prompt_candidates": {
+      "cards": [],
+      "options": [
+        {
+          "index": 0,
+          "type": "option",
+          "title": "Convert 8 heat into temperature",
+          "label": "Convert 8 heat into temperature",
+          "cards_count": 0,
+          "options_count": 0
+        },
+        {
+          "index": 1,
+          "type": "card",
+          "title": "Perform an action from a played card",
+          "label": "Perform an action from a played card",
+          "cards_count": 7,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Search For Life",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Search For Life",
+              "requirements": [
+                {
+                  "oxygen": 6,
+                  "max": true,
+                  "count": 6
+                }
+              ]
+            },
+            {
+              "name": "Floating Refinery",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Floating Refinery",
+              "requirements": []
+            },
+            {
+              "name": "Forced Precipitation",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Forced Precipitation",
+              "requirements": []
+            },
+            {
+              "name": "Solar Panel Foundry",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Solar Panel Foundry",
+              "requirements": []
+            },
+            {
+              "name": "Equatorial Magnetizer",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Equatorial Magnetizer",
+              "requirements": []
+            },
+            {
+              "name": "Stratospheric Birds",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Stratospheric Birds",
+              "requirements": [
+                {
+                  "venus": 12,
+                  "count": 12
+                }
+              ]
+            },
+            {
+              "name": "Rust Eating Bacteria",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Rust Eating Bacteria",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "type": "projectCard",
+          "title": "Play project card",
+          "label": "Play project card",
+          "cards_count": 6,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Rover Construction",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Rover Construction",
+              "requirements": []
+            },
+            {
+              "name": "Deep Well Heating",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Deep Well Heating",
+              "requirements": []
+            },
+            {
+              "name": "Maxwell Base",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Maxwell Base",
+              "requirements": [
+                {
+                  "venus": 12,
+                  "count": 12
+                }
+              ]
+            },
+            {
+              "name": "Gyropolis",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Gyropolis",
+              "requirements": []
+            },
+            {
+              "name": "Stratospheric Expedition",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Stratospheric Expedition",
+              "requirements": []
+            },
+            {
+              "name": "Towing A Comet",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Towing A Comet",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "type": "card",
+          "title": "Standard projects",
+          "label": "Standard projects",
+          "cards_count": 9,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Power Plant:SP",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Power Plant:SP",
+              "requirements": []
+            },
+            {
+              "name": "Asteroid:SP",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Asteroid:SP",
+              "requirements": []
+            },
+            {
+              "name": "Air Scrapping",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Air Scrapping",
+              "requirements": []
+            },
+            {
+              "name": "Aquifer",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Aquifer",
+              "requirements": []
+            },
+            {
+              "name": "Road Infrastructure",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Road Infrastructure",
+              "requirements": []
+            },
+            {
+              "name": "Lunar Mine",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Lunar Mine",
+              "requirements": []
+            },
+            {
+              "name": "Lunar Habitat",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Lunar Habitat",
+              "requirements": []
+            },
+            {
+              "name": "Greenery",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Greenery",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "type": "option",
+          "title": "Pass for this generation",
+          "label": "Pass for this generation",
+          "cards_count": 0,
+          "options_count": 0
+        },
+        {
+          "index": 5,
+          "type": "card",
+          "title": "Sell patents",
+          "label": "Sell patents",
+          "cards_count": 9,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Tundra Farming",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Tundra Farming",
+              "requirements": [
+                {
+                  "temperature": -6,
+                  "count": -6
+                }
+              ]
+            },
+            {
+              "name": "Rover Construction",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Rover Construction",
+              "requirements": []
+            },
+            {
+              "name": "Lunar Trade Fleet",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Lunar Trade Fleet",
+              "requirements": [
+                {
+                  "production": "titanium",
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "name": "Deep Well Heating",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Deep Well Heating",
+              "requirements": []
+            },
+            {
+              "name": "Maxwell Base",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Maxwell Base",
+              "requirements": [
+                {
+                  "venus": 12,
+                  "count": 12
+                }
+              ]
+            },
+            {
+              "name": "Dust Seals",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Dust Seals",
+              "requirements": [
+                {
+                  "oceans": 3,
+                  "max": true,
+                  "count": 3
+                }
+              ]
+            },
+            {
+              "name": "Gyropolis",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Gyropolis",
+              "requirements": []
+            },
+            {
+              "name": "Stratospheric Expedition",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Stratospheric Expedition",
+              "requirements": []
+            }
+          ]
+        }
+      ],
+      "map_candidates": [],
+      "moon_candidates": [],
+      "players": [],
+      "colonies": [],
+      "parties": [],
+      "global_events": [],
+      "tokens": [],
+      "policies": [],
+      "resource_types": [],
+      "payment_context": {
+        "amount": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "title": "Take your first action"
+      }
+    },
+    "prompt_card_rankings": [
+      {
+        "name": "Stratospheric Expedition",
+        "cost": 12.0,
+        "tags": [
+          "Space",
+          "Venus"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 3.29575,
+        "affordability": 1.0,
+        "vp_proxy": 0.2,
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      },
+      {
+        "name": "Rover Construction",
+        "cost": 8.0,
+        "tags": [
+          "Building"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 3.22425,
+        "affordability": 1.0,
+        "vp_proxy": 0.2,
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      },
+      {
+        "name": "Maxwell Base",
+        "cost": 18.0,
+        "tags": [
+          "City",
+          "Venus"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 3.22425,
+        "affordability": 1.0,
+        "vp_proxy": 0.6,
+        "requirements": [
+          {
+            "venus": 12,
+            "count": 12
+          }
+        ],
+        "requirement_plan": [
+          {
+            "type": "venus",
+            "label": "venus",
+            "satisfied": true,
+            "target": 12,
+            "current": 18,
+            "remaining": 0,
+            "remaining_steps": null,
+            "is_max": false,
+            "all_players": false,
+            "count": 12,
+            "next_to": false,
+            "text": "venus >= 12, now 18",
+            "advisory_only": false,
+            "server_override": false,
+            "masked_by_server": false
+          }
+        ],
+        "plan_summary": "All requirements satisfied.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      },
+      {
+        "name": "Gyropolis",
+        "cost": 20.0,
+        "tags": [
+          "Building",
+          "City"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 3.1492500000000003,
+        "affordability": 1.0,
+        "vp_proxy": 0.16999999999999998,
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      },
+      {
+        "name": "Deep Well Heating",
+        "cost": 13.0,
+        "tags": [
+          "Building",
+          "Power"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 3.141,
+        "affordability": 1.0,
+        "vp_proxy": 0.0325,
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      },
+      {
+        "name": "Towing A Comet",
+        "cost": 23.0,
+        "tags": [
+          "Space"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 3.04425,
+        "affordability": 1.0,
+        "vp_proxy": 0.0875,
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      }
+    ]
+  },
+  "policy": {
+    "chosen_action_index": 101,
+    "chosen_action_label": "STANDARD_PROJECT(Asteroid:SP)",
+    "chosen_action_payload": {
+      "type": "or",
+      "index": 3,
+      "response": {
+        "type": "card",
+        "cards": [
+          "Asteroid:SP"
+        ]
+      }
+    },
+    "policy_temperature": 1.0,
+    "value_estimate": 0.8637678623199463,
+    "raw_available_actions": [
+      200,
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108,
+      204
+    ],
+    "filtered_available_actions": [
+      200,
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108
+    ],
+    "legal_actions": [
+      200,
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108
+    ],
+    "action_rankings": [
+      {
+        "action_index": 102,
+        "label": "STANDARD_PROJECT(Aquifer)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Air Scrapping"
+            ]
+          }
+        },
+        "raw_probability": 0.0038017567712813616,
+        "masked_probability": 0.15998706221580505,
+        "logit": 1.7032217979431152,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 1,
+        "label": "PLAY_CARD(Floating Refinery)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Floating Refinery"
+            ]
+          }
+        },
+        "raw_probability": 0.002643133047968149,
+        "masked_probability": 0.11122938990592957,
+        "logit": 1.3397235870361328,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 6,
+        "label": "PLAY_CARD(Rust Eating Bacteria)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Rust Eating Bacteria"
+            ]
+          }
+        },
+        "raw_probability": 0.0026417956687510014,
+        "masked_probability": 0.1111731082201004,
+        "logit": 1.3392174243927002,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 2,
+        "label": "PLAY_CARD(Forced Precipitation)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Forced Precipitation"
+            ]
+          }
+        },
+        "raw_probability": 0.0026104471180588007,
+        "masked_probability": 0.10985388606786728,
+        "logit": 1.327280044555664,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 103,
+        "label": "STANDARD_PROJECT(Greenery)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Aquifer"
+            ]
+          }
+        },
+        "raw_probability": 0.0025884322822093964,
+        "masked_probability": 0.10892745107412338,
+        "logit": 1.3188109397888184,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 200,
+        "label": "SELECT_OPTION(Convert 8 heat into temperature)",
+        "decoded_action": {
+          "type": "or",
+          "index": 0,
+          "response": {
+            "type": "option"
+          }
+        },
+        "raw_probability": 0.0016414568526670337,
+        "masked_probability": 0.06907644867897034,
+        "logit": 0.8633428812026978,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 101,
+        "label": "STANDARD_PROJECT(Asteroid:SP)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Asteroid:SP"
+            ]
+          }
+        },
+        "raw_probability": 0.001475424855016172,
+        "masked_probability": 0.062089428305625916,
+        "logit": 0.7567045092582703,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 5,
+        "label": "PLAY_CARD(Stratospheric Birds)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Stratospheric Birds"
+            ]
+          }
+        },
+        "raw_probability": 0.0014450796879827976,
+        "masked_probability": 0.06081243231892586,
+        "logit": 0.7359230518341064,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 4,
+        "label": "PLAY_CARD(Equatorial Magnetizer)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Equatorial Magnetizer"
+            ]
+          }
+        },
+        "raw_probability": 0.0012287553399801254,
+        "masked_probability": 0.05170898512005806,
+        "logit": 0.5737602710723877,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 105,
+        "label": "STANDARD_PROJECT(Colony)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Lunar Mine"
+            ]
+          }
+        },
+        "raw_probability": 0.0009900688892230392,
+        "masked_probability": 0.0416644886136055,
+        "logit": 0.3577778935432434,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 3,
+        "label": "PLAY_CARD(Solar Panel Foundry)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Solar Panel Foundry"
+            ]
+          }
+        },
+        "raw_probability": 0.0009080843883566558,
+        "masked_probability": 0.03821438178420067,
+        "logit": 0.27134063839912415,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 106,
+        "label": "STANDARD_PROJECT(Air Scrapping)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Lunar Habitat"
+            ]
+          }
+        },
+        "raw_probability": 0.0006684702238999307,
+        "masked_probability": 0.02813084051012993,
+        "logit": -0.035004884004592896,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 108,
+        "label": "STANDARD_PROJECT(Road Infrastructure)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "City"
+            ]
+          }
+        },
+        "raw_probability": 0.00031308294273912907,
+        "masked_probability": 0.013175291940569878,
+        "logit": -0.7935284376144409,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 107,
+        "label": "STANDARD_PROJECT(Buffer Gas)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Greenery"
+            ]
+          }
+        },
+        "raw_probability": 0.0002280725457239896,
+        "masked_probability": 0.00959785096347332,
+        "logit": -1.11033296585083,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 0,
+        "label": "PLAY_CARD(Search For Life)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Search For Life"
+            ]
+          }
+        },
+        "raw_probability": 0.000215460269828327,
+        "masked_probability": 0.009067095816135406,
+        "logit": -1.167220115661621,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 100,
+        "label": "STANDARD_PROJECT(Power Plant:SP)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Power Plant:SP"
+            ]
+          }
+        },
+        "raw_probability": 0.00019661740225274116,
+        "masked_probability": 0.008274142630398273,
+        "logit": -1.2587370872497559,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 104,
+        "label": "STANDARD_PROJECT(City)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Road Infrastructure"
+            ]
+          }
+        },
+        "raw_probability": 0.00016676256200298667,
+        "masked_probability": 0.0070177786983549595,
+        "logit": -1.4234254360198975,
+        "chosen": false,
+        "legal": true
+      }
+    ],
+    "top_actions": [
+      {
+        "action_index": 102,
+        "label": "STANDARD_PROJECT(Aquifer)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Air Scrapping"
+            ]
+          }
+        },
+        "raw_probability": 0.0038017567712813616,
+        "masked_probability": 0.15998706221580505,
+        "logit": 1.7032217979431152,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 1,
+        "label": "PLAY_CARD(Floating Refinery)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Floating Refinery"
+            ]
+          }
+        },
+        "raw_probability": 0.002643133047968149,
+        "masked_probability": 0.11122938990592957,
+        "logit": 1.3397235870361328,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 6,
+        "label": "PLAY_CARD(Rust Eating Bacteria)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Rust Eating Bacteria"
+            ]
+          }
+        },
+        "raw_probability": 0.0026417956687510014,
+        "masked_probability": 0.1111731082201004,
+        "logit": 1.3392174243927002,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 2,
+        "label": "PLAY_CARD(Forced Precipitation)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Forced Precipitation"
+            ]
+          }
+        },
+        "raw_probability": 0.0026104471180588007,
+        "masked_probability": 0.10985388606786728,
+        "logit": 1.327280044555664,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 103,
+        "label": "STANDARD_PROJECT(Greenery)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Aquifer"
+            ]
+          }
+        },
+        "raw_probability": 0.0025884322822093964,
+        "masked_probability": 0.10892745107412338,
+        "logit": 1.3188109397888184,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 200,
+        "label": "SELECT_OPTION(Convert 8 heat into temperature)",
+        "decoded_action": {
+          "type": "or",
+          "index": 0,
+          "response": {
+            "type": "option"
+          }
+        },
+        "raw_probability": 0.0016414568526670337,
+        "masked_probability": 0.06907644867897034,
+        "logit": 0.8633428812026978,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 101,
+        "label": "STANDARD_PROJECT(Asteroid:SP)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Asteroid:SP"
+            ]
+          }
+        },
+        "raw_probability": 0.001475424855016172,
+        "masked_probability": 0.062089428305625916,
+        "logit": 0.7567045092582703,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 5,
+        "label": "PLAY_CARD(Stratospheric Birds)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Stratospheric Birds"
+            ]
+          }
+        },
+        "raw_probability": 0.0014450796879827976,
+        "masked_probability": 0.06081243231892586,
+        "logit": 0.7359230518341064,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 4,
+        "label": "PLAY_CARD(Equatorial Magnetizer)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Equatorial Magnetizer"
+            ]
+          }
+        },
+        "raw_probability": 0.0012287553399801254,
+        "masked_probability": 0.05170898512005806,
+        "logit": 0.5737602710723877,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 105,
+        "label": "STANDARD_PROJECT(Colony)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Lunar Mine"
+            ]
+          }
+        },
+        "raw_probability": 0.0009900688892230392,
+        "masked_probability": 0.0416644886136055,
+        "logit": 0.3577778935432434,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 3,
+        "label": "PLAY_CARD(Solar Panel Foundry)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Solar Panel Foundry"
+            ]
+          }
+        },
+        "raw_probability": 0.0009080843883566558,
+        "masked_probability": 0.03821438178420067,
+        "logit": 0.27134063839912415,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 106,
+        "label": "STANDARD_PROJECT(Air Scrapping)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Lunar Habitat"
+            ]
+          }
+        },
+        "raw_probability": 0.0006684702238999307,
+        "masked_probability": 0.02813084051012993,
+        "logit": -0.035004884004592896,
+        "chosen": false,
+        "legal": true
+      }
+    ]
+  },
+  "aux": {
+    "targets": {
+      "milestone_claimability": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.6666666865348816,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.3333333432674408,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.3333333432674408,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "award_ev": 1.0,
+      "playable_cards": 0.6,
+      "steel_target": 0.09375,
+      "titanium_target": 0.05
+    },
+    "predictions": {
+      "award_ev": 0.536472499370575,
+      "playable_cards": 0.35877251625061035,
+      "steel_target": 0.09095057845115662,
+      "titanium_target": 0.05073633790016174,
+      "top_milestone_predictions": [
+        {
+          "index": 9,
+          "value": 0.18353189527988434
+        },
+        {
+          "index": 12,
+          "value": 0.10562670230865479
+        },
+        {
+          "index": 20,
+          "value": 0.10107826441526413
+        },
+        {
+          "index": 22,
+          "value": 0.09986594319343567
+        },
+        {
+          "index": 54,
+          "value": 0.09201931208372116
+        },
+        {
+          "index": 36,
+          "value": 0.08379548788070679
+        },
+        {
+          "index": 61,
+          "value": 0.08200038969516754
+        },
+        {
+          "index": 35,
+          "value": 0.07496695220470428
+        },
+        {
+          "index": 30,
+          "value": 0.0745200365781784
+        },
+        {
+          "index": 34,
+          "value": 0.06414211541414261
+        }
+      ]
+    }
+  },
+  "diagnostics": {
+    "transformer": {
+      "enabled": true,
+      "active_token_ratio": 1.0,
+      "active_row_ratio": 1.0,
+      "attention_context_norm": 8.014520645141602,
+      "fusion_delta_norm": 15.876504898071289,
+      "fusion_share": 24.84063790608786,
+      "shared_pre_norm": 0.6391343474388123,
+      "shared_post_norm": 15.929195404052734,
+      "token_count": 18,
+      "token_dim": 8,
+      "timestamp": 1773007480.4495268,
+      "hand_token_count": 4,
+      "tableau_token_count": 8,
+      "opponent_token_count": 6,
+      "card_token_dim": 8
+    },
+    "rare_state": {
+      "weight": 1.0,
+      "award_funding": 0.0,
+      "milestone_timing": 0.0,
+      "draft_keep_buy": 0.0,
+      "high_cost_payment": 0.0,
+      "payment_value_estimate": 0.0
+    }
+  },
+  "state_vector": [
+    0.2857142984867096,
+    0.4736842215061188,
+    0.6000000238418579,
+    0.4285714328289032,
+    0.0,
+    0.0,
+    0.375,
+    0.09000000357627869,
+    0.019999999552965164,
+    0.009999999776482582,
+    0.05000000074505806,
+    0.05000000074505806,
+    0.09000000357627869,
+    0.1111111119389534,
+    0.0,
+    0.10000000149011612,
+    0.30000001192092896,
+    0.2750000059604645,
+    0.2750000059604645,
+    0.375,
+    0.32499998807907104,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.2199999988079071,
+    0.07750000059604645,
+    1.0,
+    0.20000000298023224,
+    1.0,
+    0.0,
+    0.0,
+    0.875,
+    0.14000000059604645,
+    0.10750000178813934,
+    1.0,
+    0.4000000059604645,
+    0.0,
+    1.0,
+    0.0,
+    0.5,
+    0.23999999463558197,
+    0.18000000715255737,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.625,
+    0.0,
+    0.10000000149011612,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.5,
+    0.3400000035762787,
+    0.042500000447034836,
+    1.0,
+    0.20000000298023224,
+    0.0,
+    1.0,
+    0.0,
+    0.5,
+    0.2199999988079071,
+    0.07750000059604645,
+    1.0,
+    0.20000000298023224,
+    1.0,
+    0.0,
+    0.0,
+    0.375,
+    0.0,
+    0.0,
+    1.0,
+    0.20000000298023224,
+    1.0,
+    0.0,
+    0.0,
+    0.375,
+    0.05999999865889549,
+    0.17749999463558197,
+    1.0,
+    0.20000000298023224,
+    0.0,
+    0.0,
+    1.0,
+    0.125,
+    0.23999999463558197,
+    0.20000000298023224,
+    1.0,
+    0.20000000298023224,
+    0.0,
+    1.0,
+    0.0,
+    0.375,
+    0.1599999964237213,
+    0.20000000298023224,
+    1.0,
+    0.20000000298023224,
+    1.0,
+    0.0,
+    0.0,
+    0.5,
+    0.36000001430511475,
+    0.6000000238418579,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.4000000059604645,
+    0.17000000178813934,
+    1.0,
+    0.20000000298023224,
+    1.0,
+    0.0,
+    0.0,
+    0.5,
+    0.7200000286102295,
+    0.4000000059604645,
+    0.5,
+    0.4000000059604645,
+    0.0,
+    1.0,
+    0.0,
+    1.0,
+    0.25999999046325684,
+    0.2824999988079071,
+    0.5,
+    0.20000000298023224,
+    0.0,
+    0.0,
+    1.0,
+    1.0,
+    0.0,
+    0.3199999928474426,
+    0.5,
+    0.4000000059604645,
+    0.0,
+    0.0,
+    1.0,
+    0.75,
+    0.1599999964237213,
+    0.07000000029802322,
+    0.5,
+    0.20000000298023224,
+    1.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.05999999865889549,
+    0.5,
+    0.4000000059604645,
+    0.0,
+    1.0,
+    0.0,
+    1.0,
+    0.46000000834465027,
+    0.08749999850988388,
+    0.5,
+    0.20000000298023224,
+    0.0,
+    1.0,
+    0.0,
+    1.0
+  ],
+  "snapshot_id": "20260308T220440Z_d3807770-c3f_or_gdb06e6cc066_4050c148-7e1",
+  "snapshot_path": "/app/debug_snapshots/20260308T220440Z_d3807770-c3f_or_gdb06e6cc066_4050c148-7e1.json"
+}

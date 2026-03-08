@@ -163,7 +163,7 @@ def build_agent_config() -> AgentConfig:
         phase_head_count=int(os.getenv("AGENT_PHASE_HEAD_COUNT", "6")),
         card_token_dim=int(os.getenv("AGENT_CARD_TOKEN_DIM", "20")),
         tableau_token_count=int(os.getenv("AGENT_TABLEAU_TOKEN_COUNT", "10")),
-        hand_token_count=int(os.getenv("AGENT_HAND_TOKEN_COUNT", "4")),
+        hand_token_count=int(os.getenv("AGENT_HAND_TOKEN_COUNT", "64")),
         opponent_token_count=int(os.getenv("AGENT_OPPONENT_TOKEN_COUNT", "6")),
         transformer_embed_dim=int(os.getenv("AGENT_TRANSFORMER_EMBED_DIM", "256")),
         transformer_heads=int(os.getenv("AGENT_TRANSFORMER_HEADS", "16")),

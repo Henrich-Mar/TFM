@@ -53,6 +53,20 @@ _inference_device: Optional[torch.device] = None
 _inference_device_lock = threading.Lock()
 
 
+def _devices_match(left: torch.device, right: torch.device) -> bool:
+    left = torch.device(left)
+    right = torch.device(right)
+    if left.type != right.type:
+        return False
+    if left.type == "cuda":
+        return (
+            left.index == right.index
+            or left.index is None
+            or right.index is None
+        )
+    return left == right
+
+
 def _resolve_inference_device() -> torch.device:
     """Return the device used for inference, determined once from
     ``AGENT_INFERENCE_DEVICE`` (``auto`` | ``cpu`` | ``cuda`` | ``cuda:N``).
@@ -175,7 +189,7 @@ def _run_ppo_update_sync(
         # and opportunistically try to reclaim CUDA if enough VRAM is now free.
         try:
             actual_device = next(agent.network.parameters()).device
-            if actual_device != agent._inference_device:
+            if not _devices_match(actual_device, agent._inference_device):
                 logger.warning(
                     "Network device (%s) differs from inference device (%s) after PPO; re-syncing.",
                     actual_device, agent._inference_device,
@@ -373,7 +387,7 @@ class AgentConfig:
     transformer_enabled: bool = True
     card_token_dim: int = 8
     tableau_token_count: int = 8
-    hand_token_count: int = 4
+    hand_token_count: int = 64
     opponent_token_count: int = 6
     transformer_embed_dim: int = 64
     transformer_heads: int = 4
@@ -527,11 +541,15 @@ class TerraformingMarsNetwork(nn.Module):
         self.use_transformer = bool(getattr(config, "transformer_enabled", True))
         self.card_token_dim = max(1, int(getattr(config, "card_token_dim", 8)))
         self.tableau_token_count = max(0, int(getattr(config, "tableau_token_count", 8)))
-        self.hand_token_count = max(0, int(getattr(config, "hand_token_count", 4)))
+        self.hand_token_count = max(0, int(getattr(config, "hand_token_count", 64)))
         self.opponent_token_count = max(0, int(getattr(config, "opponent_token_count", 4)))
         self.card_token_count = self.tableau_token_count + self.hand_token_count + self.opponent_token_count
         self.card_token_vector_size = self.card_token_count * self.card_token_dim
         self.card_token_start = max(0, int(config.state_size) - int(self.card_token_vector_size))
+        if self.card_token_vector_size > int(config.state_size):
+            raise ValueError(
+                f"Card token vector size {self.card_token_vector_size} exceeds state_size {config.state_size}"
+            )
         self.transformer_embed_dim = max(16, int(getattr(config, "transformer_embed_dim", 64)))
         transformer_heads = max(1, int(getattr(config, "transformer_heads", 4)))
         transformer_layers = max(1, int(getattr(config, "transformer_layers", 2)))
@@ -836,7 +854,7 @@ class RLAgent:
                 transformer_enabled=str(os.getenv("AGENT_TRANSFORMER_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off"),
                 card_token_dim=RLAgent._safe_env_int("AGENT_CARD_TOKEN_DIM", 8),
                 tableau_token_count=RLAgent._safe_env_int("AGENT_TABLEAU_TOKEN_COUNT", 8),
-                hand_token_count=RLAgent._safe_env_int("AGENT_HAND_TOKEN_COUNT", 4),
+                hand_token_count=RLAgent._safe_env_int("AGENT_HAND_TOKEN_COUNT", 64),
                 opponent_token_count=RLAgent._safe_env_int("AGENT_OPPONENT_TOKEN_COUNT", 6),
                 transformer_embed_dim=RLAgent._safe_env_int("AGENT_TRANSFORMER_EMBED_DIM", 64),
                 transformer_heads=RLAgent._safe_env_int("AGENT_TRANSFORMER_HEADS", 4),
@@ -1060,7 +1078,7 @@ class RLAgent:
                 current = next(self.network.parameters()).device
             except StopIteration:
                 return
-            if current == target:
+            if _devices_match(current, target):
                 return
             try:
                 _move_network_and_optimizer_to(self.network, self.optimizer, target)
@@ -1093,7 +1111,7 @@ class RLAgent:
         devices = self._get_network_devices()
         if not devices:
             return target
-        if len(devices) == 1 and devices[0] == target:
+        if len(devices) == 1 and _devices_match(devices[0], target):
             return target
 
         device_list = ", ".join(str(device) for device in devices)
@@ -1197,7 +1215,7 @@ class RLAgent:
         device = self._inference_device
         if isinstance(recurrent_state, torch.Tensor):
             vec = recurrent_state.detach().float().reshape(-1)
-            if vec.device != device:
+            if not _devices_match(vec.device, device):
                 vec = vec.to(device)
         else:
             try:
@@ -1378,7 +1396,7 @@ class RLAgent:
             award_points += self._project_award_points_for_color(scores, own_color)
         targets["award_ev"] = float(max(0.0, min(award_points / 15.0, 1.0)))
 
-        cards_source = list(self.state_encoder._get_candidate_hand_cards(player_state) or [])
+        cards_source = list(self.state_encoder._get_owned_hand_cards(player_state) or [])
 
         mc = float(player.get("megaCredits", 0) or 0)
         steel = float(player.get("steel", 0) or 0)
@@ -2965,7 +2983,7 @@ class RLAgent:
                 [phase_index], dtype=torch.long, device=device,
             )
             recurrent_state_tensor = recurrent_state.unsqueeze(0)
-            if recurrent_state_tensor.device != device:
+            if not _devices_match(recurrent_state_tensor.device, device):
                 recurrent_state_tensor = recurrent_state_tensor.to(device)
 
             try:
@@ -3892,7 +3910,25 @@ class RLAgent:
             for key, value in config_payload.items():
                 if key in defaults:
                     merged_config[key] = value
+            token_count_envs = {
+                "tableau_token_count": "AGENT_TABLEAU_TOKEN_COUNT",
+                "hand_token_count": "AGENT_HAND_TOKEN_COUNT",
+                "opponent_token_count": "AGENT_OPPONENT_TOKEN_COUNT",
+            }
+            applied_token_overrides: Dict[str, int] = {}
+            for key, env_name in token_count_envs.items():
+                raw_value = str(os.getenv(env_name, "")).strip()
+                if not raw_value:
+                    continue
+                merged_config[key] = self._safe_env_int(env_name, int(merged_config.get(key, defaults[key])))
+                applied_token_overrides[key] = int(merged_config[key])
             self.config = AgentConfig(**merged_config)
+            if applied_token_overrides:
+                logger.info(
+                    "Applied token-count env override(s) while loading %s: %s",
+                    path,
+                    applied_token_overrides,
+                )
 
         # Rebuild model/optimizer from restored config before loading state dicts.
         self.network = TerraformingMarsNetwork(self.config)

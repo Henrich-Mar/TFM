@@ -24,6 +24,20 @@ AUX_HEAD_NAMES: List[str] = [
 ]
 
 
+def _devices_match(left: torch.device, right: torch.device) -> bool:
+    left = torch.device(left)
+    right = torch.device(right)
+    if left.type != right.type:
+        return False
+    if left.type == "cuda":
+        return (
+            left.index == right.index
+            or left.index is None
+            or right.index is None
+        )
+    return left == right
+
+
 def _get_training_device() -> torch.device:
     """Return the best available device for PPO training.
 
@@ -83,6 +97,23 @@ def _select_ppo_device(
     except Exception:
         pass
     return device
+
+
+def _select_restore_device(
+    network: torch.nn.Module,
+    original_device: torch.device,
+) -> Optional[torch.device]:
+    original_device = torch.device(original_device)
+    if original_device.type != "cuda":
+        return original_device
+    restore_target = _select_ppo_device(network, requested_device=original_device)
+    if restore_target.type != "cuda":
+        _ppo_logger.info(
+            "Skipping restore of network to %s after PPO due to low free VRAM; keeping model on CPU.",
+            original_device,
+        )
+        return None
+    return original_device
 
 
 @dataclass
@@ -617,15 +648,22 @@ def optimize_ppo_policy(
 
     # Restore network to its pre-training device.
     current_device = next(network.parameters()).device
-    if current_device != original_device:
+    restore_device = None
+    if not _devices_match(current_device, original_device):
+        restore_device = _select_restore_device(network, original_device)
+    if restore_device is not None and not _devices_match(current_device, restore_device):
         try:
-            network.to(original_device)
+            network.to(restore_device)
             for state in optimizer.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
-                        state[k] = v.to(original_device)
+                        state[k] = v.to(restore_device)
         except Exception as e:
-            _ppo_logger.warning("Failed to restore network to %s after PPO: %s", original_device, e)
+            _ppo_logger.warning("Failed to restore network to %s after PPO: %s", restore_device, e)
+        try:
+            current_device = next(network.parameters()).device
+        except Exception:
+            pass
     if device.type == "cuda" or current_device.type == "cuda":
         torch.cuda.empty_cache()
 

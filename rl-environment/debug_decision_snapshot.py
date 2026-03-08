@@ -230,7 +230,36 @@ def _card_summary(card: Any) -> Dict[str, Any]:
     return summary
 
 
-def _player_summary(player: Any) -> Dict[str, Any]:
+def _resolved_player_hand_cards(player_state: Optional[Dict[str, Any]], player: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    if not isinstance(player_state, dict):
+        player_state = {}
+    if not isinstance(player, dict):
+        player = (player_state.get("thisPlayer", {}) or {}) if isinstance(player_state, dict) else {}
+
+    for raw_cards in (
+        player_state.get("cardsInHand", []) if isinstance(player_state, dict) else [],
+        player.get("cardsInHand", []) if isinstance(player, dict) else [],
+    ):
+        if not isinstance(raw_cards, list):
+            continue
+        cards = [card for card in raw_cards if isinstance(card, dict)]
+        if cards:
+            return cards
+    return []
+
+
+def _resolved_player_hand_count(player_state: Optional[Dict[str, Any]], player: Optional[Dict[str, Any]] = None) -> int:
+    cards = _resolved_player_hand_cards(player_state, player)
+    if cards:
+        return int(len(cards))
+    if isinstance(player, dict):
+        count = player.get("cardsInHandNbr", None)
+        if count is not None:
+            return _safe_int(count)
+    return 0
+
+
+def _player_summary(player: Any, hand_count_override: Optional[int] = None) -> Dict[str, Any]:
     if not isinstance(player, dict):
         return {"label": _message_text(player)}
     productions = {
@@ -256,7 +285,7 @@ def _player_summary(player: Any) -> Dict[str, Any]:
         "terraform_rating": _safe_float(player.get("terraformRating", 0.0)),
         "resources": resources,
         "production": productions,
-        "hand_count": _safe_int(len(player.get("cardsInHand", []) or [])),
+        "hand_count": _safe_int(hand_count_override if hand_count_override is not None else len(player.get("cardsInHand", []) or [])),
         "tableau_count": _safe_int(len(player.get("tableau", []) or [])),
         "cities_count": _safe_int(len(player.get("cityCards", []) or [])),
         "greeneries_count": _safe_int(len(player.get("greeneryCards", []) or [])),
@@ -361,6 +390,8 @@ def _top_aux_predictions(aux_predictions: List[float]) -> List[Dict[str, Any]]:
 def _summarize_prompt_candidates(waiting_for: Dict[str, Any]) -> Dict[str, Any]:
     options = waiting_for.get("options", []) or []
     cards = waiting_for.get("cards", []) or []
+    if not cards:
+        cards = _or_project_card_candidates(waiting_for)
     spaces = waiting_for.get("availableSpaces", waiting_for.get("spaces", [])) or []
     players = waiting_for.get("players", []) or []
     colonies = waiting_for.get("colonies", []) or []
@@ -437,21 +468,8 @@ def _or_project_card_candidates(waiting_for: Dict[str, Any]) -> List[Dict[str, A
     return candidates
 
 
-def _snapshot_hand_cards(this_player: Dict[str, Any], waiting_for: Dict[str, Any]) -> List[Dict[str, Any]]:
-    raw_hand_cards = (this_player.get("cardsInHand", []) or []) if isinstance(this_player, dict) else []
-    hand_cards = [card for card in raw_hand_cards if isinstance(card, dict)]
-    if hand_cards:
-        return [_card_summary(card) for card in hand_cards]
-
-    prompt_cards = [card for card in (waiting_for.get("cards", []) or []) if isinstance(card, dict)]
-    if prompt_cards:
-        return [_card_summary(card) for card in prompt_cards]
-
-    or_project_cards = _or_project_card_candidates(waiting_for)
-    if or_project_cards:
-        return [_card_summary(card) for card in or_project_cards]
-
-    return []
+def _snapshot_hand_cards(player_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [_card_summary(card) for card in _resolved_player_hand_cards(player_state)]
 
 
 def _attach_requirement_rankings(cards: List[Dict[str, Any]], rankings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -515,7 +533,8 @@ def build_decision_snapshot(
         prompt_candidates["cards"] = _attach_requirement_rankings(list(prompt_candidates.get("cards", []) or []), prompt_card_rankings)
     aux_predictions = list(action_meta.get("aux_predictions", []) or [])
     aux_targets = dict(action_meta.get("aux_targets", {}) or {})
-    hand_cards = _snapshot_hand_cards(this_player, waiting_for)
+    resolved_hand_count = _resolved_player_hand_count(player_state, this_player)
+    hand_cards = _snapshot_hand_cards(player_state)
     if prompt_card_rankings:
         hand_cards = _attach_requirement_rankings(hand_cards, prompt_card_rankings)
 
@@ -545,7 +564,7 @@ def build_decision_snapshot(
             "send_outcome": str(send_outcome or "").strip(),
         },
         "state": {
-            "this_player": _player_summary(this_player),
+            "this_player": _player_summary(this_player, hand_count_override=resolved_hand_count),
             "hand": hand_cards,
             "tableau": [_card_summary(card) for card in (this_player.get("tableau", []) or [])],
             "opponents": other_players,

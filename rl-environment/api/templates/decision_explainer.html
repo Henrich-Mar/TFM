@@ -243,7 +243,7 @@
     <section class="grid two">
       <div class="panel">
         <div class="section-head">
-          <h2>Hand</h2>
+          <h2>Owned Hand</h2>
         </div>
         <div id="handCards" class="cards"></div>
       </div>
@@ -452,6 +452,8 @@
         ["Name", esc(player.name || "")],
         ["Color", esc(player.color || "")],
         ["TR", fmt(player.terraform_rating, 1)],
+        ["Hand", fmt(player.hand_count, 0)],
+        ["Tableau", fmt(player.tableau_count, 0)],
         ["MC", fmt((player.resources || {}).mc, 1)],
         ["Steel", fmt((player.resources || {}).steel, 1)],
         ["Titanium", fmt((player.resources || {}).titanium, 1)],

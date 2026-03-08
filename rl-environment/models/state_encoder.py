@@ -58,7 +58,7 @@ class StateEncoder:
     # Transformer card-token layout encoded inside the tail of the fixed-size state vector.
     _DEFAULT_CARD_TOKEN_DIM = 8
     _DEFAULT_TABLEAU_TOKEN_COUNT = 8
-    _DEFAULT_HAND_TOKEN_COUNT = 4
+    _DEFAULT_HAND_TOKEN_COUNT = 64
     _DEFAULT_OPPONENT_TOKEN_COUNT = 6
 
     def __init__(
@@ -76,6 +76,10 @@ class StateEncoder:
         self.opponent_token_count = max(0, int(opponent_token_count))
         self.card_token_count = self.tableau_token_count + self.hand_token_count + self.opponent_token_count
         self.card_token_vector_size = self.card_token_count * self.card_token_dim
+        if self.card_token_vector_size > int(self.state_size):
+            raise ValueError(
+                f"Card token vector size {self.card_token_vector_size} exceeds state_size {self.state_size}"
+            )
         
         # Load authoritative card metadata first; derive common_cards from it when available
         self.card_metadata_by_name: Dict[str, Dict[str, Any]] = self._load_card_metadata()
@@ -372,8 +376,7 @@ class StateEncoder:
         """Encode cards in hand with aggregate and top-K card-level features."""
         encoding = [0.0] * 50
 
-        hand_raw = player_state.get('cardsInHand', [])
-        hand_cards = [card for card in hand_raw if isinstance(card, dict)]
+        hand_cards = self._get_owned_hand_cards(player_state)
         waiting_for = player_state.get('waitingFor', {}) or {}
         waiting_type = str(waiting_for.get('type', '') or '')
         candidate_cards = self._get_candidate_hand_cards(player_state)
@@ -659,24 +662,65 @@ class StateEncoder:
                     profile[tag_name] = int(profile.get(tag_name, 0)) + 1
         return profile
 
+    def _merge_tag_profiles(self, *profiles: Dict[str, int]) -> Dict[str, int]:
+        merged: Dict[str, int] = {}
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                continue
+            for tag_name, count in profile.items():
+                merged[tag_name] = int(merged.get(tag_name, 0)) + int(count or 0)
+        return merged
+
+    def _card_dedupe_key(self, card: Dict[str, Any]) -> str:
+        name = str(card.get('name', '') or '').strip()
+        if name:
+            return name
+        try:
+            return json.dumps(card, sort_keys=True)
+        except Exception:
+            return repr(sorted(card.items()))
+
+    def _dedupe_cards(self, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        deduped: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            key = self._card_dedupe_key(card)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(card)
+        return deduped
+
+    def _get_owned_hand_cards(self, player_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        hand_cards_raw = player_state.get('cardsInHand', [])
+        hand_cards = [card for card in hand_cards_raw if isinstance(card, dict)]
+        if hand_cards:
+            return self._dedupe_cards(hand_cards)
+
+        player_hand = (player_state.get('thisPlayer', {}) or {}).get('cardsInHand', [])
+        hand_cards = [card for card in player_hand if isinstance(card, dict)]
+        return self._dedupe_cards(hand_cards)
+
+    def _get_prompt_hand_cards(self, player_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        waiting_for = player_state.get('waitingFor', {}) or {}
+        waiting_type = str(waiting_for.get('type', '') or '')
+        if waiting_type == 'or':
+            return self._get_or_project_card_candidates(waiting_for)
+        if waiting_type in ['card', 'projectCard', 'selectCard', 'selectProjectCardToPlay']:
+            prompt_cards_raw = waiting_for.get('cards', []) if isinstance(waiting_for, dict) else []
+            return self._dedupe_cards([card for card in prompt_cards_raw if isinstance(card, dict)])
+        return []
+
     def _get_candidate_hand_cards(self, player_state: Dict[str, Any]) -> List[Dict[str, Any]]:
         waiting_for = player_state.get('waitingFor', {}) or {}
         waiting_type = str(waiting_for.get('type', '') or '')
-        prompt_cards_raw = waiting_for.get('cards', []) if isinstance(waiting_for, dict) else []
-        prompt_cards = [card for card in prompt_cards_raw if isinstance(card, dict)]
+        prompt_cards = self._get_prompt_hand_cards(player_state)
+        hand_cards = self._get_owned_hand_cards(player_state)
 
-        hand_cards_raw = player_state.get('cardsInHand', [])
-        hand_cards = [card for card in hand_cards_raw if isinstance(card, dict)]
-        if not hand_cards:
-            player_hand = (player_state.get('thisPlayer', {}) or {}).get('cardsInHand', [])
-            hand_cards = [card for card in player_hand if isinstance(card, dict)]
-
-        or_project_cards = self._get_or_project_card_candidates(waiting_for)
-
-        if waiting_type in ['card', 'projectCard', 'selectCard', 'selectProjectCardToPlay'] and prompt_cards:
-            return prompt_cards
-        if or_project_cards:
-            return or_project_cards
+        if prompt_cards:
+            return self._dedupe_cards(prompt_cards + hand_cards)
         if waiting_type in ['initialCards', 'selectInitialCards']:
             startup_cards: List[Dict[str, Any]] = []
             for option in waiting_for.get('options', []) or []:
@@ -686,7 +730,7 @@ class StateEncoder:
                     if isinstance(card, dict):
                         startup_cards.append(card)
             if startup_cards:
-                return startup_cards
+                return self._dedupe_cards(startup_cards)
         return hand_cards
 
     def _get_or_project_card_candidates(self, waiting_for: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1127,7 +1171,8 @@ class StateEncoder:
 
         player = player_state.get('thisPlayer', {}) or {}
         tableau_cards = [card for card in (player.get('tableau', []) or []) if isinstance(card, dict)]
-        hand_candidates = self._get_candidate_hand_cards(player_state)
+        owned_hand_cards = self._get_owned_hand_cards(player_state)
+        prompt_hand_cards = self._get_prompt_hand_cards(player_state)
 
         players = player_state.get('players', []) or []
         own_id = str(player.get('id', '') or '')
@@ -1147,7 +1192,10 @@ class StateEncoder:
             )
         opponent_resource_totals = self._aggregate_opponent_resource_totals(players, own_id, own_color)
 
-        own_tag_profile = self._build_tag_profile_from_cards(tableau_cards)
+        own_tag_profile = self._merge_tag_profiles(
+            self._build_tag_profile_from_cards(tableau_cards),
+            self._build_tag_profile_from_cards(owned_hand_cards),
+        )
         opponent_tag_profile = self._build_tag_profile_from_cards(opponent_tableau_cards)
 
         selected_tableau = self._select_top_cards(
@@ -1161,16 +1209,50 @@ class StateEncoder:
             opponent_resource_totals=opponent_resource_totals,
         )
         remaining_slots = max(0, token_slots - len(selected_tableau))
-        selected_hand = self._select_top_cards(
-            hand_candidates,
-            min(self.hand_token_count, remaining_slots),
-            player,
-            player_state,
-            own_tag_profile,
-            opponent_tag_profile,
-            card_group='hand',
-            opponent_resource_totals=opponent_resource_totals,
-        )
+        hand_slot_cap = min(self.hand_token_count, remaining_slots)
+        selected_hand: List[Dict[str, Any]] = []
+        if hand_slot_cap > 0 and prompt_hand_cards:
+            selected_prompt = self._select_top_cards(
+                prompt_hand_cards,
+                hand_slot_cap,
+                player,
+                player_state,
+                own_tag_profile,
+                opponent_tag_profile,
+                card_group='hand',
+                opponent_resource_totals=opponent_resource_totals,
+            )
+            selected_hand.extend(selected_prompt)
+            prompt_keys = {self._card_dedupe_key(card) for card in selected_prompt}
+            supplemental_hand = [
+                card for card in owned_hand_cards
+                if self._card_dedupe_key(card) not in prompt_keys
+            ]
+            remaining_hand_slots = max(0, hand_slot_cap - len(selected_hand))
+            if remaining_hand_slots > 0:
+                selected_hand.extend(
+                    self._select_top_cards(
+                        supplemental_hand,
+                        remaining_hand_slots,
+                        player,
+                        player_state,
+                        own_tag_profile,
+                        opponent_tag_profile,
+                        card_group='hand',
+                        opponent_resource_totals=opponent_resource_totals,
+                    )
+                )
+        else:
+            selected_hand = self._select_top_cards(
+                owned_hand_cards,
+                hand_slot_cap,
+                player,
+                player_state,
+                own_tag_profile,
+                opponent_tag_profile,
+                card_group='hand',
+                opponent_resource_totals=opponent_resource_totals,
+            )
         remaining_slots = max(0, remaining_slots - len(selected_hand))
         selected_opponent = self._select_top_cards(
             opponent_tableau_cards,
@@ -1227,6 +1309,7 @@ class StateEncoder:
         own_id = str(player.get('id', '') or '')
         own_color = str(player.get('color', '') or '').strip().lower()
         tableau_cards = [card for card in (player.get('tableau', []) or []) if isinstance(card, dict)]
+        owned_hand_cards = self._get_owned_hand_cards(player_state)
         opponent_tableau_cards: List[Dict[str, Any]] = []
         for rival in players:
             if not isinstance(rival, dict):
@@ -1239,7 +1322,10 @@ class StateEncoder:
                 continue
             opponent_tableau_cards.extend([card for card in (rival.get('tableau', []) or []) if isinstance(card, dict)])
 
-        own_tag_profile = self._build_tag_profile_from_cards(tableau_cards)
+        own_tag_profile = self._merge_tag_profiles(
+            self._build_tag_profile_from_cards(tableau_cards),
+            self._build_tag_profile_from_cards(owned_hand_cards),
+        )
         opponent_tag_profile = self._build_tag_profile_from_cards(opponent_tableau_cards)
         opponent_resource_totals = self._aggregate_opponent_resource_totals(players, own_id, own_color)
 

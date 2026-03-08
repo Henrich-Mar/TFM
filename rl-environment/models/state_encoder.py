@@ -671,8 +671,12 @@ class StateEncoder:
             player_hand = (player_state.get('thisPlayer', {}) or {}).get('cardsInHand', [])
             hand_cards = [card for card in player_hand if isinstance(card, dict)]
 
+        or_project_cards = self._get_or_project_card_candidates(waiting_for)
+
         if waiting_type in ['card', 'projectCard', 'selectCard', 'selectProjectCardToPlay'] and prompt_cards:
             return prompt_cards
+        if or_project_cards:
+            return or_project_cards
         if waiting_type in ['initialCards', 'selectInitialCards']:
             startup_cards: List[Dict[str, Any]] = []
             for option in waiting_for.get('options', []) or []:
@@ -684,6 +688,31 @@ class StateEncoder:
             if startup_cards:
                 return startup_cards
         return hand_cards
+
+    def _get_or_project_card_candidates(self, waiting_for: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not isinstance(waiting_for, dict):
+            return []
+        if str(waiting_for.get('type', '') or '') != 'or':
+            return []
+
+        collected: List[Dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for option in waiting_for.get('options', []) or []:
+            if not isinstance(option, dict):
+                continue
+            option_type = str(option.get('type', '') or '')
+            if option_type not in ['projectCard', 'selectProjectCardToPlay']:
+                continue
+            for card in option.get('cards', []) or []:
+                if not isinstance(card, dict):
+                    continue
+                name = str(card.get('name', '') or '').strip()
+                dedupe_key = name or repr(sorted(card.items()))
+                if dedupe_key in seen_names:
+                    continue
+                seen_names.add(dedupe_key)
+                collected.append(card)
+        return collected
 
     def _estimate_affordability_for_card(
         self,
@@ -1183,11 +1212,14 @@ class StateEncoder:
     ) -> List[Dict[str, Any]]:
         waiting_for = player_state.get('waitingFor', {}) or {}
         waiting_type = str(waiting_for.get('type', '') or '')
-        if waiting_type not in ['card', 'projectCard', 'selectCard', 'selectProjectCardToPlay']:
+        if waiting_type not in ['card', 'projectCard', 'selectCard', 'selectProjectCardToPlay', 'or']:
             return []
 
         player = player_state.get('thisPlayer', {}) or {}
-        prompt_cards = [card for card in (waiting_for.get('cards', []) or []) if isinstance(card, dict)]
+        if waiting_type == 'or':
+            prompt_cards = self._get_or_project_card_candidates(waiting_for)
+        else:
+            prompt_cards = [card for card in (waiting_for.get('cards', []) or []) if isinstance(card, dict)]
         if not prompt_cards:
             return []
 

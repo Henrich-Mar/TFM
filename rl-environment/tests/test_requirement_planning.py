@@ -207,3 +207,32 @@ def test_prompt_card_ranking_prefers_satisfied_and_smaller_requirement_gaps(monk
     ranked = encoder.build_prompt_card_rankings(state)
     assert [row["name"] for row in ranked[:3]] == ["Ready Science", "Need Oceans", "Far Oceans"]
 
+
+def test_or_prompt_project_cards_feed_candidate_hand_cards_and_rankings(monkeypatch) -> None:
+    encoder = StateEncoder()
+    monkeypatch.setattr(encoder, "_estimate_affordability_for_card", lambda player, card, tags=None: 1.0)
+    state = _base_player_state()
+    state["waitingFor"] = {
+        "type": "or",
+        "options": [
+            {
+                "type": "card",
+                "title": "Perform an action from a played card",
+                "cards": [{"name": "Action Card", "type": "active"}],
+            },
+            {
+                "type": "projectCard",
+                "title": "Play project card",
+                "cards": [
+                    {"name": "Ready Science", "cost": 20, "tags": ["science"], "requirements": [{"tag": "science", "count": 3}]},
+                    {"name": "Need Oceans", "cost": 20, "tags": ["science"], "requirements": [{"oceans": 3, "count": 3}]},
+                ],
+            },
+        ],
+    }
+
+    candidates = encoder._get_candidate_hand_cards(state)
+    assert [card["name"] for card in candidates] == ["Ready Science", "Need Oceans"]
+
+    ranked = encoder.build_prompt_card_rankings(state)
+    assert [row["name"] for row in ranked[:2]] == ["Ready Science", "Need Oceans"]

@@ -9,3 +9,8 @@ __pycache__
 ./venv/
 rl-environment/rl-models/.*
 rl-environment/rl-models-global/locks/ppo_gpu.lock
+rl-environment/rl-logs/rl-coordinator.log.1
+rl-environment/rl-logs/rl-coordinator.log.2
+rl-environment/rl-logs/rl-coordinator.log.3
+rl-environment/rl-logs/rl-coordinator.log.4
+rl-environment/rl-logs/rl-coordinator.log.5

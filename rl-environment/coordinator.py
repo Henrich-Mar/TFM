@@ -528,10 +528,11 @@ class RLCoordinator:
                     )
 
                 # Evolve population for the next generation
+                gate_results = dict((self.last_generation_gate or {}).get("per_agent", {}) or {})
                 self.population = await self.evolution_manager.evolve_population(
                     self.population,
                     fitness_scores,
-                    gate_results=per_agent_gate,
+                    gate_results=gate_results,
                 )
 
                 next_generation = generation + 1

@@ -102,6 +102,43 @@ class TestAgentPollingAndFallback(unittest.TestCase):
         self.assertEqual(str(game.sent_actions[0].get("type", "")), "policyAction")
         self.assertEqual(int(game.sent_actions[1].get("index", -1)), 5)
 
+    def test_compute_aux_targets_uses_or_project_card_options(self):
+        with patch(
+            "models.agent.require_backend_info",
+            return_value={"module": "rust_tfm_rl", "api_version": "1.0", "crate_version": "test"},
+        ):
+            agent = RLAgent(AgentConfig())
+
+        player_state = {
+            "thisPlayer": {
+                "color": "red",
+                "megaCredits": 21,
+                "steel": 3,
+                "titanium": 9,
+                "steelProduction": 1,
+                "titaniumProduction": 2,
+                "steelValue": 2,
+                "titaniumValue": 3,
+            },
+            "game": {"milestones": [], "awards": []},
+            "waitingFor": {
+                "type": "or",
+                "options": [
+                    {
+                        "type": "projectCard",
+                        "title": "Play project card",
+                        "cards": [
+                            {"name": "Venus Governor", "cost": 4, "tags": ["earth"]},
+                            {"name": "Food Factory", "cost": 12, "tags": ["building"]},
+                        ],
+                    }
+                ],
+            },
+        }
+
+        targets = agent._compute_aux_targets(player_state)
+        self.assertAlmostEqual(targets["playable_cards"], 0.2, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

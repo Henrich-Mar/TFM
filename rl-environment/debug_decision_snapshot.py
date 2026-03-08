@@ -411,6 +411,49 @@ def _summarize_prompt_candidates(waiting_for: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _or_project_card_candidates(waiting_for: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not isinstance(waiting_for, dict):
+        return []
+    if str(waiting_for.get("type", "") or "") != "or":
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for option in waiting_for.get("options", []) or []:
+        if not isinstance(option, dict):
+            continue
+        option_type = str(option.get("type", "") or "")
+        if option_type not in ["projectCard", "selectProjectCardToPlay"]:
+            continue
+        for card in option.get("cards", []) or []:
+            if not isinstance(card, dict):
+                continue
+            name = str(card.get("name", "") or "").strip()
+            dedupe_key = name or repr(sorted(card.items()))
+            if dedupe_key in seen_names:
+                continue
+            seen_names.add(dedupe_key)
+            candidates.append(card)
+    return candidates
+
+
+def _snapshot_hand_cards(this_player: Dict[str, Any], waiting_for: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_hand_cards = (this_player.get("cardsInHand", []) or []) if isinstance(this_player, dict) else []
+    hand_cards = [card for card in raw_hand_cards if isinstance(card, dict)]
+    if hand_cards:
+        return [_card_summary(card) for card in hand_cards]
+
+    prompt_cards = [card for card in (waiting_for.get("cards", []) or []) if isinstance(card, dict)]
+    if prompt_cards:
+        return [_card_summary(card) for card in prompt_cards]
+
+    or_project_cards = _or_project_card_candidates(waiting_for)
+    if or_project_cards:
+        return [_card_summary(card) for card in or_project_cards]
+
+    return []
+
+
 def _attach_requirement_rankings(cards: List[Dict[str, Any]], rankings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not cards or not rankings:
         return cards
@@ -472,7 +515,7 @@ def build_decision_snapshot(
         prompt_candidates["cards"] = _attach_requirement_rankings(list(prompt_candidates.get("cards", []) or []), prompt_card_rankings)
     aux_predictions = list(action_meta.get("aux_predictions", []) or [])
     aux_targets = dict(action_meta.get("aux_targets", {}) or {})
-    hand_cards = [_card_summary(card) for card in (this_player.get("cardsInHand", waiting_for.get("cards", [])) or [])]
+    hand_cards = _snapshot_hand_cards(this_player, waiting_for)
     if prompt_card_rankings:
         hand_cards = _attach_requirement_rankings(hand_cards, prompt_card_rankings)
 

@@ -260,6 +260,53 @@ def test_snapshot_save_normalizes_numpy_payloads(monkeypatch, tmp_path: Path) ->
     assert loaded["policy"]["top_actions"][0]["weights"] == pytest.approx([0.6, 0.3, 0.1])
 
 
+def test_snapshot_uses_or_project_card_options_as_hand_when_cards_in_hand_are_empty(tmp_path: Path) -> None:
+    reset_capture_state()
+    request = create_capture_request(note="or-project-cards")
+    player_state = _make_player_state(
+        "or",
+        {
+            "options": [
+                {
+                    "type": "card",
+                    "title": {"message": "Perform an action from a played card"},
+                    "cards": [{"name": "Electro Catapult"}],
+                },
+                {
+                    "type": "projectCard",
+                    "title": {"message": "Play project card"},
+                    "cards": [
+                        {"name": "Venus Governor", "cost": 4},
+                        {"name": "Food Factory", "cost": 12},
+                    ],
+                },
+            ]
+        },
+    )
+    player_state["thisPlayer"]["cardsInHand"] = []
+
+    action_meta = _base_action_meta()
+    action_meta["prompt_card_rankings"] = []
+
+    snapshot = build_decision_snapshot(
+        request=request,
+        agent_id="agent-or",
+        game_id="game-or",
+        game_url="http://localhost:8081/game?id=game-or",
+        player_id="player-red",
+        player_state=player_state,
+        action_input={"type": "or", "index": 1},
+        action_index=9,
+        action_meta=action_meta,
+        sampled_from_policy=True,
+        send_outcome="accepted",
+        turn_action_count=0,
+    )
+
+    assert [card["name"] for card in snapshot["state"]["hand"]] == ["Venus Governor", "Food Factory"]
+    assert snapshot["state"]["prompt_candidates"]["options"][1]["title"] == "Play project card"
+
+
 def test_policy_ranking_contains_chosen_action_and_matching_labels() -> None:
     torch = pytest.importorskip("torch")
     from models.agent import RLAgent  # noqa: E402

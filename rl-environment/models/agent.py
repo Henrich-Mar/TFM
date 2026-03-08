@@ -248,12 +248,7 @@ class InferenceBatcher:
         self, batch: list, device: torch.device,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
         with self._agent._model_device_lock:
-            try:
-                actual_net_device = next(self._agent.network.parameters()).device
-            except StopIteration:
-                actual_net_device = device
-            if actual_net_device != device:
-                device = actual_net_device
+            device = self._agent._ensure_network_device_consistency(device)
 
             states = torch.tensor(
                 np.stack([r[0] for r in batch]),
@@ -1077,6 +1072,64 @@ class RLAgent:
                 self._inference_device = torch.device("cpu")
                 _move_network_and_optimizer_to(self.network, self.optimizer, self._inference_device)
 
+    def _get_network_devices(self) -> List[torch.device]:
+        devices: List[torch.device] = []
+        seen: set[str] = set()
+        for tensor in list(self.network.parameters()) + list(self.network.buffers()):
+            device = tensor.device
+            key = str(device)
+            if key in seen:
+                continue
+            seen.add(key)
+            devices.append(device)
+        return devices
+
+    def _ensure_network_device_consistency(
+        self,
+        preferred_device: Optional[torch.device] = None,
+    ) -> torch.device:
+        """Repair mixed or stale model-device placement before inference."""
+        target = preferred_device or self._inference_device
+        devices = self._get_network_devices()
+        if not devices:
+            return target
+        if len(devices) == 1 and devices[0] == target:
+            return target
+
+        device_list = ", ".join(str(device) for device in devices)
+        if len(devices) == 1:
+            logger.warning(
+                "Network device drift for agent %s: model=%s inference=%s. Re-syncing.",
+                self.id[:8],
+                devices[0],
+                target,
+            )
+        else:
+            logger.warning(
+                "Mixed network devices for agent %s: %s. Re-syncing to %s.",
+                self.id[:8],
+                device_list,
+                target,
+            )
+
+        try:
+            _move_network_and_optimizer_to(self.network, self.optimizer, target)
+            self._inference_device = target
+            return target
+        except Exception as exc:
+            if target.type == "cpu":
+                raise
+            cpu = torch.device("cpu")
+            logger.warning(
+                "Failed to re-sync network to %s for agent %s (%s); falling back to CPU.",
+                target,
+                self.id[:8],
+                exc,
+            )
+            _move_network_and_optimizer_to(self.network, self.optimizer, cpu)
+            self._inference_device = cpu
+            return cpu
+
     def _try_reclaim_cuda(self) -> None:
         """If currently on CPU after an OOM fallback, attempt to move back to CUDA."""
         with self._model_device_lock:
@@ -1325,13 +1378,7 @@ class RLAgent:
             award_points += self._project_award_points_for_color(scores, own_color)
         targets["award_ev"] = float(max(0.0, min(award_points / 15.0, 1.0)))
 
-        waiting_for = player_state.get("waitingFor", {}) or {}
-        prompt_cards = waiting_for.get("cards", []) if isinstance(waiting_for, dict) else []
-        hand_cards = player_state.get("cardsInHand", []) or []
-        if isinstance(prompt_cards, list) and prompt_cards:
-            cards_source = [c for c in prompt_cards if isinstance(c, dict)]
-        else:
-            cards_source = [c for c in hand_cards if isinstance(c, dict)]
+        cards_source = list(self.state_encoder._get_candidate_hand_cards(player_state) or [])
 
         mc = float(player.get("megaCredits", 0) or 0)
         steel = float(player.get("steel", 0) or 0)
@@ -2909,12 +2956,7 @@ class RLAgent:
         device: torch.device,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
         with self._model_device_lock:
-            try:
-                actual_net_device = next(self.network.parameters()).device
-            except StopIteration:
-                actual_net_device = device
-            if actual_net_device != device:
-                device = actual_net_device
+            device = self._ensure_network_device_consistency(device)
 
             state_tensor = torch.tensor(
                 state_vector, dtype=torch.float32, device=device,

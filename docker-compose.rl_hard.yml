@@ -174,7 +174,7 @@ services:
       - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4
       - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084
       - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080
-      - POPULATION_SIZE=4
+      - POPULATION_SIZE=8
       - TOURNAMENT_SIZE=4
       - GENERATIONS=5000
       - GAMES_PER_EVAL=6
@@ -204,11 +204,11 @@ services:
       - RL_MODELS_DIR=/app/rl-models
       - RL_CHECKPOINT_DIR=/app/rl-models/checkpoints
       - TM_CARD_METADATA_PATH=/app/card_metadata.json
-      - BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models/start/agent_0_fitness_187.19.pth
-      - BOOTSTRAP_POPULATION_MODE=mutated_copies
-      - BOOTSTRAP_MUTATION_RATE=0.08
-      - TRAINING_START_GENERATION=0
-      - BOOTSTRAP_IF_NO_CHECKPOINT=1
+      # BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models/start/agent_0_fitness_187.19.pth
+      # BOOTSTRAP_POPULATION_MODE=mutated_copies
+      # BOOTSTRAP_MUTATION_RATE=0.08
+      # TRAINING_START_GENERATION=0
+      # BOOTSTRAP_IF_NO_CHECKPOINT=1
       
       # Agent Architecture (Resource-pattern upgrade)
       - AGENT_HIDDEN_SIZE=1024
@@ -289,7 +289,7 @@ services:
       # League - momentalne vypnuto aby sme najpr generizovali
       - LEAGUE_ENABLE=true
       - TRAINING_POOL_GENERATION_WINDOW=10
-      - TRAINING_POOL_GAMES_PER_AGENT=0
+      - TRAINING_POOL_GAMES_PER_AGENT=1
       - FIXED_BENCHMARK_INTERVAL=3
       
       # System

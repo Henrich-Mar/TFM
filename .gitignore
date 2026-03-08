@@ -8,3 +8,4 @@ __pycache__
 *venv*
 ./venv/
 rl-environment/rl-models/.*
+rl-environment/rl-models-global/locks/ppo_gpu.lock

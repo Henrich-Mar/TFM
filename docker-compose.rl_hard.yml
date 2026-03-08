@@ -13,7 +13,7 @@ services:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
       - SERVER_ID=tfm-server-1
-      - NODE_OPTIONS=--max-old-space-size=896
+      - NODE_OPTIONS=--max-old-space-size=640
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     labels:
@@ -26,7 +26,7 @@ services:
       timeout: 8s
       retries: 3
       start_period: 45s
-    mem_limit: 1300m
+    mem_limit: 1000m
     restart: unless-stopped
 
   tfm-server-2:
@@ -39,7 +39,7 @@ services:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
       - SERVER_ID=tfm-server-2
-      - NODE_OPTIONS=--max-old-space-size=896
+      - NODE_OPTIONS=--max-old-space-size=640
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     labels:
@@ -52,7 +52,7 @@ services:
       timeout: 8s
       retries: 3
       start_period: 45s
-    mem_limit: 1300m
+    mem_limit: 1000m
     restart: unless-stopped
 
   tfm-server-3:
@@ -65,7 +65,7 @@ services:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
       - SERVER_ID=tfm-server-3
-      - NODE_OPTIONS=--max-old-space-size=896
+      - NODE_OPTIONS=--max-old-space-size=640
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     labels:
@@ -78,7 +78,7 @@ services:
       timeout: 8s
       retries: 3
       start_period: 45s
-    mem_limit: 1300m
+    mem_limit: 1000m
     restart: unless-stopped
     
   tfm-server-4:
@@ -91,7 +91,7 @@ services:
       - NODE_ENV=production
       - COMPRESS_COMPLETED_GAMES_DAYS=0
       - SERVER_ID=tfm-server-4
-      - NODE_OPTIONS=--max-old-space-size=896
+      - NODE_OPTIONS=--max-old-space-size=640
     tmpfs:
       - /usr/src/app/db:uid=100,gid=65533,mode=0775
     labels:
@@ -104,61 +104,9 @@ services:
       timeout: 8s
       retries: 3
       start_period: 45s
-    mem_limit: 1300m
+    mem_limit: 1000m
     restart: unless-stopped
     
-  tfm-server-5:
-    build:
-      context: ./terraforming-mars
-      dockerfile: ../Dockerfile.rl
-    ports:
-      - "8085:8080"
-    environment:
-      - NODE_ENV=production
-      - COMPRESS_COMPLETED_GAMES_DAYS=0
-      - SERVER_ID=tfm-server-5
-      - NODE_OPTIONS=--max-old-space-size=896
-    tmpfs:
-      - /usr/src/app/db:uid=100,gid=65533,mode=0775
-    labels:
-      - autoheal=true
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-      interval: 15s
-      timeout: 8s
-      retries: 3
-      start_period: 45s
-    mem_limit: 1300m
-    restart: unless-stopped
-    
-  tfm-server-6:
-    build:
-      context: ./terraforming-mars
-      dockerfile: ../Dockerfile.rl
-    ports:
-      - "8086:8080"
-    environment:
-      - NODE_ENV=production
-      - COMPRESS_COMPLETED_GAMES_DAYS=0
-      - SERVER_ID=tfm-server-6
-      - NODE_OPTIONS=--max-old-space-size=896
-    tmpfs:
-      - /usr/src/app/db:uid=100,gid=65533,mode=0775
-    labels:
-      - autoheal=true
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-      interval: 15s
-      timeout: 8s
-      retries: 3
-      start_period: 45s
-    mem_limit: 1300m
-    restart: unless-stopped
-
   # Automatically restart unhealthy tfm-server containers
   autoheal:
     image: willfarrell/autoheal:1.2.0
@@ -175,8 +123,6 @@ services:
       - tfm-server-2
       - tfm-server-3
       - tfm-server-4
-      - tfm-server-5
-      - tfm-server-6
 
   # Redis for job queue and caching
   redis:
@@ -223,19 +169,20 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - POSTGRES_URL=postgresql://tfm:tfm_password@postgres:5432/tfm_rl
       # 6 game servers (down from 8 — more memory per server)
-      - GAME_SERVERS=tfm-server-1:8080,tfm-server-2:8080,tfm-server-3:8080,tfm-server-4:8080,tfm-server-5:8080,tfm-server-6:8080
-      - PUBLIC_TM_MAP=tfm-server-1:8080=http://localhost:8081,tfm-server-2:8080=http://localhost:8082,tfm-server-3:8080=http://localhost:8083,tfm-server-4:8080=http://localhost:8084,tfm-server-5:8080=http://localhost:8085,tfm-server-6:8080=http://localhost:8086
-      - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4,tfm-server-5:8080=tfm-server-5,tfm-server-6:8080=tfm-server-6
-      - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084,http://localhost:8085,http://localhost:8086
-      - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080,http://tfm-server-5:8080,http://tfm-server-6:8080
-      - POPULATION_SIZE=16
+      - GAME_SERVERS=tfm-server-1:8080,tfm-server-2:8080,tfm-server-3:8080,tfm-server-4:8080
+      - PUBLIC_TM_MAP=tfm-server-1:8080=http://localhost:8081,tfm-server-2:8080=http://localhost:8082,tfm-server-3:8080=http://localhost:8083,tfm-server-4:8080=http://localhost:8084
+      - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4
+      - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084
+      - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080
+      - POPULATION_SIZE=4
+      - TOURNAMENT_SIZE=4
       - GENERATIONS=5000
       - GAMES_PER_EVAL=6
       # Concurrency: 6 servers × 3 games/server = 18 max capacity
       # GLOBAL_GAME_CONCURRENCY=18 uses full capacity; set to 18 for headroom
-      - TOURNAMENT_CONCURRENCY=4
-      - GLOBAL_GAME_CONCURRENCY=20
-      - MAX_ACTIVE_GAMES_PER_SERVER=3
+      - TOURNAMENT_CONCURRENCY=6
+      - GLOBAL_GAME_CONCURRENCY=6
+      - MAX_ACTIVE_GAMES_PER_SERVER=2
       # Timeouts & transport
       - TM_GAME_TIMEOUT_SEC=420
       - TM_HTTP_CONNECTOR_LIMIT=160
@@ -257,6 +204,11 @@ services:
       - RL_MODELS_DIR=/app/rl-models
       - RL_CHECKPOINT_DIR=/app/rl-models/checkpoints
       - TM_CARD_METADATA_PATH=/app/card_metadata.json
+      - BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models/start/agent_0_fitness_187.19.pth
+      - BOOTSTRAP_POPULATION_MODE=mutated_copies
+      - BOOTSTRAP_MUTATION_RATE=0.08
+      - TRAINING_START_GENERATION=0
+      - BOOTSTRAP_IF_NO_CHECKPOINT=1
       
       # Agent Architecture (Resource-pattern upgrade)
       - AGENT_HIDDEN_SIZE=1024
@@ -358,8 +310,6 @@ services:
       - tfm-server-2
       - tfm-server-3
       - tfm-server-4
-      - tfm-server-5
-      - tfm-server-6
       - redis
       - postgres
       

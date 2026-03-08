@@ -178,6 +178,9 @@ class RLCoordinator:
             or "mutated_copies"
         )
         self.bootstrap_mutation_rate = max(0.0, self._safe_env_float("BOOTSTRAP_MUTATION_RATE", 0.08))
+        self.bootstrap_if_no_checkpoint = str(
+            os.getenv("BOOTSTRAP_IF_NO_CHECKPOINT", "0") or ""
+        ).strip().lower() not in ("0", "false", "no", "off", "")
         self.training_start_generation_override = self._optional_env_int("TRAINING_START_GENERATION")
         if self.training_start_generation_override is None:
             self.training_start_generation_override = self._optional_env_int("BOOTSTRAP_START_GENERATION")
@@ -369,12 +372,33 @@ class RLCoordinator:
         await self.game_cluster.health_check()
 
         resumed = False
-        if self.bootstrap_checkpoint_path:
-            resumed = await self._load_population_from_bootstrap_checkpoint()
-        if not resumed and self.resume_training_enabled:
+        start_mode = "fresh"
+        resume_attempted = False
+        if (
+            self.bootstrap_checkpoint_path
+            and self.bootstrap_if_no_checkpoint
+            and self.resume_training_enabled
+        ):
+            resume_attempted = True
             resumed = self._load_training_checkpoint()
             if not resumed:
                 resumed = self._load_population_from_latest_saved_generation()
+            if resumed:
+                start_mode = "resume"
+            else:
+                resumed = await self._load_population_from_bootstrap_checkpoint()
+                if resumed:
+                    start_mode = "bootstrap"
+        elif self.bootstrap_checkpoint_path:
+            resumed = await self._load_population_from_bootstrap_checkpoint()
+            if resumed:
+                start_mode = "bootstrap"
+        if not resumed and self.resume_training_enabled and not resume_attempted:
+            resumed = self._load_training_checkpoint()
+            if not resumed:
+                resumed = self._load_population_from_latest_saved_generation()
+            if resumed:
+                start_mode = "resume"
 
         if resumed:
             if len(self.population) > self.config.population_size:
@@ -397,7 +421,7 @@ class RLCoordinator:
             )
             logger.info(
                 "%s at generation %d with %d agents",
-                "Bootstrapped training" if self.bootstrap_checkpoint_path else "Resumed training",
+                "Bootstrapped training" if start_mode == "bootstrap" else "Resumed training",
                 self.current_generation,
                 len(self.population),
             )

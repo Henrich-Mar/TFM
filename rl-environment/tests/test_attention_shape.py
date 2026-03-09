@@ -6,6 +6,12 @@ import pytest
 import torch
 
 
+class _FakeRustModule:
+    @staticmethod
+    def encode_state(_payload: str, _turn_action_count: int, state_size: int):
+        return [0.0] * int(state_size)
+
+
 def _install_aiohttp_stub() -> None:
     if "aiohttp" in sys.modules:
         return
@@ -154,3 +160,98 @@ def test_state_encoder_rejects_token_layout_larger_than_state() -> None:
             hand_token_count=64,
             opponent_token_count=6,
         )
+
+
+def test_space_prompt_features_prefer_greenery_near_own_city(monkeypatch: pytest.MonkeyPatch) -> None:
+    if "rl-environment" not in sys.path:
+        sys.path.append("rl-environment")
+    import models.state_encoder as state_encoder_module
+
+    monkeypatch.setattr(state_encoder_module, "get_rust_module", lambda required=True: _FakeRustModule())
+    encoder = state_encoder_module.StateEncoder(
+        state_size=512,
+        card_token_dim=8,
+        tableau_token_count=0,
+        hand_token_count=0,
+        opponent_token_count=0,
+    )
+
+    player_state = {
+        "thisPlayer": {"id": "p1", "color": "red"},
+        "game": {
+            "spaces": [
+                {"id": "ocean-a", "x": 0, "y": 0, "spaceType": "ocean", "tileType": 1},
+                {"id": "own-city", "x": 1, "y": 1, "spaceType": "land", "tileType": 2, "color": "red"},
+                {"id": "enemy-city", "x": 3, "y": 1, "spaceType": "land", "tileType": 2, "color": "blue"},
+                {"id": "good-greenery", "x": 1, "y": 0, "spaceType": "land"},
+                {"id": "bad-greenery", "x": 3, "y": 0, "spaceType": "land"},
+            ],
+        },
+        "waitingFor": {
+            "type": "space",
+            "title": "Select space for greenery tile",
+            "availableSpaces": [
+                {"id": "good-greenery", "x": 1, "y": 0, "spaceType": "land"},
+                {"id": "bad-greenery", "x": 3, "y": 0, "spaceType": "land"},
+            ],
+        },
+    }
+
+    encoded = encoder.encode(player_state)
+    start, slot_count, summary_start, _ = encoder._space_feature_layout()
+    totals = encoded[start:start + slot_count]
+    self_scores = encoded[start + slot_count:start + (2 * slot_count)]
+    risk_scores = encoded[start + (3 * slot_count):start + (4 * slot_count)]
+    summary = encoded[summary_start:summary_start + encoder._SPACE_SUMMARY_FEATURE_COUNT]
+
+    assert self_scores[0] > self_scores[1]
+    assert risk_scores[1] > risk_scores[0]
+    assert totals[0] > totals[1]
+    assert summary[0] == pytest.approx(1.0)
+    assert summary[2] == pytest.approx(1.0)
+
+
+def test_space_prompt_features_prefer_city_with_existing_greenery_cluster(monkeypatch: pytest.MonkeyPatch) -> None:
+    if "rl-environment" not in sys.path:
+        sys.path.append("rl-environment")
+    import models.state_encoder as state_encoder_module
+
+    monkeypatch.setattr(state_encoder_module, "get_rust_module", lambda required=True: _FakeRustModule())
+    encoder = state_encoder_module.StateEncoder(
+        state_size=512,
+        card_token_dim=8,
+        tableau_token_count=0,
+        hand_token_count=0,
+        opponent_token_count=0,
+    )
+
+    player_state = {
+        "thisPlayer": {"id": "p1", "color": "red"},
+        "game": {
+            "spaces": [
+                {"id": "green-a", "x": 0, "y": 0, "spaceType": "land", "tileType": 0, "color": "red"},
+                {"id": "green-b", "x": 1, "y": 1, "spaceType": "land", "tileType": 0, "color": "blue"},
+                {"id": "premium-city", "x": 1, "y": 0, "spaceType": "land", "bonus": ["2 plants"]},
+                {"id": "empty-city", "x": 4, "y": 0, "spaceType": "land"},
+            ],
+        },
+        "waitingFor": {
+            "type": "space",
+            "title": "Select space for city tile",
+            "availableSpaces": [
+                {"id": "premium-city", "x": 1, "y": 0, "spaceType": "land", "bonus": ["2 plants"]},
+                {"id": "empty-city", "x": 4, "y": 0, "spaceType": "land"},
+            ],
+        },
+    }
+
+    encoded = encoder.encode(player_state)
+    start, slot_count, summary_start, _ = encoder._space_feature_layout()
+    totals = encoded[start:start + slot_count]
+    self_scores = encoded[start + slot_count:start + (2 * slot_count)]
+    summary = encoded[summary_start:summary_start + encoder._SPACE_SUMMARY_FEATURE_COUNT]
+
+    assert self_scores[0] > self_scores[1]
+    assert totals[0] > totals[1]
+    assert summary[0] == pytest.approx(1.0)
+    assert summary[1] == pytest.approx(1.0)

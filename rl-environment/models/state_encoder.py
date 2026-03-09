@@ -60,6 +60,10 @@ class StateEncoder:
     _DEFAULT_TABLEAU_TOKEN_COUNT = 8
     _DEFAULT_HAND_TOKEN_COUNT = 64
     _DEFAULT_OPPONENT_TOKEN_COUNT = 6
+    _SPACE_FEATURE_BASE = 64
+    _SPACE_CANDIDATE_SLOT_COUNT = 80
+    _SPACE_FEATURE_PLANES = 4
+    _SPACE_SUMMARY_FEATURE_COUNT = 16
 
     def __init__(
         self,
@@ -123,6 +127,366 @@ class StateEncoder:
                 is_ocean = True
 
         return is_city, is_greenery, is_ocean
+
+    def _space_id(self, space: Dict[str, Any]) -> str:
+        return str(space.get('id', space.get('spaceId', '')) or '').strip()
+
+    def _space_owner_color(self, space: Dict[str, Any]) -> str:
+        return str(
+            space.get('color', space.get('playerColor', space.get('owner', ''))) or ''
+        ).strip().lower()
+
+    def _infer_space_prompt_intent(self, waiting_for: Dict[str, Any]) -> str:
+        title_raw = waiting_for.get('title', '')
+        if isinstance(title_raw, dict):
+            title_raw = title_raw.get('message', '')
+        title = str(title_raw or '').lower()
+        button = str(waiting_for.get('buttonLabel', '') or '').lower()
+        context = f"{title} {button}".strip()
+
+        if 'greenery' in context:
+            return 'greenery'
+        if 'ocean' in context or 'aquifer' in context:
+            return 'ocean'
+        if 'for city tile' in context or 'place a city tile' in context or 'place city tile' in context:
+            return 'city'
+        if 'select space for city tile' in context:
+            return 'city'
+        if 'special tile' in context or 'hazard tile' in context:
+            return 'special'
+        if ' for ' in context and ' tile' in context:
+            return 'special'
+        if 'adjacent to a city tile' in context or 'adjacent to city tile' in context:
+            return 'special'
+        return 'unknown'
+
+    def _all_board_spaces(self, game_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        spaces: List[Dict[str, Any]] = []
+        for space in (game_state.get('spaces', []) or []):
+            if isinstance(space, dict):
+                spaces.append(space)
+        moon = game_state.get('moon', {}) or {}
+        for space in (moon.get('spaces', []) or []):
+            if isinstance(space, dict):
+                spaces.append(space)
+        return spaces
+
+    def _neighbor_coordinates(self, coords: Tuple[int, int], middle_row: float) -> List[Tuple[int, int]]:
+        x, y = coords
+        left_space = (x - 1, y)
+        right_space = (x + 1, y)
+        top_left_space = [x, y - 1]
+        top_right_space = [x, y - 1]
+        bottom_left_space = [x, y + 1]
+        bottom_right_space = [x, y + 1]
+
+        if y < middle_row:
+            bottom_left_space[0] -= 1
+            top_right_space[0] += 1
+        elif y == middle_row:
+            bottom_right_space[0] += 1
+            top_right_space[0] += 1
+        else:
+            bottom_right_space[0] += 1
+            top_left_space[0] -= 1
+
+        return [
+            tuple(top_left_space),
+            tuple(top_right_space),
+            right_space,
+            tuple(bottom_right_space),
+            tuple(bottom_left_space),
+            left_space,
+        ]
+
+    def _neighbor_ids_from_coordinates(
+        self,
+        coords: Tuple[int, int],
+        coord_to_id: Dict[Tuple[int, int], str],
+        middle_row: float,
+        self_id: str = '',
+    ) -> List[str]:
+        neighbors: List[str] = []
+        for neighbor_coords in self._neighbor_coordinates(coords, middle_row):
+            neighbor_id = coord_to_id.get(neighbor_coords)
+            if neighbor_id and neighbor_id != self_id:
+                neighbors.append(neighbor_id)
+        return neighbors
+
+    def _build_board_adjacency_index(self, spaces: List[Dict[str, Any]]) -> Tuple[Dict[str, set], Dict[Tuple[int, int], str], float]:
+        coord_to_id: Dict[Tuple[int, int], str] = {}
+        parsed_spaces: List[Tuple[str, int, int]] = []
+        max_y = 0
+
+        for space in spaces:
+            if not isinstance(space, dict):
+                continue
+            sid = self._space_id(space)
+            if not sid:
+                continue
+            if self._space_type_lower(space.get('spaceType')) == 'colony':
+                continue
+            x = self._safe_int(space.get('x'))
+            y = self._safe_int(space.get('y'))
+            if x is None or y is None or x < 0 or y < 0:
+                continue
+            coord_to_id[(x, y)] = sid
+            parsed_spaces.append((sid, x, y))
+            if y > max_y:
+                max_y = y
+
+        if not parsed_spaces:
+            return {}, coord_to_id, 0.0
+
+        middle_row = max_y / 2.0
+        adjacency: Dict[str, set] = {}
+        for sid, x, y in parsed_spaces:
+            adjacency[sid] = set(self._neighbor_ids_from_coordinates((x, y), coord_to_id, middle_row, sid))
+        return adjacency, coord_to_id, middle_row
+
+    def _estimate_space_bonus_value(self, space: Dict[str, Any]) -> float:
+        total = 0.0
+        for item in (space.get('bonus', []) or []):
+            label = ''
+            if isinstance(item, dict):
+                label = str(item.get('type', item.get('name', item.get('bonus', item.get('resource', '')))) or '')
+            else:
+                label = str(item or '')
+            token = label.strip().lower().replace('_', ' ')
+            amount = 1.0
+            for part in token.split():
+                try:
+                    amount = float(part)
+                    break
+                except Exception:
+                    continue
+            if 'card' in token:
+                total += 1.8 * amount
+            elif 'titanium' in token:
+                total += 1.6 * amount
+            elif 'steel' in token:
+                total += 1.3 * amount
+            elif 'plant' in token:
+                total += 1.1 * amount
+            elif 'heat' in token or 'energy' in token:
+                total += 0.8 * amount
+            elif 'megacredit' in token or token == 'mc':
+                total += 0.6 * amount
+            else:
+                total += 0.9 * amount
+        return min(total, 6.0)
+
+    def _space_feature_layout(self) -> Tuple[int, int, int, int]:
+        start = max(0, min(int(self._SPACE_FEATURE_BASE), int(self.state_size)))
+        prefix_limit = int(self.state_size)
+        card_start, _ = self._card_token_segment_bounds()
+        if card_start > 0:
+            prefix_limit = min(prefix_limit, int(card_start))
+        if prefix_limit <= start:
+            return start, 0, start, start
+
+        usable = max(0, prefix_limit - start)
+        if usable < self._SPACE_SUMMARY_FEATURE_COUNT:
+            return start, 0, start, start
+
+        slot_count = min(
+            int(self._SPACE_CANDIDATE_SLOT_COUNT),
+            max(0, (usable - int(self._SPACE_SUMMARY_FEATURE_COUNT)) // int(self._SPACE_FEATURE_PLANES)),
+        )
+        if slot_count <= 0:
+            return start, 0, start, start
+
+        summary_start = start + (slot_count * int(self._SPACE_FEATURE_PLANES))
+        end = min(prefix_limit, summary_start + int(self._SPACE_SUMMARY_FEATURE_COUNT))
+        return start, slot_count, summary_start, end
+
+    def _space_prompt_candidate_scores(
+        self,
+        candidate: Dict[str, Any],
+        board_by_id: Dict[str, Dict[str, Any]],
+        adjacency: Dict[str, set],
+        coord_to_id: Dict[Tuple[int, int], str],
+        middle_row: float,
+        own_color: str,
+        intent: str,
+    ) -> Tuple[float, float, float, float]:
+        sid = self._space_id(candidate)
+        neighbor_ids = list(adjacency.get(sid, set()))
+        if not neighbor_ids:
+            neighbor_ids = self._neighbor_ids_from_coordinates(
+                self._get_space_coordinates(candidate),
+                coord_to_id,
+                middle_row,
+                sid,
+            )
+
+        own_city_adj = 0
+        enemy_city_adj = 0
+        own_greenery_adj = 0
+        enemy_greenery_adj = 0
+        ocean_adj = 0
+        empty_land_adj = 0
+
+        for neighbor_id in neighbor_ids:
+            neighbor = board_by_id.get(neighbor_id)
+            if not isinstance(neighbor, dict):
+                continue
+            is_city, is_greenery, is_ocean = self._tile_flags(neighbor)
+            owner = self._space_owner_color(neighbor)
+            if is_city:
+                if owner and owner == own_color:
+                    own_city_adj += 1
+                elif owner:
+                    enemy_city_adj += 1
+            if is_greenery:
+                if owner and owner == own_color:
+                    own_greenery_adj += 1
+                elif owner:
+                    enemy_greenery_adj += 1
+            if is_ocean:
+                ocean_adj += 1
+            if neighbor.get('tileType') is None and self._space_type_lower(neighbor.get('spaceType')) in ('land', 'restricted', 'ocean'):
+                empty_land_adj += 1
+
+        all_greenery_adj = own_greenery_adj + enemy_greenery_adj
+        bonus_norm = min(self._estimate_space_bonus_value(candidate) / 6.0, 1.0)
+        own_city_norm = min(own_city_adj / 3.0, 1.0)
+        enemy_city_norm = min(enemy_city_adj / 3.0, 1.0)
+        own_greenery_norm = min(own_greenery_adj / 4.0, 1.0)
+        enemy_greenery_norm = min(enemy_greenery_adj / 4.0, 1.0)
+        all_greenery_norm = min(all_greenery_adj / 6.0, 1.0)
+        ocean_norm = min(ocean_adj / 3.0, 1.0)
+        empty_norm = min(empty_land_adj / 6.0, 1.0)
+
+        if intent == 'city':
+            self_score = min(1.0, (0.55 * all_greenery_norm) + (0.25 * empty_norm) + (0.15 * ocean_norm) + (0.20 * bonus_norm))
+            deny_score = enemy_city_norm
+            risk_score = own_city_norm
+            total_score = max(0.0, min(1.0, self_score + (0.45 * deny_score) - (0.25 * risk_score)))
+        elif intent == 'greenery':
+            self_score = min(1.0, (0.70 * own_city_norm) + (0.20 * ocean_norm) + (0.20 * bonus_norm))
+            deny_score = min(1.0, 0.15 * enemy_greenery_norm)
+            risk_score = enemy_city_norm
+            total_score = max(0.0, min(1.0, self_score + (0.10 * deny_score) - (0.80 * risk_score)))
+        elif intent == 'ocean':
+            self_score = min(1.0, (0.45 * bonus_norm) + (0.30 * empty_norm) + (0.15 * own_city_norm) + (0.15 * own_greenery_norm))
+            deny_score = min(1.0, 0.70 * enemy_city_norm)
+            risk_score = min(1.0, 0.50 * own_city_norm)
+            total_score = max(0.0, min(1.0, self_score + (0.35 * deny_score) - (0.25 * risk_score)))
+        elif intent == 'special':
+            self_score = min(1.0, (0.40 * bonus_norm) + (0.25 * own_city_norm) + (0.15 * ocean_norm) + (0.15 * own_greenery_norm))
+            deny_score = min(1.0, (0.80 * enemy_city_norm) + (0.20 * enemy_greenery_norm))
+            risk_score = min(1.0, (0.70 * own_city_norm) + (0.20 * own_greenery_norm))
+            total_score = max(0.0, min(1.0, self_score + (0.55 * deny_score) - (0.35 * risk_score)))
+        else:
+            self_score = min(1.0, (0.35 * bonus_norm) + (0.25 * own_city_norm) + (0.25 * ocean_norm) + (0.15 * all_greenery_norm))
+            deny_score = enemy_city_norm
+            risk_score = own_city_norm
+            total_score = max(0.0, min(1.0, self_score + (0.35 * deny_score) - (0.35 * risk_score)))
+
+        return total_score, self_score, deny_score, risk_score
+
+    def _inject_space_prompt_features(self, state_vector: np.ndarray, player_state: Dict[str, Any]) -> None:
+        if not isinstance(state_vector, np.ndarray) or state_vector.ndim != 1:
+            return
+
+        start, slot_count, summary_start, end = self._space_feature_layout()
+        if slot_count <= 0 or end <= start:
+            return
+
+        state_vector[start:end] = 0.0
+
+        waiting_for = player_state.get('waitingFor', {}) or {}
+        waiting_type = str(waiting_for.get('type', '') or '').strip().lower()
+        if waiting_type not in ('space', 'selectspace'):
+            return
+
+        raw_spaces = waiting_for.get('availableSpaces', waiting_for.get('spaces', [])) or []
+        if not isinstance(raw_spaces, list) or not raw_spaces:
+            return
+
+        game_state = player_state.get('game', {}) or {}
+        board_spaces = self._all_board_spaces(game_state)
+        board_by_id = {
+            self._space_id(space): space
+            for space in board_spaces
+            if isinstance(space, dict) and self._space_id(space)
+        }
+        adjacency, coord_to_id, middle_row = self._build_board_adjacency_index(board_spaces)
+        own_color = str((player_state.get('thisPlayer', {}) or {}).get('color', '') or '').strip().lower()
+        intent = self._infer_space_prompt_intent(waiting_for)
+
+        totals: List[float] = []
+        self_scores: List[float] = []
+        deny_scores: List[float] = []
+        risk_scores: List[float] = []
+
+        for raw_space in raw_spaces[:slot_count]:
+            if isinstance(raw_space, dict):
+                sid = self._space_id(raw_space)
+                resolved = dict(board_by_id.get(sid, {}))
+                resolved.update(raw_space)
+            else:
+                sid = str(raw_space or '').strip()
+                resolved = dict(board_by_id.get(sid, {}))
+                if sid and 'id' not in resolved:
+                    resolved['id'] = sid
+            total_score, self_score, deny_score, risk_score = self._space_prompt_candidate_scores(
+                resolved,
+                board_by_id,
+                adjacency,
+                coord_to_id,
+                middle_row,
+                own_color,
+                intent,
+            )
+            totals.append(float(total_score))
+            self_scores.append(float(self_score))
+            deny_scores.append(float(deny_score))
+            risk_scores.append(float(risk_score))
+
+        total_plane = start
+        self_plane = start + slot_count
+        deny_plane = start + (2 * slot_count)
+        risk_plane = start + (3 * slot_count)
+
+        for idx, value in enumerate(totals):
+            state_vector[total_plane + idx] = value
+        for idx, value in enumerate(self_scores):
+            state_vector[self_plane + idx] = value
+        for idx, value in enumerate(deny_scores):
+            state_vector[deny_plane + idx] = value
+        for idx, value in enumerate(risk_scores):
+            state_vector[risk_plane + idx] = value
+
+        summary = np.zeros((int(self._SPACE_SUMMARY_FEATURE_COUNT),), dtype=np.float32)
+        if totals:
+            sorted_totals = sorted(totals, reverse=True)
+            risk_threshold = 0.35 if intent == 'greenery' else 0.45
+            summary[0] = 1.0
+            summary[1] = 1.0 if intent == 'city' else 0.0
+            summary[2] = 1.0 if intent == 'greenery' else 0.0
+            summary[3] = 1.0 if intent == 'ocean' else 0.0
+            summary[4] = 1.0 if intent == 'special' else 0.0
+            summary[5] = 1.0 if intent == 'unknown' else 0.0
+            summary[6] = min(len(totals) / max(1.0, float(slot_count)), 1.0)
+            summary[7] = float(max(totals))
+            summary[8] = float(sum(totals) / len(totals))
+            summary[9] = float(max(self_scores))
+            summary[10] = float(max(deny_scores))
+            summary[11] = float(max(risk_scores))
+            summary[12] = float(np.argmax(np.asarray(totals, dtype=np.float32)) / max(1.0, float(len(totals) - 1)))
+            summary[13] = float(sum(1 for value in risk_scores if value >= risk_threshold) / len(risk_scores))
+            summary[14] = float(sum(deny_scores) / len(deny_scores))
+            summary[15] = (
+                float(max(0.0, sorted_totals[0] - sorted_totals[1]))
+                if len(sorted_totals) > 1
+                else float(sorted_totals[0])
+            )
+
+        write_len = min(len(summary), max(0, end - summary_start))
+        if write_len > 0:
+            state_vector[summary_start:summary_start + write_len] = summary[:write_len]
     
     def _get_common_cards(
         self, card_metadata: Optional[Dict[str, Dict[str, Any]]] = None
@@ -163,6 +527,7 @@ class StateEncoder:
             raise RuntimeError(
                 f"Rust encoder returned invalid shape {encoded.shape}, expected ({int(self.state_size)},)"
             )
+        self._inject_space_prompt_features(encoded, player_state)
         self._inject_card_token_features(encoded, player_state)
         return encoded
 

@@ -1,0 +1,1855 @@
+{
+  "schema_version": "decision_snapshot.v1",
+  "captured_at": "2026-03-08T22:34:00Z",
+  "request": {
+    "request_id": "54ad846b-c90a-41dd-8df3-27b1d6ebec5d",
+    "note": "",
+    "include_state_vector": false
+  },
+  "agent": {
+    "id": "3fe497f2-afe3-4f8a-a69f-dc9aa4e421f8"
+  },
+  "prompt": {
+    "game_id": "g75137bf52d6b",
+    "game_url": "http://localhost:8081/game?id=g75137bf52d6b",
+    "player_id": "pb9c8a5eafebb",
+    "player_name": "A2_3fe497f2",
+    "phase": "action",
+    "phase_index": 2,
+    "generation": 3,
+    "prompt_type": "or",
+    "prompt_title": "Take your first action",
+    "turn_action_count": 0,
+    "sampled_from_policy": true,
+    "send_outcome": "accepted"
+  },
+  "state": {
+    "this_player": {
+      "id": "",
+      "name": "A2_3fe497f2",
+      "color": "blue",
+      "terraform_rating": 21.0,
+      "resources": {
+        "mc": 19.0,
+        "steel": 1.0,
+        "titanium": 2.0,
+        "plants": 2.0,
+        "energy": 2.0,
+        "heat": 12.0
+      },
+      "production": {
+        "mc": 1.0,
+        "steel": 1.0,
+        "titanium": 2.0,
+        "plants": 1.0,
+        "energy": 2.0,
+        "heat": 4.0
+      },
+      "hand_count": 11,
+      "tableau_count": 6,
+      "cities_count": 0,
+      "greeneries_count": 0
+    },
+    "hand": [
+      {
+        "name": "Advanced Ecosystems",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Advanced Ecosystems",
+        "requirements": [
+          {
+            "tag": "plant"
+          },
+          {
+            "tag": "animal"
+          },
+          {
+            "tag": "microbe"
+          }
+        ]
+      },
+      {
+        "name": "Methane From Titan",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Methane From Titan",
+        "requirements": [
+          {
+            "oxygen": 2,
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "AI Controlled Mine Network",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "AI Controlled Mine Network",
+        "requirements": [
+          {
+            "logisticRate": 2,
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Immigration Shuttles",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Immigration Shuttles",
+        "requirements": []
+      },
+      {
+        "name": "Ants",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Ants",
+        "requirements": [
+          {
+            "oxygen": 4,
+            "count": 4
+          }
+        ]
+      },
+      {
+        "name": "Asteroid",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Asteroid",
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false,
+        "selection_score": 3.0162500000000003
+      },
+      {
+        "name": "Unexpected Application",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Unexpected Application",
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false,
+        "selection_score": 2.7887500000000003
+      },
+      {
+        "name": "Strip Mine",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Strip Mine",
+        "requirements": []
+      },
+      {
+        "name": "Solar Power",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Solar Power",
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false,
+        "selection_score": 3.29975
+      },
+      {
+        "name": "Undermoon Drug Lords Network",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Undermoon Drug Lords Network",
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false,
+        "selection_score": 2.684
+      },
+      {
+        "name": "Eos Chasma National Park",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Eos Chasma National Park",
+        "requirements": [
+          {
+            "temperature": -12,
+            "count": -12
+          }
+        ]
+      }
+    ],
+    "tableau": [
+      {
+        "name": "Intragen Sanctuary Headquarters",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Intragen Sanctuary Headquarters",
+        "requirements": []
+      },
+      {
+        "name": "Mohole",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mohole",
+        "requirements": []
+      },
+      {
+        "name": "Orbital Construction Yard",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Orbital Construction Yard",
+        "requirements": []
+      },
+      {
+        "name": "Rust Eating Bacteria",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Rust Eating Bacteria",
+        "requirements": []
+      },
+      {
+        "name": "Rotator Impacts",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Rotator Impacts",
+        "requirements": [
+          {
+            "venus": 14,
+            "max": true,
+            "count": 14
+          }
+        ]
+      },
+      {
+        "name": "Psychrophiles",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Psychrophiles",
+        "requirements": [
+          {
+            "temperature": -20,
+            "max": true,
+            "count": -20
+          }
+        ]
+      }
+    ],
+    "opponents": [
+      {
+        "id": "",
+        "name": "A3_664b1aca",
+        "color": "green",
+        "terraform_rating": 21.0,
+        "resources": {
+          "mc": 2.0,
+          "steel": 0.0,
+          "titanium": 4.0,
+          "plants": 2.0,
+          "energy": 5.0,
+          "heat": 6.0
+        },
+        "production": {
+          "mc": 1.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 5.0,
+          "heat": 5.0
+        },
+        "hand_count": 0,
+        "tableau_count": 7,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A4_a66c173b",
+        "color": "yellow",
+        "terraform_rating": 24.0,
+        "resources": {
+          "mc": 5.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 6.0,
+          "energy": 3.0,
+          "heat": 5.0
+        },
+        "production": {
+          "mc": 3.0,
+          "steel": 3.0,
+          "titanium": 1.0,
+          "plants": 4.0,
+          "energy": 2.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 9,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A1_0a5426c1",
+        "color": "red",
+        "terraform_rating": 23.0,
+        "resources": {
+          "mc": 1.0,
+          "steel": 2.0,
+          "titanium": 1.0,
+          "plants": 0.0,
+          "energy": 2.0,
+          "heat": 5.0
+        },
+        "production": {
+          "mc": 9.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 0.0,
+          "energy": 2.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 8,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A2_3fe497f2",
+        "color": "blue",
+        "terraform_rating": 21.0,
+        "resources": {
+          "mc": 19.0,
+          "steel": 1.0,
+          "titanium": 2.0,
+          "plants": 2.0,
+          "energy": 2.0,
+          "heat": 12.0
+        },
+        "production": {
+          "mc": 1.0,
+          "steel": 1.0,
+          "titanium": 2.0,
+          "plants": 1.0,
+          "energy": 2.0,
+          "heat": 4.0
+        },
+        "hand_count": 0,
+        "tableau_count": 6,
+        "cities_count": 0,
+        "greeneries_count": 0
+      }
+    ],
+    "board": {
+      "temperature": -26.0,
+      "oxygen": 2.0,
+      "oceans": 0.0,
+      "venus": 2.0,
+      "map_name": ""
+    },
+    "awards": [
+      {
+        "index": 0,
+        "name": "Full Moon",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 1,
+        "name": "Space Baron",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 2,
+        "name": "Estate Dealer",
+        "funded_by": "A4_a66c173b",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Industrialist",
+        "funded_by": "A3_664b1aca",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 6.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 6.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Celebrity",
+        "funded_by": "A4_a66c173b",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Excentric",
+        "funded_by": "",
+        "scores": []
+      }
+    ],
+    "milestones": [
+      {
+        "index": 0,
+        "name": "Planner",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 15.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 11.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 9.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 9.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Polar Explorer",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Diversifier",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 6.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 6.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Gardener",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Legend",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Tactician",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      }
+    ],
+    "prompt_candidates": {
+      "cards": [
+        {
+          "name": "Asteroid",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Asteroid",
+          "requirements": [],
+          "requirement_plan": [],
+          "plan_summary": "No requirements.",
+          "reachability_score": 1.0,
+          "readiness_score": 1.0,
+          "all_satisfied": true,
+          "blocking_count": 0,
+          "server_override": false,
+          "masked_by_server": false,
+          "selection_score": 3.0162500000000003
+        },
+        {
+          "name": "Unexpected Application",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Unexpected Application",
+          "requirements": [],
+          "requirement_plan": [],
+          "plan_summary": "No requirements.",
+          "reachability_score": 1.0,
+          "readiness_score": 1.0,
+          "all_satisfied": true,
+          "blocking_count": 0,
+          "server_override": false,
+          "masked_by_server": false,
+          "selection_score": 2.7887500000000003
+        },
+        {
+          "name": "Solar Power",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Solar Power",
+          "requirements": [],
+          "requirement_plan": [],
+          "plan_summary": "No requirements.",
+          "reachability_score": 1.0,
+          "readiness_score": 1.0,
+          "all_satisfied": true,
+          "blocking_count": 0,
+          "server_override": false,
+          "masked_by_server": false,
+          "selection_score": 3.29975
+        },
+        {
+          "name": "Undermoon Drug Lords Network",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Undermoon Drug Lords Network",
+          "requirements": [],
+          "requirement_plan": [],
+          "plan_summary": "No requirements.",
+          "reachability_score": 1.0,
+          "readiness_score": 1.0,
+          "all_satisfied": true,
+          "blocking_count": 0,
+          "server_override": false,
+          "masked_by_server": false,
+          "selection_score": 2.684
+        }
+      ],
+      "options": [
+        {
+          "index": 0,
+          "type": "option",
+          "title": "Convert 8 heat into temperature",
+          "label": "Convert 8 heat into temperature",
+          "cards_count": 0,
+          "options_count": 0
+        },
+        {
+          "index": 1,
+          "type": "card",
+          "title": "Perform an action from a played card",
+          "label": "Perform an action from a played card",
+          "cards_count": 3,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Rust Eating Bacteria",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Rust Eating Bacteria",
+              "requirements": []
+            },
+            {
+              "name": "Rotator Impacts",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Rotator Impacts",
+              "requirements": [
+                {
+                  "venus": 14,
+                  "max": true,
+                  "count": 14
+                }
+              ]
+            },
+            {
+              "name": "Psychrophiles",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Psychrophiles",
+              "requirements": [
+                {
+                  "temperature": -20,
+                  "max": true,
+                  "count": -20
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "type": "projectCard",
+          "title": "Play project card",
+          "label": "Play project card",
+          "cards_count": 4,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Asteroid",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Asteroid",
+              "requirements": []
+            },
+            {
+              "name": "Unexpected Application",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Unexpected Application",
+              "requirements": []
+            },
+            {
+              "name": "Solar Power",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Solar Power",
+              "requirements": []
+            },
+            {
+              "name": "Undermoon Drug Lords Network",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Undermoon Drug Lords Network",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "type": "card",
+          "title": "Standard projects",
+          "label": "Standard projects",
+          "cards_count": 9,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Power Plant:SP",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Power Plant:SP",
+              "requirements": []
+            },
+            {
+              "name": "Asteroid:SP",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Asteroid:SP",
+              "requirements": []
+            },
+            {
+              "name": "Air Scrapping",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Air Scrapping",
+              "requirements": []
+            },
+            {
+              "name": "Aquifer",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Aquifer",
+              "requirements": []
+            },
+            {
+              "name": "Road Infrastructure",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Road Infrastructure",
+              "requirements": []
+            },
+            {
+              "name": "Lunar Mine",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Lunar Mine",
+              "requirements": []
+            },
+            {
+              "name": "Lunar Habitat",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Lunar Habitat",
+              "requirements": []
+            },
+            {
+              "name": "Greenery",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Greenery",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "type": "option",
+          "title": "Pass for this generation",
+          "label": "Pass for this generation",
+          "cards_count": 0,
+          "options_count": 0
+        },
+        {
+          "index": 5,
+          "type": "card",
+          "title": "Sell patents",
+          "label": "Sell patents",
+          "cards_count": 11,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Advanced Ecosystems",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Advanced Ecosystems",
+              "requirements": [
+                {
+                  "tag": "plant"
+                },
+                {
+                  "tag": "animal"
+                },
+                {
+                  "tag": "microbe"
+                }
+              ]
+            },
+            {
+              "name": "Methane From Titan",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Methane From Titan",
+              "requirements": [
+                {
+                  "oxygen": 2,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "name": "AI Controlled Mine Network",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "AI Controlled Mine Network",
+              "requirements": [
+                {
+                  "logisticRate": 2,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "name": "Immigration Shuttles",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Immigration Shuttles",
+              "requirements": []
+            },
+            {
+              "name": "Ants",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Ants",
+              "requirements": [
+                {
+                  "oxygen": 4,
+                  "count": 4
+                }
+              ]
+            },
+            {
+              "name": "Asteroid",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Asteroid",
+              "requirements": []
+            },
+            {
+              "name": "Unexpected Application",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Unexpected Application",
+              "requirements": []
+            },
+            {
+              "name": "Strip Mine",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Strip Mine",
+              "requirements": []
+            }
+          ]
+        }
+      ],
+      "map_candidates": [],
+      "moon_candidates": [],
+      "players": [],
+      "colonies": [],
+      "parties": [],
+      "global_events": [],
+      "tokens": [],
+      "policies": [],
+      "resource_types": [],
+      "payment_context": {
+        "amount": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "title": "Take your first action"
+      }
+    },
+    "prompt_card_rankings": [
+      {
+        "name": "Solar Power",
+        "cost": 11.0,
+        "tags": [
+          "Building",
+          "Power"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 3.29975,
+        "affordability": 1.0,
+        "vp_proxy": 0.2,
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      },
+      {
+        "name": "Asteroid",
+        "cost": 14.0,
+        "tags": [
+          "Space"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 3.0162500000000003,
+        "affordability": 1.0,
+        "vp_proxy": 0.065,
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      },
+      {
+        "name": "Unexpected Application",
+        "cost": 4.0,
+        "tags": [
+          "Venus"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 2.7887500000000003,
+        "affordability": 1.0,
+        "vp_proxy": 0.04,
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      },
+      {
+        "name": "Undermoon Drug Lords Network",
+        "cost": 2.0,
+        "tags": [
+          "Moon"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 2.684,
+        "affordability": 1.0,
+        "vp_proxy": 0.005000000000000001,
+        "requirements": [],
+        "requirement_plan": [],
+        "plan_summary": "No requirements.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      }
+    ]
+  },
+  "policy": {
+    "chosen_action_index": 0,
+    "chosen_action_label": "PLAY_CARD(Rust Eating Bacteria)",
+    "chosen_action_payload": {
+      "type": "or",
+      "index": 1,
+      "response": {
+        "type": "card",
+        "cards": [
+          "Rust Eating Bacteria"
+        ]
+      }
+    },
+    "policy_temperature": 1.0,
+    "value_estimate": -0.02713567018508911,
+    "raw_available_actions": [
+      200,
+      0,
+      1,
+      2,
+      3,
+      100,
+      101,
+      102,
+      103,
+      104,
+      204
+    ],
+    "filtered_available_actions": [
+      200,
+      0,
+      1,
+      2,
+      3,
+      100,
+      101,
+      102,
+      103,
+      104
+    ],
+    "legal_actions": [
+      200,
+      0,
+      1,
+      2,
+      3,
+      100,
+      101,
+      102,
+      103,
+      104
+    ],
+    "action_rankings": [
+      {
+        "action_index": 2,
+        "label": "PLAY_CARD(Psychrophiles)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Psychrophiles"
+            ]
+          }
+        },
+        "raw_probability": 0.0026289736852049828,
+        "masked_probability": 0.24217170476913452,
+        "logit": 1.2777740955352783,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 1,
+        "label": "PLAY_CARD(Rotator Impacts)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Rotator Impacts"
+            ]
+          }
+        },
+        "raw_probability": 0.0016072099097073078,
+        "masked_probability": 0.1480504721403122,
+        "logit": 0.7856802940368652,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 0,
+        "label": "PLAY_CARD(Rust Eating Bacteria)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Rust Eating Bacteria"
+            ]
+          }
+        },
+        "raw_probability": 0.0015791250625625253,
+        "masked_probability": 0.14546339213848114,
+        "logit": 0.7680514454841614,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 102,
+        "label": "STANDARD_PROJECT(Aquifer)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Air Scrapping"
+            ]
+          }
+        },
+        "raw_probability": 0.001119657652452588,
+        "masked_probability": 0.10313887894153595,
+        "logit": 0.42420345544815063,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 3,
+        "label": "PLAY_CARD(Undermoon Drug Lords Network)",
+        "decoded_action": {
+          "type": "or",
+          "index": 2,
+          "response": {
+            "type": "projectCard",
+            "card": "Undermoon Drug Lords Network",
+            "payment": {
+              "megaCredits": 2,
+              "steel": 0,
+              "titanium": 0,
+              "heat": 0,
+              "plants": 0,
+              "microbes": 0,
+              "floaters": 0,
+              "lunaArchivesScience": 0,
+              "spireScience": 0,
+              "seeds": 0,
+              "auroraiData": 0,
+              "graphene": 0,
+              "kuiperAsteroids": 0
+            }
+          }
+        },
+        "raw_probability": 0.0010808362858369946,
+        "masked_probability": 0.09956279397010803,
+        "logit": 0.38891568779945374,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 100,
+        "label": "STANDARD_PROJECT(Power Plant:SP)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Power Plant:SP"
+            ]
+          }
+        },
+        "raw_probability": 0.0009947539074346423,
+        "masked_probability": 0.09163319319486618,
+        "logit": 0.3059207797050476,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 104,
+        "label": "STANDARD_PROJECT(City)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Road Infrastructure"
+            ]
+          }
+        },
+        "raw_probability": 0.0006134381401352584,
+        "masked_probability": 0.056507743895053864,
+        "logit": -0.17749524116516113,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 200,
+        "label": "SELECT_OPTION(Convert 8 heat into temperature)",
+        "decoded_action": {
+          "type": "or",
+          "index": 0,
+          "response": {
+            "type": "option"
+          }
+        },
+        "raw_probability": 0.0005114200175739825,
+        "masked_probability": 0.04711019992828369,
+        "logit": -0.35938358306884766,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 103,
+        "label": "STANDARD_PROJECT(Greenery)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Aquifer"
+            ]
+          }
+        },
+        "raw_probability": 0.0003649624122772366,
+        "masked_probability": 0.033619049936532974,
+        "logit": -0.6967804431915283,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 101,
+        "label": "STANDARD_PROJECT(Asteroid:SP)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Asteroid:SP"
+            ]
+          }
+        },
+        "raw_probability": 0.00035544770071282983,
+        "masked_probability": 0.032742585986852646,
+        "logit": -0.7231967449188232,
+        "chosen": false,
+        "legal": true
+      }
+    ],
+    "top_actions": [
+      {
+        "action_index": 2,
+        "label": "PLAY_CARD(Psychrophiles)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Psychrophiles"
+            ]
+          }
+        },
+        "raw_probability": 0.0026289736852049828,
+        "masked_probability": 0.24217170476913452,
+        "logit": 1.2777740955352783,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 1,
+        "label": "PLAY_CARD(Rotator Impacts)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Rotator Impacts"
+            ]
+          }
+        },
+        "raw_probability": 0.0016072099097073078,
+        "masked_probability": 0.1480504721403122,
+        "logit": 0.7856802940368652,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 0,
+        "label": "PLAY_CARD(Rust Eating Bacteria)",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Rust Eating Bacteria"
+            ]
+          }
+        },
+        "raw_probability": 0.0015791250625625253,
+        "masked_probability": 0.14546339213848114,
+        "logit": 0.7680514454841614,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 102,
+        "label": "STANDARD_PROJECT(Aquifer)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Air Scrapping"
+            ]
+          }
+        },
+        "raw_probability": 0.001119657652452588,
+        "masked_probability": 0.10313887894153595,
+        "logit": 0.42420345544815063,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 3,
+        "label": "PLAY_CARD(Undermoon Drug Lords Network)",
+        "decoded_action": {
+          "type": "or",
+          "index": 2,
+          "response": {
+            "type": "projectCard",
+            "card": "Undermoon Drug Lords Network",
+            "payment": {
+              "megaCredits": 2,
+              "steel": 0,
+              "titanium": 0,
+              "heat": 0,
+              "plants": 0,
+              "microbes": 0,
+              "floaters": 0,
+              "lunaArchivesScience": 0,
+              "spireScience": 0,
+              "seeds": 0,
+              "auroraiData": 0,
+              "graphene": 0,
+              "kuiperAsteroids": 0
+            }
+          }
+        },
+        "raw_probability": 0.0010808362858369946,
+        "masked_probability": 0.09956279397010803,
+        "logit": 0.38891568779945374,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 100,
+        "label": "STANDARD_PROJECT(Power Plant:SP)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Power Plant:SP"
+            ]
+          }
+        },
+        "raw_probability": 0.0009947539074346423,
+        "masked_probability": 0.09163319319486618,
+        "logit": 0.3059207797050476,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 104,
+        "label": "STANDARD_PROJECT(City)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Road Infrastructure"
+            ]
+          }
+        },
+        "raw_probability": 0.0006134381401352584,
+        "masked_probability": 0.056507743895053864,
+        "logit": -0.17749524116516113,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 200,
+        "label": "SELECT_OPTION(Convert 8 heat into temperature)",
+        "decoded_action": {
+          "type": "or",
+          "index": 0,
+          "response": {
+            "type": "option"
+          }
+        },
+        "raw_probability": 0.0005114200175739825,
+        "masked_probability": 0.04711019992828369,
+        "logit": -0.35938358306884766,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 103,
+        "label": "STANDARD_PROJECT(Greenery)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Aquifer"
+            ]
+          }
+        },
+        "raw_probability": 0.0003649624122772366,
+        "masked_probability": 0.033619049936532974,
+        "logit": -0.6967804431915283,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 101,
+        "label": "STANDARD_PROJECT(Asteroid:SP)",
+        "decoded_action": {
+          "type": "or",
+          "index": 3,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Asteroid:SP"
+            ]
+          }
+        },
+        "raw_probability": 0.00035544770071282983,
+        "masked_probability": 0.032742585986852646,
+        "logit": -0.7231967449188232,
+        "chosen": false,
+        "legal": true
+      }
+    ]
+  },
+  "aux": {
+    "targets": {
+      "milestone_claimability": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.8333333134651184,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.7333333492279053,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.6666666865348816,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "award_ev": 0.4666666666666667,
+      "playable_cards": 0.8,
+      "steel_target": 0.03409090909090909,
+      "titanium_target": 0.09090909090909091
+    },
+    "predictions": {
+      "award_ev": 0.4599672257900238,
+      "playable_cards": 0.429512619972229,
+      "steel_target": 0.5986681580543518,
+      "titanium_target": 0.53664630651474,
+      "top_milestone_predictions": [
+        {
+          "index": 12,
+          "value": 0.593768835067749
+        },
+        {
+          "index": 24,
+          "value": 0.5776644945144653
+        },
+        {
+          "index": 66,
+          "value": 0.577290952205658
+        },
+        {
+          "index": 59,
+          "value": 0.5752314925193787
+        },
+        {
+          "index": 1,
+          "value": 0.5672836899757385
+        },
+        {
+          "index": 31,
+          "value": 0.5653125643730164
+        },
+        {
+          "index": 2,
+          "value": 0.5567172765731812
+        },
+        {
+          "index": 20,
+          "value": 0.5538217425346375
+        },
+        {
+          "index": 21,
+          "value": 0.5512546896934509
+        },
+        {
+          "index": 69,
+          "value": 0.5509018898010254
+        }
+      ]
+    }
+  },
+  "diagnostics": {
+    "transformer": {
+      "enabled": true,
+      "active_token_ratio": 0.29487180709838867,
+      "active_row_ratio": 1.0,
+      "attention_context_norm": 7.956669807434082,
+      "fusion_delta_norm": 14.535496711730957,
+      "fusion_share": 28.090732086375155,
+      "shared_pre_norm": 0.5174481272697449,
+      "shared_post_norm": 14.5341215133667,
+      "token_count": 78,
+      "token_dim": 8,
+      "timestamp": 1773009240.237184,
+      "hand_token_count": 64,
+      "tableau_token_count": 8,
+      "opponent_token_count": 6,
+      "card_token_dim": 8
+    },
+    "rare_state": {
+      "weight": 1.0,
+      "award_funding": 0.0,
+      "milestone_timing": 0.0,
+      "draft_keep_buy": 0.0,
+      "high_cost_payment": 0.0,
+      "payment_value_estimate": 0.0
+    }
+  },
+  "snapshot_id": "20260308T223400Z_3fe497f2-afe_or_g75137bf52d6_54ad846b-c90",
+  "snapshot_path": "/app/debug_snapshots/20260308T223400Z_3fe497f2-afe_or_g75137bf52d6_54ad846b-c90.json"
+}

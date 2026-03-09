@@ -174,10 +174,10 @@ services:
       - PUBLIC_TM_SERVER_ID_MAP=tfm-server-1:8080=tfm-server-1,tfm-server-2:8080=tfm-server-2,tfm-server-3:8080=tfm-server-3,tfm-server-4:8080=tfm-server-4
       - PUBLIC_TM_URL=http://localhost:8081,http://localhost:8082,http://localhost:8083,http://localhost:8084
       - INTERNAL_TM_URL=http://tfm-server-1:8080,http://tfm-server-2:8080,http://tfm-server-3:8080,http://tfm-server-4:8080
-      - POPULATION_SIZE=8
+      - POPULATION_SIZE=4
       - TOURNAMENT_SIZE=4
       - GENERATIONS=5000
-      - GAMES_PER_EVAL=6
+      - GAMES_PER_EVAL=10
       # Concurrency: 6 servers × 3 games/server = 18 max capacity
       # GLOBAL_GAME_CONCURRENCY=18 uses full capacity; set to 18 for headroom
       - TOURNAMENT_CONCURRENCY=6
@@ -217,8 +217,8 @@ services:
       # Agent Architecture (Resource-pattern upgrade)
       - AGENT_HIDDEN_SIZE=1024
       - AGENT_NUM_LAYERS=8
-      - AGENT_CARD_TOKEN_DIM=20
-      - AGENT_TABLEAU_TOKEN_COUNT=10
+      - AGENT_CARD_TOKEN_DIM=8
+      - AGENT_TABLEAU_TOKEN_COUNT=8
       - AGENT_HAND_TOKEN_COUNT=64
       - AGENT_OPPONENT_TOKEN_COUNT=6
       - AGENT_TRANSFORMER_EMBED_DIM=256

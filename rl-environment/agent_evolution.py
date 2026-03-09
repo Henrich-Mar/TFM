@@ -64,13 +64,14 @@ class EvolutionManager:
     async def create_initial_population(self, population_size: int) -> List[RLAgent]:
         """Create initial diverse population of agents"""
         population = []
+        default_config = AgentConfig()
         
         for i in range(population_size):
             # Create diverse initial configurations
             config = AgentConfig(
-                state_size=self._safe_env_int("AGENT_STATE_SIZE", 1024),
-                hidden_size=self._safe_env_int("AGENT_HIDDEN_SIZE", 256),
-                num_layers=self._safe_env_int("AGENT_NUM_LAYERS", 3),
+                state_size=self._safe_env_int("AGENT_STATE_SIZE", int(default_config.state_size)),
+                hidden_size=self._safe_env_int("AGENT_HIDDEN_SIZE", int(default_config.hidden_size)),
+                num_layers=self._safe_env_int("AGENT_NUM_LAYERS", int(default_config.num_layers)),
                 learning_rate=random.uniform(1e-5, 1e-3),
                 epsilon=random.uniform(
                     min(self.epsilon_init_min, self.epsilon_init_max),
@@ -476,10 +477,11 @@ class EvolutionManager:
                 replace_idx = random.randint(0, len(population) - 1)
                 
                 # Create new random agent
+                default_config = AgentConfig()
                 config = AgentConfig(
-                    state_size=self._safe_env_int("AGENT_STATE_SIZE", 1024),
-                    hidden_size=self._safe_env_int("AGENT_HIDDEN_SIZE", 256),
-                    num_layers=self._safe_env_int("AGENT_NUM_LAYERS", 3),
+                    state_size=self._safe_env_int("AGENT_STATE_SIZE", int(default_config.state_size)),
+                    hidden_size=self._safe_env_int("AGENT_HIDDEN_SIZE", int(default_config.hidden_size)),
+                    num_layers=self._safe_env_int("AGENT_NUM_LAYERS", int(default_config.num_layers)),
                     learning_rate=random.uniform(1e-5, 1e-3),
                     epsilon=random.uniform(
                         min(self.epsilon_init_min, self.epsilon_init_max),

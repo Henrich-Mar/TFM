@@ -1,0 +1,1307 @@
+{
+  "schema_version": "decision_snapshot.v1",
+  "captured_at": "2026-03-09T05:37:04Z",
+  "request": {
+    "request_id": "2e0c5722-0fd5-46e2-83fc-9286f45eb5c8",
+    "note": "",
+    "include_state_vector": false
+  },
+  "agent": {
+    "id": "f85f6458-39a9-4860-a401-fec5f3221724"
+  },
+  "prompt": {
+    "game_id": "g698543535c17",
+    "game_url": "http://localhost:8083/game?id=g698543535c17",
+    "player_id": "p631580081fa8",
+    "player_name": "A2_f85f6458",
+    "phase": "action",
+    "phase_index": 2,
+    "generation": 8,
+    "prompt_type": "space",
+    "prompt_title": "Select a space on The Moon for a mining tile.",
+    "turn_action_count": 12,
+    "sampled_from_policy": true,
+    "send_outcome": "accepted"
+  },
+  "state": {
+    "this_player": {
+      "id": "",
+      "name": "A2_f85f6458",
+      "color": "blue",
+      "terraform_rating": 35.0,
+      "resources": {
+        "mc": 4.0,
+        "steel": 3.0,
+        "titanium": 2.0,
+        "plants": 1.0,
+        "energy": 1.0,
+        "heat": 1.0
+      },
+      "production": {
+        "mc": 6.0,
+        "steel": 3.0,
+        "titanium": 1.0,
+        "plants": 3.0,
+        "energy": 1.0,
+        "heat": 5.0
+      },
+      "hand_count": 9,
+      "tableau_count": 15,
+      "cities_count": 0,
+      "greeneries_count": 0
+    },
+    "hand": [
+      {
+        "name": "Breathing Filters",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Breathing Filters",
+        "requirements": [
+          {
+            "oxygen": 7,
+            "count": 7
+          }
+        ]
+      },
+      {
+        "name": "Moon Tether",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Moon Tether",
+        "requirements": [
+          {
+            "tag": "space",
+            "count": 6
+          }
+        ]
+      },
+      {
+        "name": "Pride of the Earth Arkship",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Pride of the Earth Arkship",
+        "requirements": [
+          {
+            "tag": "science"
+          },
+          {
+            "tag": "space",
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Herbivores",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Herbivores",
+        "requirements": [
+          {
+            "oxygen": 8,
+            "count": 8
+          }
+        ]
+      },
+      {
+        "name": "Improved Moon Concrete",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Improved Moon Concrete",
+        "requirements": []
+      },
+      {
+        "name": "Mining Quota",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mining Quota",
+        "requirements": [
+          {
+            "tag": "venus"
+          },
+          {
+            "tag": "earth"
+          },
+          {
+            "tag": "jovian"
+          }
+        ]
+      },
+      {
+        "name": "Jet Stream Microscrappers",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Jet Stream Microscrappers",
+        "requirements": []
+      },
+      {
+        "name": "Luxury Foods",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Luxury Foods",
+        "requirements": [
+          {
+            "tag": "venus"
+          },
+          {
+            "tag": "earth"
+          },
+          {
+            "tag": "jovian"
+          }
+        ]
+      },
+      {
+        "name": "Dawn City",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Dawn City",
+        "requirements": [
+          {
+            "tag": "science",
+            "count": 4
+          }
+        ]
+      }
+    ],
+    "tableau": [
+      {
+        "name": "Interplanetary Cinematics",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Interplanetary Cinematics",
+        "requirements": []
+      },
+      {
+        "name": "Suitable Infrastructure",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Suitable Infrastructure",
+        "requirements": []
+      },
+      {
+        "name": "Floating Trade Hub",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Floating Trade Hub",
+        "requirements": []
+      },
+      {
+        "name": "Carbonate Processing",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Carbonate Processing",
+        "requirements": []
+      },
+      {
+        "name": "Copernicus Solar Arrays",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Copernicus Solar Arrays",
+        "requirements": []
+      },
+      {
+        "name": "Mare Nectaris Mine",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mare Nectaris Mine",
+        "requirements": []
+      },
+      {
+        "name": "Forced Precipitation",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Forced Precipitation",
+        "requirements": []
+      },
+      {
+        "name": "Lunar Mine Urbanization",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Lunar Mine Urbanization",
+        "requirements": [
+          {
+            "miningTiles": 1,
+            "count": 1
+          }
+        ]
+      },
+      {
+        "name": "Venus Shuttles",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Venus Shuttles",
+        "requirements": []
+      },
+      {
+        "name": "SF Memorial",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "SF Memorial",
+        "requirements": []
+      },
+      {
+        "name": "Comet for Venus",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Comet for Venus",
+        "requirements": []
+      },
+      {
+        "name": "Terraforming Contract",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Terraforming Contract",
+        "requirements": [
+          {
+            "tr": 25,
+            "count": 25
+          }
+        ]
+      },
+      {
+        "name": "Bushes",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Bushes",
+        "requirements": [
+          {
+            "temperature": -10,
+            "count": -10
+          }
+        ]
+      },
+      {
+        "name": "Aerial Mappers",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Aerial Mappers",
+        "requirements": []
+      },
+      {
+        "name": "Thorium Rush",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Thorium Rush",
+        "requirements": []
+      }
+    ],
+    "opponents": [
+      {
+        "id": "",
+        "name": "A4_7f9d76ce",
+        "color": "yellow",
+        "terraform_rating": 42.0,
+        "resources": {
+          "mc": 5.0,
+          "steel": 1.0,
+          "titanium": 0.0,
+          "plants": 5.0,
+          "energy": 0.0,
+          "heat": 5.0
+        },
+        "production": {
+          "mc": 5.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 2.0,
+          "energy": 1.0,
+          "heat": 4.0
+        },
+        "hand_count": 0,
+        "tableau_count": 13,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A1_e446a4d5",
+        "color": "red",
+        "terraform_rating": 34.0,
+        "resources": {
+          "mc": 1.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 3.0,
+          "energy": 3.0,
+          "heat": 3.0
+        },
+        "production": {
+          "mc": 12.0,
+          "steel": 3.0,
+          "titanium": 2.0,
+          "plants": 5.0,
+          "energy": 4.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 15,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A2_f85f6458",
+        "color": "blue",
+        "terraform_rating": 35.0,
+        "resources": {
+          "mc": 4.0,
+          "steel": 3.0,
+          "titanium": 2.0,
+          "plants": 1.0,
+          "energy": 1.0,
+          "heat": 1.0
+        },
+        "production": {
+          "mc": 6.0,
+          "steel": 3.0,
+          "titanium": 1.0,
+          "plants": 3.0,
+          "energy": 1.0,
+          "heat": 5.0
+        },
+        "hand_count": 0,
+        "tableau_count": 15,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A3_0e4c33c2",
+        "color": "green",
+        "terraform_rating": 35.0,
+        "resources": {
+          "mc": 7.0,
+          "steel": 1.0,
+          "titanium": 0.0,
+          "plants": 2.0,
+          "energy": 0.0,
+          "heat": 2.0
+        },
+        "production": {
+          "mc": 3.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 0.0,
+          "heat": 6.0
+        },
+        "hand_count": 0,
+        "tableau_count": 11,
+        "cities_count": 0,
+        "greeneries_count": 0
+      }
+    ],
+    "board": {
+      "temperature": 8.0,
+      "oxygen": 13.0,
+      "oceans": 9.0,
+      "venus": 30.0,
+      "map_name": ""
+    },
+    "awards": [
+      {
+        "index": 0,
+        "name": "Landlord",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 7.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 4.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Scientist",
+        "funded_by": "A2_f85f6458",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Banker",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 12.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 6.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 5.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Thermalist",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 7.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 7.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 8.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 9.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Miner",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 7.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 9.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 3.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Venuphile",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 3.0
+          }
+        ]
+      },
+      {
+        "index": 6,
+        "name": "Lunar Magnate",
+        "funded_by": "A4_7f9d76ce",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 2.0
+          }
+        ]
+      }
+    ],
+    "milestones": [
+      {
+        "index": 0,
+        "name": "Terraformer",
+        "claimed_by": "A4_7f9d76ce",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 1,
+        "name": "Mayor",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Gardener",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Builder",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 2.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Planner",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 6.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 9.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 18.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 12.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Hoverlord",
+        "claimed_by": "A2_f85f6458",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 6,
+        "name": "One Giant Step",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      }
+    ],
+    "prompt_candidates": {
+      "cards": [],
+      "options": [],
+      "map_candidates": [
+        {
+          "index": 0,
+          "label": "m02"
+        },
+        {
+          "index": 1,
+          "label": "m04"
+        },
+        {
+          "index": 2,
+          "label": "m17"
+        },
+        {
+          "index": 3,
+          "label": "m19"
+        },
+        {
+          "index": 4,
+          "label": "m23"
+        },
+        {
+          "index": 5,
+          "label": "m30"
+        },
+        {
+          "index": 6,
+          "label": "m33"
+        },
+        {
+          "index": 7,
+          "label": "m36"
+        }
+      ],
+      "moon_candidates": [],
+      "players": [],
+      "colonies": [],
+      "parties": [],
+      "global_events": [],
+      "tokens": [],
+      "policies": [],
+      "resource_types": [],
+      "payment_context": {
+        "amount": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "title": "Select a space on The Moon for a mining tile."
+      }
+    },
+    "prompt_card_rankings": []
+  },
+  "policy": {
+    "chosen_action_index": 302,
+    "chosen_action_label": "SELECT_SPACE(2)",
+    "chosen_action_payload": {
+      "type": "space",
+      "spaceId": "m17"
+    },
+    "policy_temperature": 1.0,
+    "value_estimate": 0.4814678430557251,
+    "raw_available_actions": [
+      300,
+      301,
+      302,
+      303,
+      304,
+      305,
+      306,
+      307
+    ],
+    "filtered_available_actions": [
+      300,
+      301,
+      302,
+      303,
+      304,
+      305,
+      306,
+      307
+    ],
+    "legal_actions": [
+      300,
+      301,
+      302,
+      303,
+      304,
+      305,
+      306,
+      307
+    ],
+    "action_rankings": [
+      {
+        "action_index": 304,
+        "label": "SELECT_SPACE(4)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m23"
+        },
+        "raw_probability": 0.006702769547700882,
+        "masked_probability": 0.5420549511909485,
+        "logit": 2.4612441062927246,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 306,
+        "label": "SELECT_SPACE(6)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m33"
+        },
+        "raw_probability": 0.0023422115482389927,
+        "masked_probability": 0.1894153356552124,
+        "logit": 1.4098188877105713,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 300,
+        "label": "SELECT_SPACE(0)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m02"
+        },
+        "raw_probability": 0.001660449430346489,
+        "masked_probability": 0.13428103923797607,
+        "logit": 1.0658116340637207,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 302,
+        "label": "SELECT_SPACE(2)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m17"
+        },
+        "raw_probability": 0.0008804664830677211,
+        "masked_probability": 0.07120358943939209,
+        "logit": 0.43141990900039673,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 301,
+        "label": "SELECT_SPACE(1)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m04"
+        },
+        "raw_probability": 0.000457137095509097,
+        "masked_probability": 0.03696881979703903,
+        "logit": -0.22404855489730835,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 303,
+        "label": "SELECT_SPACE(3)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m19"
+        },
+        "raw_probability": 0.0002321562496945262,
+        "masked_probability": 0.018774552270770073,
+        "logit": -0.901621401309967,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 307,
+        "label": "SELECT_SPACE(7)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m36"
+        },
+        "raw_probability": 4.9444854084867984e-05,
+        "masked_probability": 0.003998629283159971,
+        "logit": -2.448173999786377,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 305,
+        "label": "SELECT_SPACE(5)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m30"
+        },
+        "raw_probability": 4.0844308387022465e-05,
+        "masked_probability": 0.0033031010534614325,
+        "logit": -2.6392643451690674,
+        "chosen": false,
+        "legal": true
+      }
+    ],
+    "top_actions": [
+      {
+        "action_index": 304,
+        "label": "SELECT_SPACE(4)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m23"
+        },
+        "raw_probability": 0.006702769547700882,
+        "masked_probability": 0.5420549511909485,
+        "logit": 2.4612441062927246,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 306,
+        "label": "SELECT_SPACE(6)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m33"
+        },
+        "raw_probability": 0.0023422115482389927,
+        "masked_probability": 0.1894153356552124,
+        "logit": 1.4098188877105713,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 300,
+        "label": "SELECT_SPACE(0)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m02"
+        },
+        "raw_probability": 0.001660449430346489,
+        "masked_probability": 0.13428103923797607,
+        "logit": 1.0658116340637207,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 302,
+        "label": "SELECT_SPACE(2)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m17"
+        },
+        "raw_probability": 0.0008804664830677211,
+        "masked_probability": 0.07120358943939209,
+        "logit": 0.43141990900039673,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 301,
+        "label": "SELECT_SPACE(1)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m04"
+        },
+        "raw_probability": 0.000457137095509097,
+        "masked_probability": 0.03696881979703903,
+        "logit": -0.22404855489730835,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 303,
+        "label": "SELECT_SPACE(3)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m19"
+        },
+        "raw_probability": 0.0002321562496945262,
+        "masked_probability": 0.018774552270770073,
+        "logit": -0.901621401309967,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 307,
+        "label": "SELECT_SPACE(7)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m36"
+        },
+        "raw_probability": 4.9444854084867984e-05,
+        "masked_probability": 0.003998629283159971,
+        "logit": -2.448173999786377,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 305,
+        "label": "SELECT_SPACE(5)",
+        "decoded_action": {
+          "type": "space",
+          "spaceId": "m30"
+        },
+        "raw_probability": 4.0844308387022465e-05,
+        "masked_probability": 0.0033031010534614325,
+        "logit": -2.6392643451690674,
+        "chosen": false,
+        "legal": true
+      }
+    ]
+  },
+  "aux": {
+    "targets": {
+      "milestone_claimability": [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.3333333432674408,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "award_ev": 0.3333333333333333,
+      "playable_cards": 0.1,
+      "steel_target": 0.075,
+      "titanium_target": 0.06666666666666667
+    },
+    "predictions": {
+      "award_ev": 0.16323137283325195,
+      "playable_cards": 0.3311106562614441,
+      "steel_target": 0.1249626949429512,
+      "titanium_target": 0.14250558614730835,
+      "top_milestone_predictions": [
+        {
+          "index": 51,
+          "value": 0.34291160106658936
+        },
+        {
+          "index": 66,
+          "value": 0.2883445918560028
+        },
+        {
+          "index": 36,
+          "value": 0.17886985838413239
+        },
+        {
+          "index": 22,
+          "value": 0.14351166784763336
+        },
+        {
+          "index": 30,
+          "value": 0.1309307962656021
+        },
+        {
+          "index": 54,
+          "value": 0.12116304039955139
+        },
+        {
+          "index": 27,
+          "value": 0.11523231118917465
+        },
+        {
+          "index": 3,
+          "value": 0.11169787496328354
+        },
+        {
+          "index": 49,
+          "value": 0.09540317207574844
+        },
+        {
+          "index": 20,
+          "value": 0.0912403017282486
+        }
+      ]
+    }
+  },
+  "diagnostics": {
+    "transformer": {
+      "enabled": true,
+      "active_token_ratio": 0.29487180709838867,
+      "active_row_ratio": 1.0,
+      "attention_context_norm": 7.8955583572387695,
+      "fusion_delta_norm": 14.522577285766602,
+      "fusion_share": 7.838773163057708,
+      "shared_pre_norm": 1.8526594638824463,
+      "shared_post_norm": 14.493839263916016,
+      "token_count": 78,
+      "token_dim": 8,
+      "timestamp": 1773034624.1071985,
+      "hand_token_count": 64,
+      "tableau_token_count": 8,
+      "opponent_token_count": 6,
+      "card_token_dim": 8
+    },
+    "rare_state": {
+      "weight": 1.0,
+      "award_funding": 0.0,
+      "milestone_timing": 0.0,
+      "draft_keep_buy": 0.0,
+      "high_cost_payment": 0.0,
+      "payment_value_estimate": 0.0
+    }
+  },
+  "snapshot_id": "20260309T053704Z_f85f6458-39a_space_g698543535c1_2e0c5722-0fd",
+  "snapshot_path": "/app/debug_snapshots/20260309T053704Z_f85f6458-39a_space_g698543535c1_2e0c5722-0fd.json"
+}

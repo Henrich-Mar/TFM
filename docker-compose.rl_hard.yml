@@ -177,7 +177,7 @@ services:
       - POPULATION_SIZE=4
       - TOURNAMENT_SIZE=4
       - GENERATIONS=5000
-      - GAMES_PER_EVAL=10
+      - GAMES_PER_EVAL=16
       # Concurrency: 6 servers × 3 games/server = 18 max capacity
       # GLOBAL_GAME_CONCURRENCY=18 uses full capacity; set to 18 for headroom
       - TOURNAMENT_CONCURRENCY=6
@@ -215,9 +215,10 @@ services:
       # BOOTSTRAP_IF_NO_CHECKPOINT=1
       
       # Agent Architecture (Resource-pattern upgrade)
+      - AGENT_STATE_SIZE=3072
       - AGENT_HIDDEN_SIZE=1024
       - AGENT_NUM_LAYERS=8
-      - AGENT_CARD_TOKEN_DIM=8
+      - AGENT_CARD_TOKEN_DIM=20
       - AGENT_TABLEAU_TOKEN_COUNT=8
       - AGENT_HAND_TOKEN_COUNT=64
       - AGENT_OPPONENT_TOKEN_COUNT=6

@@ -56,14 +56,21 @@ class StateEncoder:
     ]
 
     # Transformer card-token layout encoded inside the tail of the fixed-size state vector.
-    _DEFAULT_CARD_TOKEN_DIM = 8
+    _DEFAULT_CARD_TOKEN_DIM = 20
     _DEFAULT_TABLEAU_TOKEN_COUNT = 8
     _DEFAULT_HAND_TOKEN_COUNT = 64
     _DEFAULT_OPPONENT_TOKEN_COUNT = 6
+    _RUST_BASE_FEATURE_COUNT = 32
+    _GAME_PHASE_FEATURE_COUNT = 10
+    _ACTION_CONTEXT_FEATURE_COUNT = 50
+    _BOARD_STATE_FEATURE_COUNT = 100
+    _OPPONENT_STATE_FEATURE_COUNT = 100
     _SPACE_FEATURE_BASE = 64
     _SPACE_CANDIDATE_SLOT_COUNT = 80
     _SPACE_FEATURE_PLANES = 4
     _SPACE_SUMMARY_FEATURE_COUNT = 16
+    _MIN_SPACE_FEATURE_BUDGET = 96
+    _AWARDS_MILESTONES_FEATURE_COUNT = (len(_ALL_MILESTONES) * 4) + (len(_ALL_AWARDS) * 4)
 
     def __init__(
         self,
@@ -277,11 +284,17 @@ class StateEncoder:
         return min(total, 6.0)
 
     def _space_feature_layout(self) -> Tuple[int, int, int, int]:
-        start = max(0, min(int(self._SPACE_FEATURE_BASE), int(self.state_size)))
-        prefix_limit = int(self.state_size)
-        card_start, _ = self._card_token_segment_bounds()
-        if card_start > 0:
-            prefix_limit = min(prefix_limit, int(card_start))
+        prefix_limit = self._prefix_limit_before_card_tokens()
+        awards_start, _ = self._awards_feature_bounds()
+        if awards_start > 0:
+            prefix_limit = min(prefix_limit, int(awards_start))
+        start = max(
+            0,
+            min(
+                max(int(self._SPACE_FEATURE_BASE), int(self._dense_context_prefix_end())),
+                int(prefix_limit),
+            ),
+        )
         if prefix_limit <= start:
             return start, 0, start, start
 
@@ -299,6 +312,117 @@ class StateEncoder:
         summary_start = start + (slot_count * int(self._SPACE_FEATURE_PLANES))
         end = min(prefix_limit, summary_start + int(self._SPACE_SUMMARY_FEATURE_COUNT))
         return start, slot_count, summary_start, end
+
+    def _prefix_limit_before_card_tokens(self) -> int:
+        prefix_limit = int(self.state_size)
+        card_start, _ = self._card_token_segment_bounds()
+        if card_start > 0:
+            prefix_limit = min(prefix_limit, int(card_start))
+        return max(0, int(prefix_limit))
+
+    def _dense_context_prefix_end(self) -> int:
+        base = min(int(self._RUST_BASE_FEATURE_COUNT), self._prefix_limit_before_card_tokens())
+        return int(
+            min(
+                self._prefix_limit_before_card_tokens(),
+                base
+                + int(self._GAME_PHASE_FEATURE_COUNT)
+                + int(self._ACTION_CONTEXT_FEATURE_COUNT)
+                + int(self._BOARD_STATE_FEATURE_COUNT)
+                + int(self._OPPONENT_STATE_FEATURE_COUNT),
+            )
+        )
+
+    def _awards_feature_bounds(self) -> Tuple[int, int]:
+        prefix_limit = self._prefix_limit_before_card_tokens()
+        dense_end = self._dense_context_prefix_end()
+        if prefix_limit <= dense_end:
+            return (dense_end, dense_end)
+        max_award_budget = max(
+            0,
+            prefix_limit - dense_end - int(self._MIN_SPACE_FEATURE_BUDGET),
+        )
+        award_budget = min(int(self._AWARDS_MILESTONES_FEATURE_COUNT), int(max_award_budget))
+        if award_budget <= 0:
+            return (dense_end, dense_end)
+        start = max(dense_end, prefix_limit - award_budget)
+        end = min(prefix_limit, start + award_budget)
+        return (int(start), int(end))
+
+    def _write_feature_block(
+        self,
+        state_vector: np.ndarray,
+        start: int,
+        values: List[float],
+        limit: Optional[int] = None,
+    ) -> int:
+        if not isinstance(state_vector, np.ndarray) or state_vector.ndim != 1:
+            return int(start)
+        start_idx = max(0, int(start))
+        end_limit = int(state_vector.shape[0]) if limit is None else max(0, int(limit))
+        if start_idx >= end_limit or not values:
+            return start_idx
+        write_len = min(len(values), max(0, end_limit - start_idx))
+        if write_len <= 0:
+            return start_idx
+        state_vector[start_idx:start_idx + write_len] = np.asarray(values[:write_len], dtype=np.float32)
+        return int(start_idx + write_len)
+
+    def _inject_dense_context_features(
+        self,
+        state_vector: np.ndarray,
+        player_state: Dict[str, Any],
+        turn_action_count: int,
+    ) -> None:
+        if not isinstance(state_vector, np.ndarray) or state_vector.ndim != 1:
+            return
+
+        prefix_limit = self._prefix_limit_before_card_tokens()
+        dense_start = min(int(self._RUST_BASE_FEATURE_COUNT), prefix_limit)
+        dense_end = self._dense_context_prefix_end()
+        if dense_end <= dense_start:
+            return
+
+        state_vector[dense_start:dense_end] = 0.0
+        game_state = player_state.get('game', {}) or {}
+        current_player = player_state.get('thisPlayer', {}) or {}
+        players = player_state.get('players', []) or []
+
+        cursor = dense_start
+        cursor = self._write_feature_block(
+            state_vector,
+            cursor,
+            self._encode_game_phase(game_state, turn_action_count),
+            dense_end,
+        )
+        cursor = self._write_feature_block(
+            state_vector,
+            cursor,
+            self._encode_action_context(player_state),
+            dense_end,
+        )
+        cursor = self._write_feature_block(
+            state_vector,
+            cursor,
+            self._encode_board_state(game_state, current_player),
+            dense_end,
+        )
+        self._write_feature_block(
+            state_vector,
+            cursor,
+            self._encode_opponents_state(players, current_player),
+            dense_end,
+        )
+
+        awards_start, awards_end = self._awards_feature_bounds()
+        if awards_end > awards_start:
+            state_vector[awards_start:awards_end] = 0.0
+            self._write_feature_block(
+                state_vector,
+                awards_start,
+                self._encode_awards_milestones(game_state, current_player),
+                awards_end,
+            )
 
     def _space_prompt_candidate_scores(
         self,
@@ -527,6 +651,7 @@ class StateEncoder:
             raise RuntimeError(
                 f"Rust encoder returned invalid shape {encoded.shape}, expected ({int(self.state_size)},)"
             )
+        self._inject_dense_context_features(encoded, player_state, turn_action_count)
         self._inject_space_prompt_features(encoded, player_state)
         self._inject_card_token_features(encoded, player_state)
         return encoded

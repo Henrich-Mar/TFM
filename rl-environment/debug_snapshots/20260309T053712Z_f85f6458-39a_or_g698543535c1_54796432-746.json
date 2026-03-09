@@ -1,0 +1,1418 @@
+{
+  "schema_version": "decision_snapshot.v1",
+  "captured_at": "2026-03-09T05:37:12Z",
+  "request": {
+    "request_id": "54796432-746a-4ed4-8bd9-91a8157046bb",
+    "note": "",
+    "include_state_vector": false
+  },
+  "agent": {
+    "id": "f85f6458-39a9-4860-a401-fec5f3221724"
+  },
+  "prompt": {
+    "game_id": "g698543535c17",
+    "game_url": "http://localhost:8083/game?id=g698543535c17",
+    "player_id": "p631580081fa8",
+    "player_name": "A2_f85f6458",
+    "phase": "action",
+    "phase_index": 2,
+    "generation": 9,
+    "prompt_type": "or",
+    "prompt_title": "Take your next action",
+    "turn_action_count": 5,
+    "sampled_from_policy": true,
+    "send_outcome": "accepted"
+  },
+  "state": {
+    "this_player": {
+      "id": "",
+      "name": "A2_f85f6458",
+      "color": "blue",
+      "terraform_rating": 39.0,
+      "resources": {
+        "mc": 1.0,
+        "steel": 5.0,
+        "titanium": 6.0,
+        "plants": 4.0,
+        "energy": 1.0,
+        "heat": 7.0
+      },
+      "production": {
+        "mc": 6.0,
+        "steel": 4.0,
+        "titanium": 1.0,
+        "plants": 3.0,
+        "energy": 1.0,
+        "heat": 5.0
+      },
+      "hand_count": 12,
+      "tableau_count": 16,
+      "cities_count": 0,
+      "greeneries_count": 0
+    },
+    "hand": [
+      {
+        "name": "Breathing Filters",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Breathing Filters",
+        "requirements": [
+          {
+            "oxygen": 7,
+            "count": 7
+          }
+        ]
+      },
+      {
+        "name": "Moon Tether",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Moon Tether",
+        "requirements": [
+          {
+            "tag": "space",
+            "count": 6
+          }
+        ]
+      },
+      {
+        "name": "Pride of the Earth Arkship",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Pride of the Earth Arkship",
+        "requirements": [
+          {
+            "tag": "science"
+          },
+          {
+            "tag": "space",
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Herbivores",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Herbivores",
+        "requirements": [
+          {
+            "oxygen": 8,
+            "count": 8
+          }
+        ]
+      },
+      {
+        "name": "Improved Moon Concrete",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Improved Moon Concrete",
+        "requirements": []
+      },
+      {
+        "name": "Mining Quota",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mining Quota",
+        "requirements": [
+          {
+            "tag": "venus"
+          },
+          {
+            "tag": "earth"
+          },
+          {
+            "tag": "jovian"
+          }
+        ]
+      },
+      {
+        "name": "Jet Stream Microscrappers",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Jet Stream Microscrappers",
+        "requirements": []
+      },
+      {
+        "name": "Luxury Foods",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Luxury Foods",
+        "requirements": [
+          {
+            "tag": "venus"
+          },
+          {
+            "tag": "earth"
+          },
+          {
+            "tag": "jovian"
+          }
+        ]
+      },
+      {
+        "name": "Dawn City",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Dawn City",
+        "requirements": [
+          {
+            "tag": "science",
+            "count": 4
+          }
+        ]
+      },
+      {
+        "name": "Space Hotels",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Space Hotels",
+        "requirements": [
+          {
+            "tag": "earth",
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Stratopolis",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Stratopolis",
+        "requirements": [
+          {
+            "tag": "science",
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Sulphur Exports",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Sulphur Exports",
+        "requirements": []
+      }
+    ],
+    "tableau": [
+      {
+        "name": "Interplanetary Cinematics",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Interplanetary Cinematics",
+        "requirements": []
+      },
+      {
+        "name": "Suitable Infrastructure",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Suitable Infrastructure",
+        "requirements": []
+      },
+      {
+        "name": "Floating Trade Hub",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Floating Trade Hub",
+        "requirements": []
+      },
+      {
+        "name": "Carbonate Processing",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Carbonate Processing",
+        "requirements": []
+      },
+      {
+        "name": "Copernicus Solar Arrays",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Copernicus Solar Arrays",
+        "requirements": []
+      },
+      {
+        "name": "Mare Nectaris Mine",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mare Nectaris Mine",
+        "requirements": []
+      },
+      {
+        "name": "Forced Precipitation",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Forced Precipitation",
+        "requirements": []
+      },
+      {
+        "name": "Lunar Mine Urbanization",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Lunar Mine Urbanization",
+        "requirements": [
+          {
+            "miningTiles": 1,
+            "count": 1
+          }
+        ]
+      },
+      {
+        "name": "Venus Shuttles",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Venus Shuttles",
+        "requirements": []
+      },
+      {
+        "name": "SF Memorial",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "SF Memorial",
+        "requirements": []
+      },
+      {
+        "name": "Comet for Venus",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Comet for Venus",
+        "requirements": []
+      },
+      {
+        "name": "Terraforming Contract",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Terraforming Contract",
+        "requirements": [
+          {
+            "tr": 25,
+            "count": 25
+          }
+        ]
+      },
+      {
+        "name": "Bushes",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Bushes",
+        "requirements": [
+          {
+            "temperature": -10,
+            "count": -10
+          }
+        ]
+      },
+      {
+        "name": "Aerial Mappers",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Aerial Mappers",
+        "requirements": []
+      },
+      {
+        "name": "Thorium Rush",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Thorium Rush",
+        "requirements": []
+      },
+      {
+        "name": "Ishtar Expedition",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Ishtar Expedition",
+        "requirements": [
+          {
+            "venus": 10,
+            "count": 10
+          }
+        ]
+      }
+    ],
+    "opponents": [
+      {
+        "id": "",
+        "name": "A1_e446a4d5",
+        "color": "red",
+        "terraform_rating": 36.0,
+        "resources": {
+          "mc": 23.0,
+          "steel": 6.0,
+          "titanium": 4.0,
+          "plants": 0.0,
+          "energy": 4.0,
+          "heat": 7.0
+        },
+        "production": {
+          "mc": 12.0,
+          "steel": 3.0,
+          "titanium": 2.0,
+          "plants": 5.0,
+          "energy": 4.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 15,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A2_f85f6458",
+        "color": "blue",
+        "terraform_rating": 39.0,
+        "resources": {
+          "mc": 1.0,
+          "steel": 5.0,
+          "titanium": 6.0,
+          "plants": 4.0,
+          "energy": 1.0,
+          "heat": 7.0
+        },
+        "production": {
+          "mc": 6.0,
+          "steel": 4.0,
+          "titanium": 1.0,
+          "plants": 3.0,
+          "energy": 1.0,
+          "heat": 5.0
+        },
+        "hand_count": 0,
+        "tableau_count": 16,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A3_0e4c33c2",
+        "color": "green",
+        "terraform_rating": 35.0,
+        "resources": {
+          "mc": 32.0,
+          "steel": 2.0,
+          "titanium": 1.0,
+          "plants": 3.0,
+          "energy": 0.0,
+          "heat": 8.0
+        },
+        "production": {
+          "mc": 3.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 0.0,
+          "heat": 8.0
+        },
+        "hand_count": 0,
+        "tableau_count": 11,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A4_7f9d76ce",
+        "color": "yellow",
+        "terraform_rating": 42.0,
+        "resources": {
+          "mc": 46.0,
+          "steel": 2.0,
+          "titanium": 1.0,
+          "plants": 7.0,
+          "energy": 1.0,
+          "heat": 9.0
+        },
+        "production": {
+          "mc": 5.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 2.0,
+          "energy": 1.0,
+          "heat": 4.0
+        },
+        "hand_count": 0,
+        "tableau_count": 13,
+        "cities_count": 0,
+        "greeneries_count": 0
+      }
+    ],
+    "board": {
+      "temperature": 8.0,
+      "oxygen": 14.0,
+      "oceans": 9.0,
+      "venus": 30.0,
+      "map_name": ""
+    },
+    "awards": [
+      {
+        "index": 0,
+        "name": "Landlord",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 9.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 8.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 4.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Scientist",
+        "funded_by": "A2_f85f6458",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Banker",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 12.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 6.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 5.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Thermalist",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 12.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 13.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 16.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 14.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Miner",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 15.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 16.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 5.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Venuphile",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 3.0
+          }
+        ]
+      },
+      {
+        "index": 6,
+        "name": "Lunar Magnate",
+        "funded_by": "A4_7f9d76ce",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 7.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 2.0
+          }
+        ]
+      }
+    ],
+    "milestones": [
+      {
+        "index": 0,
+        "name": "Terraformer",
+        "claimed_by": "A4_7f9d76ce",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 1,
+        "name": "Mayor",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 2,
+        "name": "Gardener",
+        "claimed_by": "A1_e446a4d5",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 3,
+        "name": "Builder",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 4,
+        "name": "Planner",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 5,
+        "name": "Hoverlord",
+        "claimed_by": "A2_f85f6458",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 6,
+        "name": "One Giant Step",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      }
+    ],
+    "prompt_candidates": {
+      "cards": [],
+      "options": [
+        {
+          "index": 0,
+          "type": "card",
+          "title": "Perform an action from a played card",
+          "label": "Perform an action from a played card",
+          "cards_count": 3,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Floating Trade Hub",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Floating Trade Hub",
+              "requirements": []
+            },
+            {
+              "name": "Forced Precipitation",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Forced Precipitation",
+              "requirements": []
+            },
+            {
+              "name": "Aerial Mappers",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Aerial Mappers",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "type": "card",
+          "title": "Standard projects",
+          "label": "Standard projects",
+          "cards_count": 9,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Power Plant:SP",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Power Plant:SP",
+              "requirements": []
+            },
+            {
+              "name": "Asteroid:SP",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Asteroid:SP",
+              "requirements": []
+            },
+            {
+              "name": "Air Scrapping",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Air Scrapping",
+              "requirements": []
+            },
+            {
+              "name": "Aquifer",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Aquifer",
+              "requirements": []
+            },
+            {
+              "name": "Road Infrastructure",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Road Infrastructure",
+              "requirements": []
+            },
+            {
+              "name": "Lunar Mine",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Lunar Mine",
+              "requirements": []
+            },
+            {
+              "name": "Lunar Habitat",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Lunar Habitat",
+              "requirements": []
+            },
+            {
+              "name": "Greenery",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Greenery",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "type": "option",
+          "title": "Pass for this generation",
+          "label": "Pass for this generation",
+          "cards_count": 0,
+          "options_count": 0
+        },
+        {
+          "index": 3,
+          "type": "card",
+          "title": "Sell patents",
+          "label": "Sell patents",
+          "cards_count": 12,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Breathing Filters",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Breathing Filters",
+              "requirements": [
+                {
+                  "oxygen": 7,
+                  "count": 7
+                }
+              ]
+            },
+            {
+              "name": "Moon Tether",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Moon Tether",
+              "requirements": [
+                {
+                  "tag": "space",
+                  "count": 6
+                }
+              ]
+            },
+            {
+              "name": "Pride of the Earth Arkship",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Pride of the Earth Arkship",
+              "requirements": [
+                {
+                  "tag": "science"
+                },
+                {
+                  "tag": "space",
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "name": "Herbivores",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Herbivores",
+              "requirements": [
+                {
+                  "oxygen": 8,
+                  "count": 8
+                }
+              ]
+            },
+            {
+              "name": "Improved Moon Concrete",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Improved Moon Concrete",
+              "requirements": []
+            },
+            {
+              "name": "Mining Quota",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Mining Quota",
+              "requirements": [
+                {
+                  "tag": "venus"
+                },
+                {
+                  "tag": "earth"
+                },
+                {
+                  "tag": "jovian"
+                }
+              ]
+            },
+            {
+              "name": "Jet Stream Microscrappers",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Jet Stream Microscrappers",
+              "requirements": []
+            },
+            {
+              "name": "Luxury Foods",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Luxury Foods",
+              "requirements": [
+                {
+                  "tag": "venus"
+                },
+                {
+                  "tag": "earth"
+                },
+                {
+                  "tag": "jovian"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "map_candidates": [],
+      "moon_candidates": [],
+      "players": [],
+      "colonies": [],
+      "parties": [],
+      "global_events": [],
+      "tokens": [],
+      "policies": [],
+      "resource_types": [],
+      "payment_context": {
+        "amount": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "title": "Take your next action"
+      }
+    },
+    "prompt_card_rankings": []
+  },
+  "policy": {
+    "chosen_action_index": 0,
+    "chosen_action_label": "PLAY_CARD(Floating Trade Hub)",
+    "chosen_action_payload": {
+      "type": "or",
+      "index": 0,
+      "response": {
+        "type": "card",
+        "cards": [
+          "Floating Trade Hub"
+        ]
+      }
+    },
+    "policy_temperature": 1.0,
+    "value_estimate": 0.32998010516166687,
+    "raw_available_actions": [
+      0,
+      1,
+      2,
+      202,
+      702
+    ],
+    "filtered_available_actions": [
+      0,
+      1,
+      2
+    ],
+    "legal_actions": [
+      0,
+      1,
+      2
+    ],
+    "action_rankings": [
+      {
+        "action_index": 0,
+        "label": "PLAY_CARD(Floating Trade Hub)",
+        "decoded_action": {
+          "type": "or",
+          "index": 0,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Floating Trade Hub"
+            ]
+          }
+        },
+        "raw_probability": 0.0029447299893945456,
+        "masked_probability": 0.6859555840492249,
+        "logit": 1.6705594062805176,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 1,
+        "label": "PLAY_CARD(Forced Precipitation)",
+        "decoded_action": {
+          "type": "or",
+          "index": 0,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Forced Precipitation"
+            ]
+          }
+        },
+        "raw_probability": 0.0011218205327168107,
+        "masked_probability": 0.2613207697868347,
+        "logit": 0.7054951190948486,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 2,
+        "label": "PLAY_CARD(Aerial Mappers)",
+        "decoded_action": {
+          "type": "or",
+          "index": 0,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Aerial Mappers"
+            ]
+          }
+        },
+        "raw_probability": 0.00022633672051597387,
+        "masked_probability": 0.05272367224097252,
+        "logit": -0.8951894640922546,
+        "chosen": false,
+        "legal": true
+      }
+    ],
+    "top_actions": [
+      {
+        "action_index": 0,
+        "label": "PLAY_CARD(Floating Trade Hub)",
+        "decoded_action": {
+          "type": "or",
+          "index": 0,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Floating Trade Hub"
+            ]
+          }
+        },
+        "raw_probability": 0.0029447299893945456,
+        "masked_probability": 0.6859555840492249,
+        "logit": 1.6705594062805176,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 1,
+        "label": "PLAY_CARD(Forced Precipitation)",
+        "decoded_action": {
+          "type": "or",
+          "index": 0,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Forced Precipitation"
+            ]
+          }
+        },
+        "raw_probability": 0.0011218205327168107,
+        "masked_probability": 0.2613207697868347,
+        "logit": 0.7054951190948486,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 2,
+        "label": "PLAY_CARD(Aerial Mappers)",
+        "decoded_action": {
+          "type": "or",
+          "index": 0,
+          "response": {
+            "type": "card",
+            "cards": [
+              "Aerial Mappers"
+            ]
+          }
+        },
+        "raw_probability": 0.00022633672051597387,
+        "masked_probability": 0.05272367224097252,
+        "logit": -0.8951894640922546,
+        "chosen": false,
+        "legal": true
+      }
+    ]
+  },
+  "aux": {
+    "targets": {
+      "milestone_claimability": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "award_ev": 0.3333333333333333,
+      "playable_cards": 0.4,
+      "steel_target": 0.1015625,
+      "titanium_target": 0.15
+    },
+    "predictions": {
+      "award_ev": 0.17056509852409363,
+      "playable_cards": 0.8422348499298096,
+      "steel_target": 0.11410310119390488,
+      "titanium_target": 0.12872099876403809,
+      "top_milestone_predictions": [
+        {
+          "index": 51,
+          "value": 0.2534489929676056
+        },
+        {
+          "index": 66,
+          "value": 0.22028431296348572
+        },
+        {
+          "index": 36,
+          "value": 0.15750791132450104
+        },
+        {
+          "index": 22,
+          "value": 0.136904776096344
+        },
+        {
+          "index": 30,
+          "value": 0.12177636474370956
+        },
+        {
+          "index": 27,
+          "value": 0.09581616520881653
+        },
+        {
+          "index": 49,
+          "value": 0.09479686617851257
+        },
+        {
+          "index": 54,
+          "value": 0.08425281196832657
+        },
+        {
+          "index": 13,
+          "value": 0.07600343227386475
+        },
+        {
+          "index": 3,
+          "value": 0.07376095652580261
+        }
+      ]
+    }
+  },
+  "diagnostics": {
+    "transformer": {
+      "enabled": true,
+      "active_token_ratio": 0.3333333432674408,
+      "active_row_ratio": 1.0,
+      "attention_context_norm": 7.89560079574585,
+      "fusion_delta_norm": 14.460350036621094,
+      "fusion_share": 17.294140458370496,
+      "shared_pre_norm": 0.8361415863037109,
+      "shared_post_norm": 14.399094581604004,
+      "token_count": 78,
+      "token_dim": 8,
+      "timestamp": 1773034632.209662,
+      "hand_token_count": 64,
+      "tableau_token_count": 8,
+      "opponent_token_count": 6,
+      "card_token_dim": 8
+    },
+    "rare_state": {
+      "weight": 1.0,
+      "award_funding": 0.0,
+      "milestone_timing": 0.0,
+      "draft_keep_buy": 0.0,
+      "high_cost_payment": 0.0,
+      "payment_value_estimate": 0.0
+    }
+  },
+  "snapshot_id": "20260309T053712Z_f85f6458-39a_or_g698543535c1_54796432-746",
+  "snapshot_path": "/app/debug_snapshots/20260309T053712Z_f85f6458-39a_or_g698543535c1_54796432-746.json"
+}

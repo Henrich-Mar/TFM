@@ -255,3 +255,70 @@ def test_space_prompt_features_prefer_city_with_existing_greenery_cluster(monkey
     assert totals[0] > totals[1]
     assert summary[0] == pytest.approx(1.0)
     assert summary[1] == pytest.approx(1.0)
+
+
+def test_dense_context_injects_awards_and_milestones_into_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if "rl-environment" not in sys.path:
+        sys.path.append("rl-environment")
+    import models.state_encoder as state_encoder_module
+
+    monkeypatch.setattr(state_encoder_module, "get_rust_module", lambda required=True: _FakeRustModule())
+    encoder = state_encoder_module.StateEncoder(
+        state_size=2048,
+        card_token_dim=20,
+        tableau_token_count=0,
+        hand_token_count=0,
+        opponent_token_count=0,
+    )
+
+    player_state = {
+        "thisPlayer": {
+            "id": "p1",
+            "name": "alpha",
+            "color": "red",
+        },
+        "players": [
+            {"id": "p1", "name": "alpha", "color": "red", "tableau": []},
+            {"id": "p2", "name": "beta", "color": "blue", "tableau": []},
+        ],
+        "game": {
+            "phase": "action",
+            "generation": 6,
+            "milestones": [
+                {
+                    "name": "Gardener",
+                    "playerColor": "",
+                    "scores": [
+                        {"playerColor": "red", "playerScore": 2},
+                        {"playerColor": "blue", "playerScore": 1},
+                    ],
+                },
+            ],
+            "awards": [
+                {
+                    "name": "Landscaper",
+                    "playerColor": "red",
+                    "scores": [
+                        {"playerColor": "red", "playerScore": 6},
+                        {"playerColor": "blue", "playerScore": 3},
+                    ],
+                },
+            ],
+        },
+        "waitingFor": {
+            "type": "or",
+            "options": [
+                {"type": "selectCard", "title": "Standard project"},
+                {"type": "or", "title": "Fund an award"},
+            ],
+        },
+    }
+
+    encoded = encoder.encode(player_state, turn_action_count=1)
+    awards_start, awards_end = encoder._awards_feature_bounds()
+
+    assert awards_end > awards_start
+    assert float(np.abs(encoded[awards_start:awards_end]).sum()) > 0.0
+    assert encoded[encoder._RUST_BASE_FEATURE_COUNT] == pytest.approx(0.0)

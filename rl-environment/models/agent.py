@@ -369,7 +369,7 @@ class InferenceBatcher:
 
 @dataclass
 class AgentConfig:
-    state_size: int = 1024
+    state_size: int = 3072
     hidden_size: int = 256
     num_layers: int = 3
     recurrent_size: int = 128
@@ -385,7 +385,7 @@ class AgentConfig:
     max_grad_norm: float = 1.0
     max_episode_steps: int = 512
     transformer_enabled: bool = True
-    card_token_dim: int = 8
+    card_token_dim: int = 20
     tableau_token_count: int = 8
     hand_token_count: int = 64
     opponent_token_count: int = 6
@@ -398,7 +398,7 @@ class AgentConfig:
 class CardAttentionModule(nn.Module):
     def __init__(
         self,
-        card_token_dim: int = 8,
+        card_token_dim: int = 20,
         embed_dim: int = 64,
         nhead: int = 4,
         num_layers: int = 2,
@@ -539,10 +539,10 @@ class TerraformingMarsNetwork(nn.Module):
         self.recurrent_size = max(16, int(config.recurrent_size))
         self.phase_head_count = max(2, int(config.phase_head_count))
         self.use_transformer = bool(getattr(config, "transformer_enabled", True))
-        self.card_token_dim = max(1, int(getattr(config, "card_token_dim", 8)))
+        self.card_token_dim = max(1, int(getattr(config, "card_token_dim", 20)))
         self.tableau_token_count = max(0, int(getattr(config, "tableau_token_count", 8)))
         self.hand_token_count = max(0, int(getattr(config, "hand_token_count", 64)))
-        self.opponent_token_count = max(0, int(getattr(config, "opponent_token_count", 4)))
+        self.opponent_token_count = max(0, int(getattr(config, "opponent_token_count", 6)))
         self.card_token_count = self.tableau_token_count + self.hand_token_count + self.opponent_token_count
         self.card_token_vector_size = self.card_token_count * self.card_token_dim
         self.card_token_start = max(0, int(config.state_size) - int(self.card_token_vector_size))
@@ -848,11 +848,11 @@ class RLAgent:
         if config is None:
             # Read environment variables for default config
             config = AgentConfig(
-                state_size=RLAgent._safe_env_int("AGENT_STATE_SIZE", 1024),
+                state_size=RLAgent._safe_env_int("AGENT_STATE_SIZE", 3072),
                 hidden_size=RLAgent._safe_env_int("AGENT_HIDDEN_SIZE", 256),
                 num_layers=RLAgent._safe_env_int("AGENT_NUM_LAYERS", 3),
                 transformer_enabled=str(os.getenv("AGENT_TRANSFORMER_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off"),
-                card_token_dim=RLAgent._safe_env_int("AGENT_CARD_TOKEN_DIM", 8),
+                card_token_dim=RLAgent._safe_env_int("AGENT_CARD_TOKEN_DIM", 20),
                 tableau_token_count=RLAgent._safe_env_int("AGENT_TABLEAU_TOKEN_COUNT", 8),
                 hand_token_count=RLAgent._safe_env_int("AGENT_HAND_TOKEN_COUNT", 64),
                 opponent_token_count=RLAgent._safe_env_int("AGENT_OPPONENT_TOKEN_COUNT", 6),

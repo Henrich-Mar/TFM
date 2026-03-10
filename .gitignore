@@ -14,3 +14,5 @@ rl-environment/rl-logs/rl-coordinator.log.2
 rl-environment/rl-logs/rl-coordinator.log.3
 rl-environment/rl-logs/rl-coordinator.log.4
 rl-environment/rl-logs/rl-coordinator.log.5
+rl-environment/Cargo.lock
+rl-environment/target/

@@ -1,0 +1,1666 @@
+{
+  "schema_version": "decision_snapshot.v1",
+  "captured_at": "2026-03-09T20:46:05Z",
+  "request": {
+    "request_id": "b15dd265-f3af-4064-9682-3f367da1701f",
+    "note": "",
+    "include_state_vector": false
+  },
+  "agent": {
+    "id": "9810f7b3-2f0e-45a0-b458-a2b3fb87227c"
+  },
+  "prompt": {
+    "game_id": "gfbc196eaa7b0",
+    "game_url": "http://localhost:8082/game?id=gfbc196eaa7b0",
+    "player_id": "pc5247b04be44",
+    "player_name": "A3_9810f7b3",
+    "phase": "action",
+    "phase_index": 2,
+    "generation": 4,
+    "prompt_type": "or",
+    "prompt_title": "Take your first action",
+    "turn_action_count": 0,
+    "sampled_from_policy": true,
+    "send_outcome": "accepted"
+  },
+  "state": {
+    "this_player": {
+      "id": "",
+      "name": "A3_9810f7b3",
+      "color": "green",
+      "terraform_rating": 25.0,
+      "resources": {
+        "mc": 19.0,
+        "steel": 3.0,
+        "titanium": 3.0,
+        "plants": 3.0,
+        "energy": 1.0,
+        "heat": 5.0
+      },
+      "production": {
+        "mc": 1.0,
+        "steel": 1.0,
+        "titanium": 1.0,
+        "plants": 1.0,
+        "energy": 1.0,
+        "heat": 2.0
+      },
+      "hand_count": 16,
+      "tableau_count": 4,
+      "cities_count": 0,
+      "greeneries_count": 0
+    },
+    "hand": [
+      {
+        "name": "Ore Processor",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Ore Processor",
+        "requirements": []
+      },
+      {
+        "name": "Thermophiles",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Thermophiles",
+        "requirements": [
+          {
+            "venus": 6,
+            "count": 6
+          }
+        ]
+      },
+      {
+        "name": "Ishtar Expedition",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Ishtar Expedition",
+        "requirements": [
+          {
+            "venus": 10,
+            "count": 10
+          }
+        ]
+      },
+      {
+        "name": "Floating Habs",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Floating Habs",
+        "requirements": [
+          {
+            "tag": "science",
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Hostile Takeover",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Hostile Takeover",
+        "requirements": [
+          {
+            "habitatRate": 2,
+            "count": 2
+          },
+          {
+            "miningRate": 4,
+            "count": 4
+          }
+        ]
+      },
+      {
+        "name": "Advanced Ecosystems",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Advanced Ecosystems",
+        "requirements": [
+          {
+            "tag": "plant"
+          },
+          {
+            "tag": "animal"
+          },
+          {
+            "tag": "microbe"
+          }
+        ]
+      },
+      {
+        "name": "Off-World City Living",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Off-World City Living",
+        "requirements": []
+      },
+      {
+        "name": "HE3 Lobbyists",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "HE3 Lobbyists",
+        "requirements": []
+      },
+      {
+        "name": "Venus Shuttles",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Venus Shuttles",
+        "requirements": []
+      },
+      {
+        "name": "Zeppelins",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Zeppelins",
+        "requirements": [
+          {
+            "oxygen": 5,
+            "count": 5
+          }
+        ]
+      },
+      {
+        "name": "Road Piracy",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Road Piracy",
+        "requirements": [
+          {
+            "logisticRate": 3,
+            "count": 3
+          }
+        ]
+      },
+      {
+        "name": "Permafrost Extraction",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Permafrost Extraction",
+        "requirements": [
+          {
+            "temperature": -8,
+            "count": -8
+          }
+        ]
+      },
+      {
+        "name": "AI Controlled Mine Network",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "AI Controlled Mine Network",
+        "requirements": [
+          {
+            "logisticRate": 2,
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Beam From A Thorium Asteroid",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Beam From A Thorium Asteroid",
+        "requirements": [
+          {
+            "tag": "jovian"
+          }
+        ]
+      },
+      {
+        "name": "Fish",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Fish",
+        "requirements": [
+          {
+            "temperature": 2,
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Preliminary Darkside",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Preliminary Darkside",
+        "requirements": []
+      }
+    ],
+    "tableau": [
+      {
+        "name": "Viron",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Viron",
+        "requirements": []
+      },
+      {
+        "name": "Terraforming Deal",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Terraforming Deal",
+        "requirements": []
+      },
+      {
+        "name": "Focused Organization",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Focused Organization",
+        "requirements": []
+      },
+      {
+        "name": "Forced Precipitation",
+        "cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Forced Precipitation",
+        "requirements": []
+      }
+    ],
+    "opponents": [
+      {
+        "id": "",
+        "name": "A4_da47cdd0",
+        "color": "yellow",
+        "terraform_rating": 27.0,
+        "resources": {
+          "mc": 3.0,
+          "steel": 2.0,
+          "titanium": 2.0,
+          "plants": 5.0,
+          "energy": 3.0,
+          "heat": 6.0
+        },
+        "production": {
+          "mc": 5.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 3.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 7,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A1_e8c895fa",
+        "color": "red",
+        "terraform_rating": 26.0,
+        "resources": {
+          "mc": 5.0,
+          "steel": 2.0,
+          "titanium": 1.0,
+          "plants": 8.0,
+          "energy": 1.0,
+          "heat": 1.0
+        },
+        "production": {
+          "mc": 0.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 4.0,
+          "energy": 2.0,
+          "heat": 4.0
+        },
+        "hand_count": 0,
+        "tableau_count": 6,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A2_98320622",
+        "color": "blue",
+        "terraform_rating": 26.0,
+        "resources": {
+          "mc": 0.0,
+          "steel": 4.0,
+          "titanium": 1.0,
+          "plants": 6.0,
+          "energy": 1.0,
+          "heat": 5.0
+        },
+        "production": {
+          "mc": 3.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 2.0,
+          "energy": 1.0,
+          "heat": 4.0
+        },
+        "hand_count": 0,
+        "tableau_count": 5,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A3_9810f7b3",
+        "color": "green",
+        "terraform_rating": 25.0,
+        "resources": {
+          "mc": 19.0,
+          "steel": 3.0,
+          "titanium": 3.0,
+          "plants": 3.0,
+          "energy": 1.0,
+          "heat": 5.0
+        },
+        "production": {
+          "mc": 1.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 1.0,
+          "heat": 2.0
+        },
+        "hand_count": 0,
+        "tableau_count": 4,
+        "cities_count": 0,
+        "greeneries_count": 0
+      }
+    ],
+    "board": {
+      "temperature": -8.0,
+      "oxygen": 2.0,
+      "oceans": 2.0,
+      "venus": 10.0,
+      "map_name": ""
+    },
+    "awards": [
+      {
+        "index": 0,
+        "name": "Landlord",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 4.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Scientist",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Banker",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 5.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Thermalist",
+        "funded_by": "A2_98320622",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 6.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 10.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 8.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 10.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Miner",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 7.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 8.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 6.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Venuphile",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 6,
+        "name": "Lunar Magnate",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 2.0
+          }
+        ]
+      }
+    ],
+    "milestones": [
+      {
+        "index": 0,
+        "name": "Terraformer",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 26.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 26.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 25.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 27.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Mayor",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Gardener",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Builder",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Planner",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 10.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 7.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 16.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 8.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Hoverlord",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 6,
+        "name": "One Giant Step",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 1.0
+          }
+        ]
+      }
+    ],
+    "prompt_candidates": {
+      "cards": [
+        {
+          "name": "Ore Processor",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Ore Processor",
+          "requirements": []
+        },
+        {
+          "name": "Thermophiles",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Thermophiles",
+          "requirements": [
+            {
+              "venus": 6,
+              "count": 6
+            }
+          ]
+        },
+        {
+          "name": "Ishtar Expedition",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Ishtar Expedition",
+          "requirements": [
+            {
+              "venus": 10,
+              "count": 10
+            }
+          ]
+        },
+        {
+          "name": "HE3 Lobbyists",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "HE3 Lobbyists",
+          "requirements": []
+        },
+        {
+          "name": "Venus Shuttles",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Venus Shuttles",
+          "requirements": []
+        },
+        {
+          "name": "Road Piracy",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Road Piracy",
+          "requirements": [
+            {
+              "logisticRate": 3,
+              "count": 3
+            }
+          ]
+        },
+        {
+          "name": "Permafrost Extraction",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Permafrost Extraction",
+          "requirements": [
+            {
+              "temperature": -8,
+              "count": -8
+            }
+          ]
+        },
+        {
+          "name": "AI Controlled Mine Network",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "AI Controlled Mine Network",
+          "requirements": [
+            {
+              "logisticRate": 2,
+              "count": 2
+            }
+          ]
+        },
+        {
+          "name": "Preliminary Darkside",
+          "cost": 0.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Preliminary Darkside",
+          "requirements": []
+        }
+      ],
+      "options": [
+        {
+          "index": 0,
+          "type": "or",
+          "title": "Claim a milestone",
+          "label": "Claim a milestone",
+          "cards_count": 0,
+          "options_count": 1,
+          "options_preview": [
+            {
+              "index": 0,
+              "label": "Planner",
+              "type": "option"
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "type": "card",
+          "title": "Perform an action from a played card",
+          "label": "Perform an action from a played card",
+          "cards_count": 2,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Focused Organization",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Focused Organization",
+              "requirements": []
+            },
+            {
+              "name": "Forced Precipitation",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Forced Precipitation",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "type": "projectCard",
+          "title": "Play project card",
+          "label": "Play project card",
+          "cards_count": 9,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Ore Processor",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Ore Processor",
+              "requirements": []
+            },
+            {
+              "name": "Thermophiles",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Thermophiles",
+              "requirements": [
+                {
+                  "venus": 6,
+                  "count": 6
+                }
+              ]
+            },
+            {
+              "name": "Ishtar Expedition",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Ishtar Expedition",
+              "requirements": [
+                {
+                  "venus": 10,
+                  "count": 10
+                }
+              ]
+            },
+            {
+              "name": "HE3 Lobbyists",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "HE3 Lobbyists",
+              "requirements": []
+            },
+            {
+              "name": "Venus Shuttles",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Venus Shuttles",
+              "requirements": []
+            },
+            {
+              "name": "Road Piracy",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Road Piracy",
+              "requirements": [
+                {
+                  "logisticRate": 3,
+                  "count": 3
+                }
+              ]
+            },
+            {
+              "name": "Permafrost Extraction",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Permafrost Extraction",
+              "requirements": [
+                {
+                  "temperature": -8,
+                  "count": -8
+                }
+              ]
+            },
+            {
+              "name": "AI Controlled Mine Network",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "AI Controlled Mine Network",
+              "requirements": [
+                {
+                  "logisticRate": 2,
+                  "count": 2
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "type": "or",
+          "title": "Fund an award (${0} M\u20ac)",
+          "label": "Fund an award (${0} M\u20ac)",
+          "cards_count": 0,
+          "options_count": 6,
+          "options_preview": [
+            {
+              "index": 0,
+              "label": "Landlord",
+              "type": "option"
+            },
+            {
+              "index": 1,
+              "label": "Scientist",
+              "type": "option"
+            },
+            {
+              "index": 2,
+              "label": "Banker",
+              "type": "option"
+            },
+            {
+              "index": 3,
+              "label": "Miner",
+              "type": "option"
+            },
+            {
+              "index": 4,
+              "label": "Venuphile",
+              "type": "option"
+            },
+            {
+              "index": 5,
+              "label": "Lunar Magnate",
+              "type": "option"
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "type": "card",
+          "title": "Standard projects",
+          "label": "Standard projects",
+          "cards_count": 9,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Power Plant:SP",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Power Plant:SP",
+              "requirements": []
+            },
+            {
+              "name": "Asteroid:SP",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Asteroid:SP",
+              "requirements": []
+            },
+            {
+              "name": "Air Scrapping",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Air Scrapping",
+              "requirements": []
+            },
+            {
+              "name": "Aquifer",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Aquifer",
+              "requirements": []
+            },
+            {
+              "name": "Road Infrastructure",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Road Infrastructure",
+              "requirements": []
+            },
+            {
+              "name": "Lunar Mine",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Lunar Mine",
+              "requirements": []
+            },
+            {
+              "name": "Lunar Habitat",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Lunar Habitat",
+              "requirements": []
+            },
+            {
+              "name": "Greenery",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Greenery",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "type": "option",
+          "title": "Pass for this generation",
+          "label": "Pass for this generation",
+          "cards_count": 0,
+          "options_count": 0
+        },
+        {
+          "index": 6,
+          "type": "card",
+          "title": "Sell patents",
+          "label": "Sell patents",
+          "cards_count": 16,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Ore Processor",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Ore Processor",
+              "requirements": []
+            },
+            {
+              "name": "Thermophiles",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Thermophiles",
+              "requirements": [
+                {
+                  "venus": 6,
+                  "count": 6
+                }
+              ]
+            },
+            {
+              "name": "Ishtar Expedition",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Ishtar Expedition",
+              "requirements": [
+                {
+                  "venus": 10,
+                  "count": 10
+                }
+              ]
+            },
+            {
+              "name": "Floating Habs",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Floating Habs",
+              "requirements": [
+                {
+                  "tag": "science",
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "name": "Hostile Takeover",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Hostile Takeover",
+              "requirements": [
+                {
+                  "habitatRate": 2,
+                  "count": 2
+                },
+                {
+                  "miningRate": 4,
+                  "count": 4
+                }
+              ]
+            },
+            {
+              "name": "Advanced Ecosystems",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Advanced Ecosystems",
+              "requirements": [
+                {
+                  "tag": "plant"
+                },
+                {
+                  "tag": "animal"
+                },
+                {
+                  "tag": "microbe"
+                }
+              ]
+            },
+            {
+              "name": "Off-World City Living",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Off-World City Living",
+              "requirements": []
+            },
+            {
+              "name": "HE3 Lobbyists",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "HE3 Lobbyists",
+              "requirements": []
+            }
+          ]
+        }
+      ],
+      "map_candidates": [],
+      "moon_candidates": [],
+      "players": [],
+      "colonies": [],
+      "parties": [],
+      "global_events": [],
+      "tokens": [],
+      "policies": [],
+      "resource_types": [],
+      "payment_context": {
+        "amount": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "title": "Take your first action"
+      }
+    },
+    "prompt_card_rankings": []
+  },
+  "policy": {
+    "chosen_action_index": 103,
+    "chosen_action_label": "STANDARD_PROJECT(Greenery)",
+    "chosen_action_payload": {
+      "type": "or",
+      "index": 4,
+      "response": {
+        "type": "card",
+        "cards": [
+          "Aquifer"
+        ]
+      }
+    },
+    "policy_temperature": 1.0,
+    "value_estimate": 1.0279754400253296,
+    "raw_available_actions": [
+      200,
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      600,
+      601,
+      602,
+      603,
+      604,
+      605,
+      100,
+      101,
+      102,
+      103,
+      104,
+      205
+    ],
+    "filtered_available_actions": [
+      200,
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      600,
+      601,
+      602,
+      603,
+      604,
+      605,
+      100,
+      101,
+      102,
+      103,
+      104
+    ],
+    "legal_actions": [
+      200,
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      600,
+      601,
+      602,
+      603,
+      604,
+      605,
+      100,
+      101,
+      102,
+      103,
+      104
+    ],
+    "action_rankings": [],
+    "top_actions": []
+  },
+  "aux": {
+    "targets": {
+      "milestone_claimability": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.9259259104728699,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "award_ev": 0.0,
+      "playable_cards": 1.0,
+      "steel_target": 0.037109375,
+      "titanium_target": 0.057291666666666664
+    },
+    "predictions": {
+      "award_ev": 0.3211660087108612,
+      "playable_cards": 0.8519984483718872,
+      "steel_target": 0.051888357847929,
+      "titanium_target": 0.08008001744747162,
+      "top_milestone_predictions": [
+        {
+          "index": 57,
+          "value": 0.3905869126319885
+        },
+        {
+          "index": 41,
+          "value": 0.2530745565891266
+        },
+        {
+          "index": 3,
+          "value": 0.22253455221652985
+        },
+        {
+          "index": 9,
+          "value": 0.18501895666122437
+        },
+        {
+          "index": 6,
+          "value": 0.17686226963996887
+        },
+        {
+          "index": 12,
+          "value": 0.13170041143894196
+        },
+        {
+          "index": 51,
+          "value": 0.1263120174407959
+        },
+        {
+          "index": 15,
+          "value": 0.11612500995397568
+        },
+        {
+          "index": 48,
+          "value": 0.11296522617340088
+        },
+        {
+          "index": 20,
+          "value": 0.11225620657205582
+        }
+      ]
+    }
+  },
+  "diagnostics": {
+    "transformer": {},
+    "rare_state": {
+      "weight": 2.8,
+      "award_funding": 1.0,
+      "milestone_timing": 1.0,
+      "draft_keep_buy": 0.0,
+      "high_cost_payment": 0.0,
+      "payment_value_estimate": 0.0
+    }
+  },
+  "snapshot_id": "20260309T204605Z_9810f7b3-2f0_or_gfbc196eaa7b_b15dd265-f3a",
+  "snapshot_path": "/app/debug_snapshots/20260309T204605Z_9810f7b3-2f0_or_gfbc196eaa7b_b15dd265-f3a.json"
+}

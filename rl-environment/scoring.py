@@ -468,6 +468,8 @@ def _compute_hate_draft_diagnostics(
         "hate_draft_opp_overlap_mean": 0.0,
         "hate_draft_own_overlap_mean": 0.0,
         "hate_draft_deny_self_gap": 0.0,
+        "hate_draft_selected_keep_ev": 0.0,
+        "hate_draft_keep_gap": 0.0,
         "selected_card_count": 0.0,
     }
     if not isinstance(action_input, dict):
@@ -572,6 +574,12 @@ def _compute_hate_draft_diagnostics(
         diagnostics["hate_draft_opp_overlap_mean"] = float(opp_mean)
         diagnostics["hate_draft_own_overlap_mean"] = float(own_mean)
         diagnostics["hate_draft_deny_self_gap"] = float(opp_mean - own_mean)
+        selected_keep_ev = sum(_card_quality(card, before_player) for card in selected_cards) / len(selected_cards)
+        diagnostics["hate_draft_selected_keep_ev"] = float(selected_keep_ev)
+        diagnostics["hate_draft_keep_gap"] = max(
+            0.0,
+            float(diagnostics.get("hate_draft_best_keep_ev", 0.0)) - float(selected_keep_ev),
+        )
 
     return diagnostics
 
@@ -602,6 +610,19 @@ def _hate_draft_adjustment(
         bonus = min(0.07, 0.03 * avg_hate + 0.015)
         applied = True
 
+    best_keep_ev = max(0.0, float(diag.get("hate_draft_best_keep_ev", 0.0)))
+    selected_keep_ev = max(0.0, float(diag.get("hate_draft_selected_keep_ev", 0.0)))
+    keep_gap = max(0.0, best_keep_ev - selected_keep_ev)
+    low_hand_ev = float(diag.get("hate_draft_low_hand_ev", 0.0)) > 0.5
+    retention_penalty = 0.0
+    if (not low_hand_ev) and best_keep_ev >= 0.38 and keep_gap > 0.06:
+        retention_penalty = min(
+            0.09,
+            (0.05 * keep_gap) + (0.035 * max(0.0, best_keep_ev - 0.45)),
+        )
+        bonus -= retention_penalty
+
+    bonus = max(-0.08, float(bonus))
     return float(bonus), applied
 
 
@@ -1190,12 +1211,21 @@ def _space_placement_adjustment(
 
     enemy_city_ids = set()
     own_city_ids = set()
+    all_greenery_ids = set()
+    own_greenery_ids = set()
+    ocean_ids = set()
     for space in board_spaces:
         sid = _space_id(space)
         if not sid:
             continue
-        is_city, _, _ = _space_tile_flags(space)
+        is_city, is_greenery, is_ocean = _space_tile_flags(space)
         owner = _space_owner_color(space)
+        if is_greenery:
+            all_greenery_ids.add(sid)
+            if owner == own_color:
+                own_greenery_ids.add(sid)
+        if is_ocean:
+            ocean_ids.add(sid)
         if not is_city or not owner:
             continue
         if owner == own_color:
@@ -1205,14 +1235,45 @@ def _space_placement_adjustment(
 
     enemy_city_adj = sum(1 for sid in neighbors if sid in enemy_city_ids)
     own_city_adj = sum(1 for sid in neighbors if sid in own_city_ids)
+    total_greenery_adj = sum(1 for sid in neighbors if sid in all_greenery_ids)
+    own_greenery_adj = sum(1 for sid in neighbors if sid in own_greenery_ids)
+    ocean_adj = sum(1 for sid in neighbors if sid in ocean_ids)
 
     before_waiting = before_state.get('waitingFor', {}) if isinstance(before_state, dict) else {}
     waiting_prompt = _space_waiting_prompt(before_waiting, action_input)
     intent = _infer_space_prompt_tile_intent(waiting_prompt or before_waiting or {})
+    waiting_ids = _waiting_space_ids(waiting_prompt)
+
+    def _placement_value(space_id: str) -> float:
+        option_neighbors = adjacency.get(space_id, set())
+        option_enemy_city_adj = sum(1 for sid in option_neighbors if sid in enemy_city_ids)
+        option_own_city_adj = sum(1 for sid in option_neighbors if sid in own_city_ids)
+        option_total_greenery_adj = sum(1 for sid in option_neighbors if sid in all_greenery_ids)
+        option_own_greenery_adj = sum(1 for sid in option_neighbors if sid in own_greenery_ids)
+        option_ocean_adj = sum(1 for sid in option_neighbors if sid in ocean_ids)
+        if intent == 'greenery':
+            return (
+                (1.35 * float(option_own_city_adj))
+                - (0.90 * float(option_enemy_city_adj))
+                + (0.20 * float(option_ocean_adj))
+                + (0.08 * float(option_own_greenery_adj))
+            )
+        if intent == 'city':
+            return (
+                (0.95 * float(option_total_greenery_adj))
+                + (0.25 * float(option_own_greenery_adj))
+                + (0.40 * float(option_enemy_city_adj))
+            )
+        if intent == 'special':
+            return (0.45 * float(option_enemy_city_adj)) + (0.12 * float(option_total_greenery_adj))
+        return 0.0
+
+    selected_value = _placement_value(placed_space_id)
+    best_available_value = max((_placement_value(sid) for sid in waiting_ids), default=selected_value)
+    missed_value = max(0.0, float(best_available_value) - float(selected_value))
 
     adjustment = 0.0
     if intent == 'greenery':
-        waiting_ids = _waiting_space_ids(waiting_prompt)
         risky_total = 0
         if waiting_ids:
             for sid in waiting_ids:
@@ -1221,17 +1282,31 @@ def _space_placement_adjustment(
                     risky_total += 1
         all_options_risky = bool(waiting_ids) and risky_total >= len(waiting_ids)
 
+        if own_city_adj > 0:
+            adjustment += min(0.12, (0.05 * float(own_city_adj)) + (0.01 * float(ocean_adj)))
         if enemy_city_adj > 0:
             base_penalty = min(0.16, 0.08 * float(enemy_city_adj))
-            adjustment -= base_penalty * (0.25 if all_options_risky else 1.0)
-        elif own_city_adj > 0:
-            adjustment += min(0.06, 0.03 * float(own_city_adj))
+            adjustment -= base_penalty * (0.35 if all_options_risky else 1.0)
+        adjustment += min(0.04, 0.01 * float(own_greenery_adj))
+        if missed_value > 0.20:
+            adjustment -= min(0.12, 0.035 * float(missed_value))
     elif intent == 'special' and enemy_city_adj > 0:
         # Strategic blocking around enemy cities is a valid positive tactic.
-        adjustment += min(0.05, 0.02 * float(enemy_city_adj))
-    elif intent == 'city' and enemy_city_adj > 0:
-        # Placing a city adjacent to enemy cities blocks their greenery expansion.
-        adjustment += min(0.05, 0.02 * float(enemy_city_adj))
+        adjustment += min(0.06, 0.025 * float(enemy_city_adj))
+        if missed_value > 0.35:
+            adjustment -= min(0.10, 0.03 * float(missed_value))
+    elif intent == 'city':
+        if total_greenery_adj > 0:
+            adjustment += min(
+                0.16,
+                (0.035 * float(total_greenery_adj))
+                + (0.015 * float(own_greenery_adj)),
+            )
+        if enemy_city_adj > 0:
+            # Placing a city adjacent to enemy cities blocks their greenery expansion.
+            adjustment += min(0.05, 0.02 * float(enemy_city_adj))
+        if missed_value > 0.20:
+            adjustment -= min(0.12, 0.035 * float(missed_value))
 
     return float(adjustment)
 
@@ -1307,6 +1382,8 @@ def calculate_step_reward_decomposition(
     hate_draft_bonus_applied = False
     sniping_milestone_applied = False
     sniping_award_applied = False
+    persistent_sold = 0
+    vp_cards_sold = 0
 
     # Reward tangible engine growth.
     before_tableau = before_player.get('tableau', []) or []
@@ -1432,7 +1509,6 @@ def calculate_step_reward_decomposition(
             for name in sold_cards
             if isinstance(name, str) and str(name or "").strip()
         }
-        persistent_sold = 0
         for card in before_hand:
             if not isinstance(card, dict):
                 continue
@@ -1441,7 +1517,7 @@ def calculate_step_reward_decomposition(
                 continue
             meta = _card_metadata_by_name(name)
             has_action = bool(card.get("hasAction", meta.get("hasAction", False)))
-            vp = _safe_float(meta.get("victoryPoints", card.get("victoryPoints", 0)), 0.0)
+            vp = _card_nominal_vp(card)
             desc = str(card.get("description", meta.get("description", "")) or "").lower()
             is_persistent = bool(
                 has_action
@@ -1452,8 +1528,10 @@ def calculate_step_reward_decomposition(
             )
             if is_persistent:
                 persistent_sold += 1
+            if vp > 0.0:
+                vp_cards_sold += 1
         if persistent_sold > 0:
-            other_component -= min(0.20, 0.07 * float(persistent_sold))
+            other_component -= min(0.26, 0.09 * float(persistent_sold))
 
     generation_raw = _safe_float(before_game.get('generation', 1), 1.0)
     generation_progress = max(0.0, min(generation_raw / 14.0, 1.0))
@@ -1543,18 +1621,28 @@ def calculate_step_reward_decomposition(
     selected_card_name = _extract_selected_card_name(action_input)
     selected_card = _find_card_by_name(before_hand, selected_card_name)
     selected_card_vp = _card_nominal_vp(selected_card)
+    selected_card_quality = _card_quality(selected_card, before_player) if isinstance(selected_card, dict) else 0.0
     affordable_vp_cards = [
         card for card in before_hand
         if _card_nominal_vp(card) > 0.0 and _can_afford_card_now(card, before_player)
     ]
     best_affordable_vp = max((_card_nominal_vp(card) for card in affordable_vp_cards), default=0.0)
+    best_affordable_vp_quality = max((_card_quality(card, before_player) for card in affordable_vp_cards), default=0.0)
     if endgame_pressure > 0.0:
         if selected_card_vp > 0.0:
-            cards_vp_component += min(0.16, endgame_pressure * (0.05 + (0.03 * min(selected_card_vp, 4.0))))
+            cards_vp_component += min(0.22, endgame_pressure * (0.06 + (0.035 * min(selected_card_vp, 4.0))))
+            missed_vp_gap = max(0.0, best_affordable_vp - selected_card_vp)
+            if missed_vp_gap > 0.5 and (best_affordable_vp_quality - selected_card_quality) > 0.05:
+                cards_vp_component -= min(0.10, endgame_pressure * (0.02 + (0.025 * min(missed_vp_gap, 4.0))))
+        elif action_type in ('projectcard', 'card') and selected_card_name:
+            if best_affordable_vp > 0.0:
+                cards_vp_component -= min(0.18, endgame_pressure * (0.05 + (0.025 * min(best_affordable_vp, 5.0))))
         elif action_type == 'standardproject' and best_affordable_vp > 0.0:
-            cards_vp_component -= min(0.16, endgame_pressure * (0.05 + (0.02 * min(best_affordable_vp, 5.0))))
+            cards_vp_component -= min(0.18, endgame_pressure * (0.05 + (0.025 * min(best_affordable_vp, 5.0))))
         elif action_type == 'pass' and best_affordable_vp > 0.0:
-            cards_vp_component -= min(0.12, endgame_pressure * (0.03 + (0.02 * min(best_affordable_vp, 5.0))))
+            cards_vp_component -= min(0.14, endgame_pressure * (0.03 + (0.022 * min(best_affordable_vp, 5.0))))
+        if vp_cards_sold > 0:
+            cards_vp_component -= min(0.18, endgame_pressure * (0.05 + (0.03 * float(vp_cards_sold))))
 
     # Resource-pattern shaping: penalize burning VP-hoard resources and reward efficient conversions.
     cards_vp_component += _resource_management_adjustment(before_state, after_state, action_input)

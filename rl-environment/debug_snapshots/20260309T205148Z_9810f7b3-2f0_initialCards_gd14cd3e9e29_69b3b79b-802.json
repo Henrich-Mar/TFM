@@ -1,0 +1,2930 @@
+{
+  "schema_version": "decision_snapshot.v1",
+  "captured_at": "2026-03-09T20:51:48Z",
+  "request": {
+    "request_id": "69b3b79b-8023-4afe-bd64-8a333fa983e3",
+    "note": "",
+    "include_state_vector": false
+  },
+  "agent": {
+    "id": "9810f7b3-2f0e-45a0-b458-a2b3fb87227c"
+  },
+  "prompt": {
+    "game_id": "gd14cd3e9e293",
+    "game_url": "http://localhost:8083/game?id=gd14cd3e9e293",
+    "player_id": "p23cb481896d1",
+    "player_name": "A1_9810f7b3",
+    "phase": "research",
+    "phase_index": 0,
+    "generation": 1,
+    "prompt_type": "initialCards",
+    "prompt_title": "",
+    "turn_action_count": 0,
+    "sampled_from_policy": true,
+    "send_outcome": "accepted"
+  },
+  "state": {
+    "this_player": {
+      "id": "",
+      "name": "A1_9810f7b3",
+      "color": "red",
+      "terraform_rating": 20.0,
+      "resources": {
+        "mc": 0.0,
+        "steel": 0.0,
+        "titanium": 0.0,
+        "plants": 0.0,
+        "energy": 0.0,
+        "heat": 0.0
+      },
+      "production": {
+        "mc": 1.0,
+        "steel": 1.0,
+        "titanium": 1.0,
+        "plants": 1.0,
+        "energy": 1.0,
+        "heat": 1.0
+      },
+      "hand_count": 0,
+      "tableau_count": 0,
+      "cities_count": 0,
+      "greeneries_count": 0
+    },
+    "hand": [],
+    "tableau": [],
+    "opponents": [
+      {
+        "id": "",
+        "name": "A1_9810f7b3",
+        "color": "red",
+        "terraform_rating": 20.0,
+        "resources": {
+          "mc": 0.0,
+          "steel": 0.0,
+          "titanium": 0.0,
+          "plants": 0.0,
+          "energy": 0.0,
+          "heat": 0.0
+        },
+        "production": {
+          "mc": 1.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 1.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 0,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A2_training",
+        "color": "blue",
+        "terraform_rating": 20.0,
+        "resources": {
+          "mc": 0.0,
+          "steel": 0.0,
+          "titanium": 0.0,
+          "plants": 0.0,
+          "energy": 0.0,
+          "heat": 0.0
+        },
+        "production": {
+          "mc": 1.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 1.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 0,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A3_training",
+        "color": "green",
+        "terraform_rating": 20.0,
+        "resources": {
+          "mc": 0.0,
+          "steel": 0.0,
+          "titanium": 0.0,
+          "plants": 0.0,
+          "energy": 0.0,
+          "heat": 0.0
+        },
+        "production": {
+          "mc": 1.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 1.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 0,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A4_training",
+        "color": "yellow",
+        "terraform_rating": 20.0,
+        "resources": {
+          "mc": 0.0,
+          "steel": 0.0,
+          "titanium": 0.0,
+          "plants": 0.0,
+          "energy": 0.0,
+          "heat": 0.0
+        },
+        "production": {
+          "mc": 1.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 1.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 0,
+        "cities_count": 0,
+        "greeneries_count": 0
+      }
+    ],
+    "board": {
+      "temperature": -30.0,
+      "oxygen": 0.0,
+      "oceans": 0.0,
+      "venus": 0.0,
+      "map_name": ""
+    },
+    "awards": [
+      {
+        "index": 0,
+        "name": "Traveller",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Landscaper",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Highlander",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Promoter",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Manufacturer",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 2.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Venuphile",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 6,
+        "name": "Lunar Magnate",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      }
+    ],
+    "milestones": [
+      {
+        "index": 0,
+        "name": "Agronomist",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Spacefarer",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Geologist",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Engineer",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 2.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Farmer",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 5,
+        "name": "Hoverlord",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "index": 6,
+        "name": "One Giant Step",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 0.0
+          }
+        ]
+      }
+    ],
+    "prompt_candidates": {
+      "cards": [],
+      "options": [
+        {
+          "index": 0,
+          "type": "card",
+          "title": "Select corporation",
+          "label": "Select corporation",
+          "cards_count": 2,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "United Nations Mars Initiative",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "United Nations Mars Initiative",
+              "requirements": []
+            },
+            {
+              "name": "Morning Star Inc.",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Morning Star Inc.",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "type": "card",
+          "title": "Select 2 Prelude cards",
+          "label": "Select 2 Prelude cards",
+          "cards_count": 4,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Main Belt Asteroids",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Main Belt Asteroids",
+              "requirements": []
+            },
+            {
+              "name": "Research Network",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Research Network",
+              "requirements": []
+            },
+            {
+              "name": "Early Settlement",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Early Settlement",
+              "requirements": []
+            },
+            {
+              "name": "Atmospheric Enhancers",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Atmospheric Enhancers",
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "type": "card",
+          "title": "Select initial cards to buy",
+          "label": "Select initial cards to buy",
+          "cards_count": 10,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Cupola City",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Cupola City",
+              "requirements": [
+                {
+                  "oxygen": 9,
+                  "max": true,
+                  "count": 9
+                }
+              ]
+            },
+            {
+              "name": "Thorium Rush",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Thorium Rush",
+              "requirements": []
+            },
+            {
+              "name": "Wave Power",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Wave Power",
+              "requirements": [
+                {
+                  "oceans": 3,
+                  "count": 3
+                }
+              ]
+            },
+            {
+              "name": "Fish",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Fish",
+              "requirements": [
+                {
+                  "temperature": 2,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "name": "Giant Solar Shade",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Giant Solar Shade",
+              "requirements": []
+            },
+            {
+              "name": "Terraforming Contract",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Terraforming Contract",
+              "requirements": [
+                {
+                  "tr": 25,
+                  "count": 25
+                }
+              ]
+            },
+            {
+              "name": "Mining Robots Manuf. Center",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Mining Robots Manuf. Center",
+              "requirements": []
+            },
+            {
+              "name": "Luna Archives",
+              "cost": 0.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Luna Archives",
+              "requirements": []
+            }
+          ]
+        }
+      ],
+      "map_candidates": [],
+      "moon_candidates": [],
+      "players": [],
+      "colonies": [],
+      "parties": [],
+      "global_events": [],
+      "tokens": [],
+      "policies": [],
+      "resource_types": [],
+      "payment_context": {
+        "amount": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "title": ""
+      }
+    },
+    "prompt_card_rankings": []
+  },
+  "policy": {
+    "chosen_action_index": 850,
+    "chosen_action_label": "STARTUP_PLAN(0)",
+    "chosen_action_payload": {
+      "type": "initialCards",
+      "responses": [
+        {
+          "type": "card",
+          "cards": [
+            "Morning Star Inc."
+          ]
+        },
+        {
+          "type": "card",
+          "cards": [
+            "Main Belt Asteroids",
+            "Early Settlement"
+          ]
+        },
+        {
+          "type": "card",
+          "cards": [
+            "Wave Power",
+            "Greenhouses",
+            "Mining Robots Manuf. Center",
+            "Luna Archives",
+            "Terraforming Contract",
+            "Fish",
+            "Cupola City",
+            "Thorium Rush",
+            "Giant Solar Shade",
+            "Luna Ecumenopolis"
+          ]
+        }
+      ]
+    },
+    "policy_temperature": 1.0,
+    "value_estimate": 0.9673746824264526,
+    "raw_available_actions": [
+      850,
+      851,
+      852,
+      853,
+      854,
+      855,
+      856,
+      857,
+      858,
+      859,
+      860,
+      861,
+      862,
+      863,
+      864,
+      865,
+      866,
+      867,
+      868,
+      869,
+      870,
+      871,
+      872,
+      873,
+      874,
+      875,
+      876,
+      877,
+      878,
+      879,
+      880,
+      881,
+      800
+    ],
+    "filtered_available_actions": [
+      850,
+      851,
+      852,
+      853,
+      854,
+      855,
+      856,
+      857,
+      858,
+      859,
+      860,
+      861,
+      862,
+      863,
+      864,
+      865,
+      866,
+      867,
+      868,
+      869,
+      870,
+      871,
+      872,
+      873,
+      874,
+      875,
+      876,
+      877,
+      878,
+      879,
+      880,
+      881,
+      800
+    ],
+    "legal_actions": [
+      850,
+      851,
+      852,
+      853,
+      854,
+      855,
+      856,
+      857,
+      858,
+      859,
+      860,
+      861,
+      862,
+      863,
+      864,
+      865,
+      866,
+      867,
+      868,
+      869,
+      870,
+      871,
+      872,
+      873,
+      874,
+      875,
+      876,
+      877,
+      878,
+      879,
+      880,
+      881,
+      800
+    ],
+    "action_rankings": [
+      {
+        "action_index": 864,
+        "label": "STARTUP_PLAN(14)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Research Network"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.013226844370365143,
+        "masked_probability": 0.3415088355541229,
+        "logit": 2.990813970565796,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 870,
+        "label": "STARTUP_PLAN(20)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.003717963118106127,
+        "masked_probability": 0.09599548578262329,
+        "logit": 1.7217415571212769,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 861,
+        "label": "STARTUP_PLAN(11)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "United Nations Mars Initiative"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0017359177581965923,
+        "masked_probability": 0.04482032358646393,
+        "logit": 0.960101842880249,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 869,
+        "label": "STARTUP_PLAN(19)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0016401272732764482,
+        "masked_probability": 0.04234706982970238,
+        "logit": 0.9033393859863281,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 880,
+        "label": "STARTUP_PLAN(30)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0015776398358866572,
+        "masked_probability": 0.04073368385434151,
+        "logit": 0.8644953966140747,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 858,
+        "label": "STARTUP_PLAN(8)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Research Network",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0015171573031693697,
+        "masked_probability": 0.03917206451296806,
+        "logit": 0.8254038691520691,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 855,
+        "label": "STARTUP_PLAN(5)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0013568599242717028,
+        "masked_probability": 0.03503328561782837,
+        "logit": 0.7137387990951538,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 856,
+        "label": "STARTUP_PLAN(6)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0011621018638834357,
+        "masked_probability": 0.030004752799868584,
+        "logit": 0.5587959885597229,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 853,
+        "label": "STARTUP_PLAN(3)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Early Settlement",
+                "Atmospheric Enhancers"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0010199203388765454,
+        "masked_probability": 0.02633371390402317,
+        "logit": 0.42829006910324097,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 850,
+        "label": "STARTUP_PLAN(0)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0009476474951952696,
+        "masked_probability": 0.024467675015330315,
+        "logit": 0.35479283332824707,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 878,
+        "label": "STARTUP_PLAN(28)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Early Settlement",
+                "Atmospheric Enhancers"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0009312363690696657,
+        "masked_probability": 0.02404394932091236,
+        "logit": 0.33732354640960693,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 877,
+        "label": "STARTUP_PLAN(27)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Research Network",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0009210734278894961,
+        "masked_probability": 0.0237815473228693,
+        "logit": 0.3263499140739441,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 800,
+        "label": "STARTUP_FALLBACK",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.000764815544243902,
+        "masked_probability": 0.019747067242860794,
+        "logit": 0.14044499397277832,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 857,
+        "label": "STARTUP_PLAN(7)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Early Settlement",
+                "Atmospheric Enhancers"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0006084943888708949,
+        "masked_probability": 0.015710953623056412,
+        "logit": -0.08820205926895142,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 871,
+        "label": "STARTUP_PLAN(21)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0005806789849884808,
+        "masked_probability": 0.014992778189480305,
+        "logit": -0.13499169051647186,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 874,
+        "label": "STARTUP_PLAN(24)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Early Settlement",
+                "Atmospheric Enhancers"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0005786665715277195,
+        "masked_probability": 0.014940818771719933,
+        "logit": -0.13846328854560852,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 879,
+        "label": "STARTUP_PLAN(29)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Early Settlement",
+                "Atmospheric Enhancers"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0005490016774274409,
+        "masked_probability": 0.014174890704452991,
+        "logit": -0.1910882145166397,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 867,
+        "label": "STARTUP_PLAN(17)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Atmospheric Enhancers"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.000534793536644429,
+        "masked_probability": 0.013808044604957104,
+        "logit": -0.21730899810791016,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 860,
+        "label": "STARTUP_PLAN(10)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0005289351101964712,
+        "masked_probability": 0.01365678384900093,
+        "logit": -0.22832399606704712,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 881,
+        "label": "STARTUP_PLAN(31)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Research Network",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0005262922495603561,
+        "masked_probability": 0.01358854677528143,
+        "logit": -0.23333309590816498,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 859,
+        "label": "STARTUP_PLAN(9)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0005167503841221333,
+        "masked_probability": 0.013342182151973248,
+        "logit": -0.2516297698020935,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 866,
+        "label": "STARTUP_PLAN(16)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0005162525339983404,
+        "masked_probability": 0.013329328037798405,
+        "logit": -0.2525936961174011,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 868,
+        "label": "STARTUP_PLAN(18)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Research Network"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0004431821871548891,
+        "masked_probability": 0.0114426976069808,
+        "logit": -0.405208945274353,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 862,
+        "label": "STARTUP_PLAN(12)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.00037264821003191173,
+        "masked_probability": 0.009621554054319859,
+        "logit": -0.5785548090934753,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 851,
+        "label": "STARTUP_PLAN(1)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.00033658527536317706,
+        "masked_probability": 0.008690431714057922,
+        "logit": -0.6803382635116577,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 854,
+        "label": "STARTUP_PLAN(4)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Research Network",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0003292822220828384,
+        "masked_probability": 0.0085018714889884,
+        "logit": -0.7022745013237,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 872,
+        "label": "STARTUP_PLAN(22)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0003132771817035973,
+        "masked_probability": 0.008088631555438042,
+        "logit": -0.752101480960846,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 873,
+        "label": "STARTUP_PLAN(23)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.00030235113808885217,
+        "masked_probability": 0.007806526962667704,
+        "logit": -0.7876008152961731,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 852,
+        "label": "STARTUP_PLAN(2)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.00029867098783142865,
+        "masked_probability": 0.007711507845669985,
+        "logit": -0.7998470664024353,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 863,
+        "label": "STARTUP_PLAN(13)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Atmospheric Enhancers"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.00024659335031174123,
+        "masked_probability": 0.006366895977407694,
+        "logit": -0.9914490580558777,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 875,
+        "label": "STARTUP_PLAN(25)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Research Network",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.00023526669247075915,
+        "masked_probability": 0.006074448581784964,
+        "logit": -1.0384700298309326,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 876,
+        "label": "STARTUP_PLAN(26)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0002127697371179238,
+        "masked_probability": 0.0054935915395617485,
+        "logit": -1.138979196548462,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 865,
+        "label": "STARTUP_PLAN(15)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "United Nations Mars Initiative"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.00018079469737131149,
+        "masked_probability": 0.004668015521019697,
+        "logit": -1.3018279075622559,
+        "chosen": false,
+        "legal": true
+      }
+    ],
+    "top_actions": [
+      {
+        "action_index": 864,
+        "label": "STARTUP_PLAN(14)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Research Network"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.013226844370365143,
+        "masked_probability": 0.3415088355541229,
+        "logit": 2.990813970565796,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 870,
+        "label": "STARTUP_PLAN(20)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.003717963118106127,
+        "masked_probability": 0.09599548578262329,
+        "logit": 1.7217415571212769,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 861,
+        "label": "STARTUP_PLAN(11)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "United Nations Mars Initiative"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0017359177581965923,
+        "masked_probability": 0.04482032358646393,
+        "logit": 0.960101842880249,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 869,
+        "label": "STARTUP_PLAN(19)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0016401272732764482,
+        "masked_probability": 0.04234706982970238,
+        "logit": 0.9033393859863281,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 880,
+        "label": "STARTUP_PLAN(30)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0015776398358866572,
+        "masked_probability": 0.04073368385434151,
+        "logit": 0.8644953966140747,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 858,
+        "label": "STARTUP_PLAN(8)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Research Network",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0015171573031693697,
+        "masked_probability": 0.03917206451296806,
+        "logit": 0.8254038691520691,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 855,
+        "label": "STARTUP_PLAN(5)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0013568599242717028,
+        "masked_probability": 0.03503328561782837,
+        "logit": 0.7137387990951538,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 856,
+        "label": "STARTUP_PLAN(6)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Giant Solar Shade"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0011621018638834357,
+        "masked_probability": 0.030004752799868584,
+        "logit": 0.5587959885597229,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 853,
+        "label": "STARTUP_PLAN(3)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Early Settlement",
+                "Atmospheric Enhancers"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0010199203388765454,
+        "masked_probability": 0.02633371390402317,
+        "logit": 0.42829006910324097,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 850,
+        "label": "STARTUP_PLAN(0)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Main Belt Asteroids",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Giant Solar Shade",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0009476474951952696,
+        "masked_probability": 0.024467675015330315,
+        "logit": 0.35479283332824707,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 878,
+        "label": "STARTUP_PLAN(28)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Early Settlement",
+                "Atmospheric Enhancers"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0009312363690696657,
+        "masked_probability": 0.02404394932091236,
+        "logit": 0.33732354640960693,
+        "chosen": false,
+        "legal": true
+      },
+      {
+        "action_index": 877,
+        "label": "STARTUP_PLAN(27)",
+        "decoded_action": {
+          "type": "initialCards",
+          "responses": [
+            {
+              "type": "card",
+              "cards": [
+                "Morning Star Inc."
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Research Network",
+                "Early Settlement"
+              ]
+            },
+            {
+              "type": "card",
+              "cards": [
+                "Wave Power",
+                "Greenhouses",
+                "Mining Robots Manuf. Center",
+                "Luna Archives",
+                "Terraforming Contract",
+                "Fish",
+                "Cupola City",
+                "Thorium Rush",
+                "Luna Ecumenopolis"
+              ]
+            }
+          ]
+        },
+        "raw_probability": 0.0009210734278894961,
+        "masked_probability": 0.0237815473228693,
+        "logit": 0.3263499140739441,
+        "chosen": false,
+        "legal": true
+      }
+    ]
+  },
+  "aux": {
+    "targets": {
+      "milestone_claimability": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.6666666865348816,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "award_ev": 0.0,
+      "playable_cards": 0.0,
+      "steel_target": 0.0125,
+      "titanium_target": 0.016666666666666666
+    },
+    "predictions": {
+      "award_ev": 0.06493619084358215,
+      "playable_cards": 0.0021807015873491764,
+      "steel_target": 0.041924115270376205,
+      "titanium_target": 0.052664097398519516,
+      "top_milestone_predictions": [
+        {
+          "index": 57,
+          "value": 0.17730499804019928
+        },
+        {
+          "index": 22,
+          "value": 0.06914356350898743
+        },
+        {
+          "index": 49,
+          "value": 0.06636546552181244
+        },
+        {
+          "index": 12,
+          "value": 0.06623556464910507
+        },
+        {
+          "index": 41,
+          "value": 0.06436794251203537
+        },
+        {
+          "index": 54,
+          "value": 0.0510438047349453
+        },
+        {
+          "index": 9,
+          "value": 0.05086135491728783
+        },
+        {
+          "index": 36,
+          "value": 0.04916023463010788
+        },
+        {
+          "index": 56,
+          "value": 0.03883706405758858
+        },
+        {
+          "index": 30,
+          "value": 0.03668344020843506
+        }
+      ]
+    }
+  },
+  "diagnostics": {
+    "transformer": {
+      "enabled": true,
+      "active_token_ratio": 0.0,
+      "active_row_ratio": 0.0,
+      "attention_context_norm": 7.989452838897705,
+      "fusion_delta_norm": 15.216272354125977,
+      "fusion_share": 8.880464866659459,
+      "shared_pre_norm": 1.7134544849395752,
+      "shared_post_norm": 15.337118148803711,
+      "token_count": 78,
+      "token_dim": 20,
+      "timestamp": 1773089353.2054234,
+      "hand_token_count": 64,
+      "tableau_token_count": 8,
+      "opponent_token_count": 6,
+      "card_token_dim": 20
+    },
+    "rare_state": {
+      "weight": 1.9,
+      "award_funding": 0.0,
+      "milestone_timing": 0.0,
+      "draft_keep_buy": 1.0,
+      "high_cost_payment": 0.0,
+      "payment_value_estimate": 0.0
+    }
+  },
+  "snapshot_id": "20260309T205148Z_9810f7b3-2f0_initialCards_gd14cd3e9e29_69b3b79b-802",
+  "snapshot_path": "/app/debug_snapshots/20260309T205148Z_9810f7b3-2f0_initialCards_gd14cd3e9e29_69b3b79b-802.json"
+}

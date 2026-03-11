@@ -351,6 +351,48 @@ def test_snapshot_uses_top_level_cards_in_hand_for_owned_hand_display() -> None:
     ]
 
 
+def test_snapshot_prefers_calculated_cost_for_card_summaries() -> None:
+    request = create_capture_request(note="calculated-cost")
+    player_state = _make_player_state(
+        "projectCard",
+        {
+            "cards": [
+                {"name": "Asteroid Mining", "cost": 30, "calculatedCost": 24},
+                {"name": "Open City", "cost": 23, "calculatedCost": 21},
+            ]
+        },
+    )
+    player_state["thisPlayer"]["cardsInHand"] = [
+        {"name": "Asteroid Mining", "cost": 30, "calculatedCost": 24},
+        {"name": "Open City", "cost": 23, "calculatedCost": 21},
+    ]
+
+    snapshot = build_decision_snapshot(
+        request=request,
+        agent_id="agent-calculated-cost",
+        game_id="game-cost",
+        game_url="http://localhost:8081/game?id=game-cost",
+        player_id="player-red",
+        player_state=player_state,
+        action_input={"type": "card", "card": "Asteroid Mining"},
+        action_index=0,
+        action_meta=_base_action_meta(),
+        sampled_from_policy=True,
+        send_outcome="accepted",
+        turn_action_count=0,
+    )
+
+    hand_card = snapshot["state"]["hand"][0]
+    prompt_card = snapshot["state"]["prompt_candidates"]["cards"][0]
+
+    assert hand_card["cost"] == pytest.approx(24.0)
+    assert hand_card["calculated_cost"] == pytest.approx(24.0)
+    assert hand_card["base_cost"] == pytest.approx(30.0)
+    assert prompt_card["cost"] == pytest.approx(24.0)
+    assert prompt_card["calculated_cost"] == pytest.approx(24.0)
+    assert prompt_card["base_cost"] == pytest.approx(30.0)
+
+
 def test_policy_ranking_contains_chosen_action_and_matching_labels() -> None:
     torch = pytest.importorskip("torch")
     from models.agent import RLAgent  # noqa: E402

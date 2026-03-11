@@ -145,6 +145,7 @@ class PPORolloutStep:
     reward_tr_component: float = 0.0
     reward_cards_vp_component: float = 0.0
     reward_city_greenery_component: float = 0.0
+    reward_city_future_component: float = 0.0
     reward_milestones_awards_component: float = 0.0
     reward_other_component: float = 0.0
     reward_shaping_coef: float = 0.0
@@ -288,6 +289,7 @@ def _build_reward_component_batch(steps: Sequence[PPORolloutStep]) -> Dict[str, 
         "tr": torch.zeros((len(steps),), dtype=torch.float32),
         "cards_vp": torch.zeros((len(steps),), dtype=torch.float32),
         "city_greenery": torch.zeros((len(steps),), dtype=torch.float32),
+        "city_future": torch.zeros((len(steps),), dtype=torch.float32),
         "milestones_awards": torch.zeros((len(steps),), dtype=torch.float32),
         "other": torch.zeros((len(steps),), dtype=torch.float32),
         "shaping_coef": torch.zeros((len(steps),), dtype=torch.float32),
@@ -296,6 +298,7 @@ def _build_reward_component_batch(steps: Sequence[PPORolloutStep]) -> Dict[str, 
         out["tr"][row_idx] = float(getattr(step, "reward_tr_component", 0.0) or 0.0)
         out["cards_vp"][row_idx] = float(getattr(step, "reward_cards_vp_component", 0.0) or 0.0)
         out["city_greenery"][row_idx] = float(getattr(step, "reward_city_greenery_component", 0.0) or 0.0)
+        out["city_future"][row_idx] = float(getattr(step, "reward_city_future_component", 0.0) or 0.0)
         out["milestones_awards"][row_idx] = float(getattr(step, "reward_milestones_awards_component", 0.0) or 0.0)
         out["other"][row_idx] = float(getattr(step, "reward_other_component", 0.0) or 0.0)
         out["shaping_coef"][row_idx] = float(getattr(step, "reward_shaping_coef", 0.0) or 0.0)
@@ -698,6 +701,7 @@ def optimize_ppo_policy(
         "rollout/reward_tr_component_mean": float(reward_components["tr"].mean().item()),
         "rollout/reward_cards_vp_component_mean": float(reward_components["cards_vp"].mean().item()),
         "rollout/reward_city_greenery_component_mean": float(reward_components["city_greenery"].mean().item()),
+        "rollout/reward_city_future_component_mean": float(reward_components["city_future"].mean().item()),
         "rollout/reward_milestones_awards_component_mean": float(reward_components["milestones_awards"].mean().item()),
         "rollout/reward_other_component_mean": float(reward_components["other"].mean().item()),
         "rollout/reward_shaping_coef_mean": float(reward_components["shaping_coef"].mean().item()),

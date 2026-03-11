@@ -115,6 +115,41 @@ def _city_placement_state() -> dict:
     }
 
 
+def _future_city_preservation_state() -> dict:
+    return {
+        "thisPlayer": {
+            "name": "Agent A",
+            "color": "red",
+            "victoryPointsBreakdown": _vp_breakdown(),
+        },
+        "game": {
+            "generation": 10,
+            "awards": [],
+            "milestones": [],
+            "spaces": [
+                {"id": "green-a", "x": 1, "y": 0, "spaceType": "land", "tileType": 0, "color": "red"},
+                {"id": "green-b", "x": 2, "y": 0, "spaceType": "land", "tileType": 0, "color": "red"},
+                {"id": "green-c", "x": 0, "y": 1, "spaceType": "land", "tileType": 0, "color": "red"},
+                {"id": "own-city", "x": 0, "y": 2, "spaceType": "land", "tileType": 2, "color": "red"},
+                {"id": "seal-hub", "x": 1, "y": 1, "spaceType": "land"},
+                {"id": "preserve", "x": 1, "y": 2, "spaceType": "land"},
+            ],
+        },
+        "waitingFor": {
+            "type": "space",
+            "title": "Select space for greenery tile",
+            "availableSpaces": [
+                {"id": "seal-hub", "x": 1, "y": 1, "spaceType": "land"},
+                {"id": "preserve", "x": 1, "y": 2, "spaceType": "land"},
+            ],
+        },
+        "players": [
+            {"name": "Agent A", "color": "red", "tableau": []},
+            {"name": "Agent B", "color": "blue", "tableau": []},
+        ],
+    }
+
+
 def _with_placed_tile(state: dict, space_id: str, tile_type: int) -> dict:
     copied_spaces = []
     for space in state["game"]["spaces"]:
@@ -225,6 +260,24 @@ def test_greenery_and_city_rewards_prefer_higher_local_board_value() -> None:
 
     assert greenery_good["other_component"] > greenery_bad["other_component"]
     assert city_good["other_component"] > city_bad["other_component"]
+
+
+def test_greenery_reward_penalizes_destroying_best_future_city_hub() -> None:
+    before = _future_city_preservation_state()
+    seal_hub = calculate_step_reward_decomposition(
+        before_state=before,
+        after_state=_with_placed_tile(before, "seal-hub", 0),
+        action_input={"type": "space", "spaceId": "seal-hub"},
+    )
+    preserve_hub = calculate_step_reward_decomposition(
+        before_state=before,
+        after_state=_with_placed_tile(before, "preserve", 0),
+        action_input={"type": "space", "spaceId": "preserve"},
+    )
+
+    assert preserve_hub["city_future_component"] > seal_hub["city_future_component"]
+    assert preserve_hub["city_future_component"] > 0.0
+    assert seal_hub["city_future_component"] < 0.0
 
 
 def test_draft_penalizes_pure_denial_when_engine_keep_is_clear() -> None:

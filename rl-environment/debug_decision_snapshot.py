@@ -201,9 +201,13 @@ def _card_summary(card: Any) -> Dict[str, Any]:
     if not isinstance(card, dict):
         return {"label": _message_text(card)}
     tags = card.get("tags", []) or []
+    calculated_cost = _safe_float(card.get("calculatedCost", card.get("cost", 0.0)))
+    base_cost = _safe_float(card.get("cost", calculated_cost))
     summary = {
         "name": str(card.get("name", "") or "").strip(),
-        "cost": _safe_float(card.get("cost", 0.0)),
+        "cost": calculated_cost,
+        "calculated_cost": calculated_cost,
+        "base_cost": base_cost,
         "tags": [str(tag or "").strip() for tag in tags if str(tag or "").strip()],
         "victory_points": _safe_float(card.get("victoryPoints", 0.0)),
         "type": str(card.get("type", "") or "").strip(),

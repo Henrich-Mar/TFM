@@ -2055,6 +2055,7 @@ class RLAgent:
                         reward_tr_component = 0.0
                         reward_cards_vp_component = 0.0
                         reward_city_greenery_component = 0.0
+                        reward_city_future_component = 0.0
                         reward_milestones_awards_component = 0.0
                         reward_other_component = 0.0
                         reward_shaping_coef = self._current_reward_shaping_coef()
@@ -2069,12 +2070,14 @@ class RLAgent:
                             weighted_tr = float(self.reward_tr_weight) * float(reward_breakdown.get("tr_component", 0.0))
                             weighted_cards_vp = float(self.reward_cards_vp_weight) * float(reward_breakdown.get("cards_vp_component", 0.0))
                             weighted_city_greenery = float(self.reward_city_greenery_weight) * float(reward_breakdown.get("city_greenery_component", 0.0))
+                            weighted_city_future = float(self.reward_city_greenery_weight) * float(reward_breakdown.get("city_future_component", 0.0))
                             weighted_milestones_awards = float(self.reward_milestones_awards_weight) * float(reward_breakdown.get("milestones_awards_component", 0.0))
                             weighted_other = float(self.reward_other_weight) * float(reward_breakdown.get("other_component", 0.0))
                             weighted_raw = (
                                 weighted_tr
                                 + weighted_cards_vp
                                 + weighted_city_greenery
+                                + weighted_city_future
                                 + weighted_milestones_awards
                                 + weighted_other
                             )
@@ -2083,6 +2086,7 @@ class RLAgent:
                             reward_tr_component = float(weighted_tr * step_reward_scale)
                             reward_cards_vp_component = float(weighted_cards_vp * step_reward_scale)
                             reward_city_greenery_component = float(weighted_city_greenery * step_reward_scale)
+                            reward_city_future_component = float(weighted_city_future * step_reward_scale)
                             reward_milestones_awards_component = float(weighted_milestones_awards * step_reward_scale)
                             reward_other_component = float(weighted_other * step_reward_scale)
                             if self.reward_debug_enabled:
@@ -2091,6 +2095,7 @@ class RLAgent:
                                     abs(reward_tr_component)
                                     + abs(reward_cards_vp_component)
                                     + abs(reward_city_greenery_component)
+                                    + abs(reward_city_future_component)
                                     + abs(reward_milestones_awards_component)
                                 )
                                 if (
@@ -2099,10 +2104,11 @@ class RLAgent:
                                     and (self._reward_debug_counter % int(self.reward_debug_log_every)) == 0
                                 ):
                                     logger.warning(
-                                        "Low VP shaping components: tr=%.5f cards=%.5f city_greenery=%.5f milestones_awards=%.5f other=%.5f coef=%.3f scaled=%.5f raw=%.5f",
+                                        "Low VP shaping components: tr=%.5f cards=%.5f city_greenery=%.5f city_future=%.5f milestones_awards=%.5f other=%.5f coef=%.3f scaled=%.5f raw=%.5f",
                                         reward_tr_component,
                                         reward_cards_vp_component,
                                         reward_city_greenery_component,
+                                        reward_city_future_component,
                                         reward_milestones_awards_component,
                                         reward_other_component,
                                         reward_shaping_coef,
@@ -2142,6 +2148,7 @@ class RLAgent:
                                     "reward_tr_component": float(reward_tr_component),
                                     "reward_cards_vp_component": float(reward_cards_vp_component),
                                     "reward_city_greenery_component": float(reward_city_greenery_component),
+                                    "reward_city_future_component": float(reward_city_future_component),
                                     "reward_milestones_awards_component": float(reward_milestones_awards_component),
                                     "reward_other_component": float(reward_other_component),
                                     "reward_shaping_coef": float(reward_shaping_coef),
@@ -3446,6 +3453,7 @@ class RLAgent:
                         reward_tr_component=float(step.get("reward_tr_component", 0.0) or 0.0),
                         reward_cards_vp_component=float(step.get("reward_cards_vp_component", 0.0) or 0.0),
                         reward_city_greenery_component=float(step.get("reward_city_greenery_component", 0.0) or 0.0),
+                        reward_city_future_component=float(step.get("reward_city_future_component", 0.0) or 0.0),
                         reward_milestones_awards_component=float(step.get("reward_milestones_awards_component", 0.0) or 0.0),
                         reward_other_component=float(step.get("reward_other_component", 0.0) or 0.0),
                         reward_shaping_coef=float(step.get("reward_shaping_coef", 0.0) or 0.0),

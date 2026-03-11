@@ -1179,34 +1179,100 @@ def _newly_placed_space(before_game: Dict[str, Any], after_game: Dict[str, Any],
             return space
     return candidates[0]
 
-def _space_placement_adjustment(
+def _future_city_slot_snapshot(board_spaces: List[Dict[str, Any]], own_color: str) -> Dict[str, Any]:
+    adjacency = _build_board_adjacency_index(board_spaces)
+    board_by_id = {
+        _space_id(space): space
+        for space in board_spaces
+        if isinstance(space, dict) and _space_id(space)
+    }
+    own_city_ids: set[str] = set()
+    enemy_city_ids: set[str] = set()
+    all_greenery_ids: set[str] = set()
+    own_greenery_ids: set[str] = set()
+    values_by_space: Dict[str, float] = {}
+
+    for space in board_spaces:
+        sid = _space_id(space)
+        if not sid:
+            continue
+        is_city, is_greenery, _ = _space_tile_flags(space)
+        owner = _space_owner_color(space)
+        if is_greenery:
+            all_greenery_ids.add(sid)
+            if owner == own_color:
+                own_greenery_ids.add(sid)
+        if not is_city or not owner:
+            continue
+        if owner == own_color:
+            own_city_ids.add(sid)
+        else:
+            enemy_city_ids.add(sid)
+
+    occupied_city_ids = own_city_ids | enemy_city_ids
+    for sid, space in board_by_id.items():
+        if space.get('tileType') is not None:
+            continue
+        if _space_type_lower(space.get('spaceType')) not in ('land', 'restricted'):
+            continue
+        neighbor_ids = adjacency.get(sid, set())
+        if any(neighbor_id in occupied_city_ids for neighbor_id in neighbor_ids):
+            continue
+        total_greenery_adj = sum(1 for neighbor_id in neighbor_ids if neighbor_id in all_greenery_ids)
+        own_greenery_adj = sum(1 for neighbor_id in neighbor_ids if neighbor_id in own_greenery_ids)
+        enemy_city_adj = sum(1 for neighbor_id in neighbor_ids if neighbor_id in enemy_city_ids)
+        values_by_space[sid] = (
+            (0.95 * float(total_greenery_adj))
+            + (0.25 * float(own_greenery_adj))
+            + (0.40 * float(enemy_city_adj))
+        )
+
+    best_value = max(values_by_space.values(), default=0.0)
+    best_space_ids = {
+        sid
+        for sid, value in values_by_space.items()
+        if best_value > 0.0 and abs(float(value) - float(best_value)) < 1e-6
+    }
+    strong_slot_count = sum(1 for value in values_by_space.values() if float(value) >= 1.8)
+    return {
+        "best_value": float(best_value),
+        "best_space_ids": best_space_ids,
+        "strong_slot_count": int(strong_slot_count),
+    }
+
+def _space_placement_diagnostics(
     before_state: Dict[str, Any],
     after_state: Dict[str, Any],
     action_input: Dict[str, Any],
-) -> float:
+) -> Dict[str, float]:
+    diagnostics = {
+        "total_adjustment": 0.0,
+        "city_future_component": 0.0,
+    }
     space_action = _extract_space_action_payload(action_input)
     if not isinstance(space_action, dict):
-        return 0.0
+        return diagnostics
 
     before_player = _extract_player(before_state)
     own_color = _normalize_token(before_player.get('color'))
     if not own_color:
-        return 0.0
+        return diagnostics
 
     before_game = _extract_game(before_state)
     after_game = _extract_game(after_state)
     if not before_game or not after_game:
-        return 0.0
+        return diagnostics
 
     placed_space = _newly_placed_space(before_game, after_game, own_color)
     if not isinstance(placed_space, dict):
-        return 0.0
+        return diagnostics
     placed_space_id = _space_id(placed_space)
     if not placed_space_id:
-        return 0.0
+        return diagnostics
 
-    board_spaces = [space for space in (before_game.get('spaces', []) or []) if isinstance(space, dict)]
-    adjacency = _build_board_adjacency_index(board_spaces)
+    before_board_spaces = [space for space in (before_game.get('spaces', []) or []) if isinstance(space, dict)]
+    after_board_spaces = [space for space in (after_game.get('spaces', []) or []) if isinstance(space, dict)]
+    adjacency = _build_board_adjacency_index(before_board_spaces)
     neighbors = adjacency.get(placed_space_id, set())
 
     enemy_city_ids = set()
@@ -1214,7 +1280,7 @@ def _space_placement_adjustment(
     all_greenery_ids = set()
     own_greenery_ids = set()
     ocean_ids = set()
-    for space in board_spaces:
+    for space in before_board_spaces:
         sid = _space_id(space)
         if not sid:
             continue
@@ -1273,7 +1339,21 @@ def _space_placement_adjustment(
     missed_value = max(0.0, float(best_available_value) - float(selected_value))
 
     adjustment = 0.0
+    city_future_component = 0.0
     if intent == 'greenery':
+        before_city_snapshot = _future_city_slot_snapshot(before_board_spaces, own_color)
+        after_city_snapshot = _future_city_slot_snapshot(after_board_spaces, own_color)
+        future_city_delta = float(after_city_snapshot["best_value"]) - float(before_city_snapshot["best_value"])
+        strong_slot_delta = int(after_city_snapshot["strong_slot_count"]) - int(before_city_snapshot["strong_slot_count"])
+        city_future_component += max(-0.12, min(0.06, 0.028 * future_city_delta))
+        city_future_component += max(-0.05, min(0.04, 0.02 * float(strong_slot_delta)))
+        if (
+            placed_space_id in before_city_snapshot["best_space_ids"]
+            and float(before_city_snapshot["best_value"]) >= 1.8
+            and future_city_delta < -0.15
+        ):
+            city_future_component -= 0.03
+
         risky_total = 0
         if waiting_ids:
             for sid in waiting_ids:
@@ -1290,6 +1370,7 @@ def _space_placement_adjustment(
         adjustment += min(0.04, 0.01 * float(own_greenery_adj))
         if missed_value > 0.20:
             adjustment -= min(0.12, 0.035 * float(missed_value))
+        adjustment += city_future_component
     elif intent == 'special' and enemy_city_adj > 0:
         # Strategic blocking around enemy cities is a valid positive tactic.
         adjustment += min(0.06, 0.025 * float(enemy_city_adj))
@@ -1308,7 +1389,16 @@ def _space_placement_adjustment(
         if missed_value > 0.20:
             adjustment -= min(0.12, 0.035 * float(missed_value))
 
-    return float(adjustment)
+    diagnostics["total_adjustment"] = float(adjustment)
+    diagnostics["city_future_component"] = float(city_future_component)
+    return diagnostics
+
+def _space_placement_adjustment(
+    before_state: Dict[str, Any],
+    after_state: Dict[str, Any],
+    action_input: Dict[str, Any],
+) -> float:
+    return float(_space_placement_diagnostics(before_state, after_state, action_input).get("total_adjustment", 0.0))
 
 
 REWARD_NON_ACTION = -0.01  # Small penalty for doing nothing
@@ -1335,6 +1425,7 @@ def calculate_step_reward_decomposition(
             "tr_component": 0.0,
             "cards_vp_component": 0.0,
             "city_greenery_component": 0.0,
+            "city_future_component": 0.0,
             "milestones_awards_component": 0.0,
             "other_component": 0.0,
             "raw_total": 0.0,
@@ -1359,6 +1450,7 @@ def calculate_step_reward_decomposition(
             "tr_component": 0.0,
             "cards_vp_component": 0.0,
             "city_greenery_component": 0.0,
+            "city_future_component": 0.0,
             "milestones_awards_component": 0.0,
             "other_component": 0.0,
             "raw_total": 0.0,
@@ -1377,6 +1469,7 @@ def calculate_step_reward_decomposition(
     tr_component = 0.0
     cards_vp_component = 0.0
     city_greenery_component = 0.0
+    city_future_component = 0.0
     milestones_awards_component = 0.0
     other_component = 0.0
     hate_draft_bonus_applied = False
@@ -1460,7 +1553,9 @@ def calculate_step_reward_decomposition(
     # - discourage greenery placements adjacent to enemy cities (unless forced)
     # - allow/encourage special-tile blocking around enemy cities
     # - reward city placement adjacent to enemy cities (blocking)
-    other_component += _space_placement_adjustment(before_state, after_state, action_input)
+    space_placement_diag = _space_placement_diagnostics(before_state, after_state, action_input)
+    other_component += float(space_placement_diag.get("total_adjustment", 0.0))
+    city_future_component += float(space_placement_diag.get("city_future_component", 0.0))
 
     # Hate-draft bonus: reward keeping/drafting cards that hurt opponents (high opp tag overlap, low own).
     hate_draft_diag = _compute_hate_draft_diagnostics(before_state, action_input)
@@ -1651,6 +1746,7 @@ def calculate_step_reward_decomposition(
         tr_component
         + cards_vp_component
         + city_greenery_component
+        + city_future_component
         + milestones_awards_component
         + other_component
     )
@@ -1660,6 +1756,7 @@ def calculate_step_reward_decomposition(
         "tr_component": float(tr_component),
         "cards_vp_component": float(cards_vp_component),
         "city_greenery_component": float(city_greenery_component),
+        "city_future_component": float(city_future_component),
         "milestones_awards_component": float(milestones_awards_component),
         "other_component": float(other_component),
         "raw_total": float(raw_total),

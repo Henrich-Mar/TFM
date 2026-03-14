@@ -1162,7 +1162,7 @@ class GameServerCluster:
                 'ares': False,
                 'ceo': False,
                 'colonies': False,
-                'community': False,
+                'community': True,
                 'corpera': False,
                 'moon': True,
                 'pathfinders': False,
@@ -1197,7 +1197,7 @@ class GameServerCluster:
             'startingCeos': 0,
             'startingCorporations': 2,
             'startingPreludes': 4,
-            'twoCorpsVariant': False,
+            'twoCorpsVariant': True,
             'undoOption': False,
         }
 

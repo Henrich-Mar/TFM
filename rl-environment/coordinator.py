@@ -14,11 +14,12 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import json
 import random
+import re
 
 from tournament_manager import TournamentManager
 from agent_evolution import EvolutionManager
 from game_interface import GameServerCluster
-from models.agent import RLAgent
+from models.agent import AgentConfig, RLAgent
 from metrics.tracker import MetricsTracker
 from api.server import start_api_server
 from logging_setup import setup_logging
@@ -184,6 +185,9 @@ class RLCoordinator:
         self.training_start_generation_override = self._optional_env_int("TRAINING_START_GENERATION")
         if self.training_start_generation_override is None:
             self.training_start_generation_override = self._optional_env_int("BOOTSTRAP_START_GENERATION")
+        self.target_agent_config = RLAgent.build_env_config()
+        self.target_agent_architecture = dict(self.target_agent_config.architecture_dict())
+        self.target_agent_architecture_signature = self.target_agent_config.architecture_signature()
 
     @staticmethod
     def _safe_env_float(name: str, default: float) -> float:
@@ -224,6 +228,89 @@ class RLCoordinator:
             )
         return overridden
 
+    def _ensure_target_agent_architecture(self) -> Dict[str, Any]:
+        if not getattr(self, "target_agent_architecture", None):
+            config = AgentConfig.from_env()
+            self.target_agent_config = config
+            self.target_agent_architecture = dict(config.architecture_dict())
+            self.target_agent_architecture_signature = config.architecture_signature()
+        return dict(self.target_agent_architecture)
+
+    def _normalize_architecture_payload(self, payload: Any) -> Dict[str, Any]:
+        if isinstance(payload, AgentConfig):
+            return payload.architecture_dict()
+        if isinstance(payload, dict):
+            allowed = set(self._ensure_target_agent_architecture().keys())
+            return {
+                key: payload[key]
+                for key in allowed
+                if key in payload
+            }
+        return {}
+
+    def _architecture_matches_target(self, payload: Any) -> bool:
+        candidate = self._normalize_architecture_payload(payload)
+        if not candidate:
+            return False
+        expected = self._ensure_target_agent_architecture()
+        return candidate == expected
+
+    @staticmethod
+    def _generation_config_path(checkpoint_path: str) -> str:
+        base = os.path.basename(str(checkpoint_path))
+        match = re.match(r"(agent_\d+)(?:_fitness_[^\\\/]+)?\.pth$", base)
+        if not match:
+            return ""
+        return os.path.join(os.path.dirname(str(checkpoint_path)), f"{match.group(1)}_config.json")
+
+    def _checkpoint_architecture(self, checkpoint_path: str) -> Dict[str, Any]:
+        config_path = self._generation_config_path(checkpoint_path)
+        if config_path and os.path.isfile(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                config_payload = payload.get("config", payload)
+                return self._normalize_architecture_payload(config_payload)
+            except Exception:
+                logger.debug("Failed reading checkpoint config metadata from %s", config_path, exc_info=True)
+        peek_config = getattr(RLAgent, "peek_checkpoint_config", None)
+        if not callable(peek_config):
+            return self._ensure_target_agent_architecture()
+        config = peek_config(str(checkpoint_path))
+        return self._normalize_architecture_payload(config)
+
+    def _checkpoint_matches_target_architecture(self, checkpoint_path: str) -> bool:
+        return self._architecture_matches_target(self._checkpoint_architecture(checkpoint_path))
+
+    def _filter_matching_architecture_checkpoints(
+        self,
+        checkpoints: List[str],
+        source_label: str,
+    ) -> List[str]:
+        if not checkpoints:
+            return []
+        expected = self._ensure_target_agent_architecture()
+        expected_signature = getattr(
+            self,
+            "target_agent_architecture_signature",
+            json.dumps(expected, sort_keys=True, separators=(",", ":")),
+        )
+        matching: List[str] = []
+        skipped: List[str] = []
+        for checkpoint in checkpoints:
+            if self._checkpoint_matches_target_architecture(checkpoint):
+                matching.append(checkpoint)
+            else:
+                skipped.append(checkpoint)
+        if skipped:
+            logger.info(
+                "Skipped %d checkpoint(s) with mismatched architecture for %s (target=%s).",
+                len(skipped),
+                source_label,
+                expected_signature,
+            )
+        return matching
+
     def _reset_training_progress_state(self) -> None:
         self.last_eval_fitness = {}
         self.last_raw_eval_fitness = {}
@@ -252,6 +339,13 @@ class RLCoordinator:
         checkpoint_path = os.path.abspath(raw_path)
         if not os.path.isfile(checkpoint_path):
             logger.warning("BOOTSTRAP_CHECKPOINT_PATH does not exist: %s", checkpoint_path)
+            return False
+        if not self._checkpoint_matches_target_architecture(checkpoint_path):
+            logger.warning(
+                "Skipping bootstrap checkpoint %s because its architecture does not match the configured target %s",
+                checkpoint_path,
+                self.target_agent_architecture_signature,
+            )
             return False
 
         mode = str(self.bootstrap_population_mode or "mutated_copies").strip().lower()
@@ -819,7 +913,10 @@ class RLCoordinator:
                 )
         else:
             checkpoint_candidates.extend(self._all_saved_checkpoints(models_root))
-
+            checkpoint_candidates = self._filter_matching_architecture_checkpoints(
+                checkpoint_candidates,
+                "fixed benchmark auto-discovery",
+            )
         return self._dedupe_existing_checkpoints(checkpoint_candidates)[: int(self.fixed_benchmark_pool_size)]
 
     def _resolve_training_opponent_checkpoints(self) -> List[str]:
@@ -843,7 +940,10 @@ class RLCoordinator:
         historical_candidates: List[str] = []
         exploiter_candidates: List[str] = []
         for generation in reversed(candidate_generations):
-            checkpoints = self._all_generation_checkpoints(models_root, generation)
+            checkpoints = self._filter_matching_architecture_checkpoints(
+                self._all_generation_checkpoints(models_root, generation),
+                f"training pool generation_{int(generation)}",
+            )
             if not checkpoints:
                 continue
             top_slice = checkpoints[:top_per_generation]
@@ -1330,6 +1430,8 @@ class RLCoordinator:
             cfg['generation_behavior_metrics'] = dict(self.last_generation_behavior_metrics or {})
             cfg['generation_gate_summary'] = gate_summary
             cfg['promotion_gate'] = gate_per_agent.get(agent.id, {})
+            cfg['architecture'] = dict(agent.config.architecture_dict())
+            cfg['architecture_signature'] = agent.config.architecture_signature()
             gate_behavior = dict((gate_per_agent.get(agent.id, {}) or {}).get("behavior", {}) or {})
             behavior_snapshot = {}
             try:
@@ -1418,6 +1520,8 @@ class RLCoordinator:
         generation_summary = {
             "generation": int(generation),
             "saved_agents": int(num_to_save),
+            "target_architecture": self._ensure_target_agent_architecture(),
+            "target_architecture_signature": self.target_agent_architecture_signature,
             "top_indices": [int(i) for i in top_indices],
             "selection_fitness_scores": [float(fitness_scores[i]) for i in top_indices],
             "raw_eval_fitness": {
@@ -1467,6 +1571,8 @@ class RLCoordinator:
                 "next_generation": int(next_generation),
                 "population_size": len(self.population),
                 "updated_at": datetime.utcnow().isoformat() + "Z",
+                "target_agent_architecture": self._ensure_target_agent_architecture(),
+                "target_agent_architecture_signature": self.target_agent_architecture_signature,
                 "evolution_generation_count": int(self.evolution_manager.generation_count),
                 "last_generation_behavior_metrics": dict(self.last_generation_behavior_metrics or {}),
                 "last_generation_gate": dict(self.last_generation_gate or {}),
@@ -1540,6 +1646,13 @@ class RLCoordinator:
                 self.checkpoint_population_dir,
             )
             return False
+        if not self._checkpoint_matches_target_architecture(model_paths[0]):
+            logger.warning(
+                "Skipping checkpoint resume from %s because population architecture does not match configured target %s",
+                self.checkpoint_population_dir,
+                self.target_agent_architecture_signature,
+            )
+            return False
 
         loaded_population: List[RLAgent] = []
         for model_path in model_paths:
@@ -1568,35 +1681,39 @@ class RLCoordinator:
             generations = self._available_generations(models_root)
             if not generations:
                 return False
-            latest_generation = generations[-1]
-            checkpoints = self._all_generation_checkpoints(models_root, latest_generation)
-            if not checkpoints:
-                return False
+            for latest_generation in reversed(generations):
+                checkpoints = self._filter_matching_architecture_checkpoints(
+                    self._all_generation_checkpoints(models_root, latest_generation),
+                    f"resume generation_{int(latest_generation)}",
+                )
+                if not checkpoints:
+                    continue
 
-            loaded_population: List[RLAgent] = []
-            for checkpoint in checkpoints[: self.config.population_size]:
-                agent = RLAgent()
-                agent.load_model(checkpoint)
-                loaded_population.append(agent)
+                loaded_population: List[RLAgent] = []
+                for checkpoint in checkpoints[: self.config.population_size]:
+                    agent = RLAgent()
+                    agent.load_model(checkpoint)
+                    loaded_population.append(agent)
 
-            if not loaded_population:
-                return False
+                if not loaded_population:
+                    continue
 
-            self.population = loaded_population
-            self.current_generation = self._apply_start_generation_override(
-                max(
-                    0,
-                    min(int(latest_generation) + 1, self.config.generations),
-                ),
-                "latest saved generation bootstrap",
-            )
-            self.evolution_manager.generation_count = int(self.current_generation)
-            logger.info(
-                "Bootstrapped resume from generation_%d using %d saved agents",
-                latest_generation,
-                len(loaded_population),
-            )
-            return True
+                self.population = loaded_population
+                self.current_generation = self._apply_start_generation_override(
+                    max(
+                        0,
+                        min(int(latest_generation) + 1, self.config.generations),
+                    ),
+                    "latest saved generation bootstrap",
+                )
+                self.evolution_manager.generation_count = int(self.current_generation)
+                logger.info(
+                    "Bootstrapped resume from generation_%d using %d saved agents",
+                    latest_generation,
+                    len(loaded_population),
+                )
+                return True
+            return False
         except Exception as e:
             logger.warning(f"Failed fallback resume from generation_* saves: {e}")
             return False

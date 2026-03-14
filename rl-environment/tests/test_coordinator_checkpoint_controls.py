@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,12 @@ from coordinator import RLCoordinator  # noqa: E402
 def _touch(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("x", encoding="utf-8")
+
+
+def _write_generation_checkpoint(path: Path, config: dict) -> None:
+    _touch(path)
+    config_path = path.parent / f"{path.stem.split('_fitness_')[0]}_config.json"
+    config_path.write_text(json.dumps({"config": config}), encoding="utf-8")
 
 
 def test_should_save_generation_cadence() -> None:
@@ -69,6 +76,42 @@ def test_apply_start_generation_override() -> None:
     assert coordinator._apply_start_generation_override(7, "test") == 42
     coordinator.training_start_generation_override = None
     assert coordinator._apply_start_generation_override(7, "test") == 7
+
+
+def test_filter_matching_architecture_checkpoints_excludes_mismatched_generations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_STATE_SIZE", "3072")
+    monkeypatch.setenv("AGENT_HIDDEN_SIZE", "1024")
+    monkeypatch.setenv("AGENT_NUM_LAYERS", "8")
+    monkeypatch.setenv("AGENT_RECURRENT_SIZE", "128")
+    monkeypatch.setenv("AGENT_PHASE_HEAD_COUNT", "6")
+    monkeypatch.setenv("AGENT_CARD_TOKEN_DIM", "20")
+    monkeypatch.setenv("AGENT_TABLEAU_TOKEN_COUNT", "8")
+    monkeypatch.setenv("AGENT_HAND_TOKEN_COUNT", "64")
+    monkeypatch.setenv("AGENT_OPPONENT_TOKEN_COUNT", "6")
+    monkeypatch.setenv("AGENT_TRANSFORMER_EMBED_DIM", "256")
+    monkeypatch.setenv("AGENT_TRANSFORMER_HEADS", "16")
+    monkeypatch.setenv("AGENT_TRANSFORMER_LAYERS", "4")
+
+    matching = tmp_path / "generation_1" / "agent_0_fitness_100.00.pth"
+    mismatched = tmp_path / "generation_2" / "agent_0_fitness_90.00.pth"
+    expected_config = coordinator_module.RLAgent.build_env_config().architecture_dict()
+    mismatched_config = dict(expected_config)
+    mismatched_config["transformer_embed_dim"] = 64
+    mismatched_config["transformer_heads"] = 4
+    mismatched_config["transformer_layers"] = 2
+    _write_generation_checkpoint(matching, expected_config)
+    _write_generation_checkpoint(mismatched, mismatched_config)
+
+    coordinator = RLCoordinator.__new__(RLCoordinator)
+    filtered = coordinator._filter_matching_architecture_checkpoints(
+        [str(matching), str(mismatched)],
+        "test",
+    )
+
+    assert filtered == [str(matching)]
 
 
 @dataclass

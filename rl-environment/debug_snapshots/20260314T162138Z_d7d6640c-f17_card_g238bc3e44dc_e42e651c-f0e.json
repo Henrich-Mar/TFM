@@ -1,0 +1,1337 @@
+{
+  "schema_version": "decision_snapshot.v1",
+  "captured_at": "2026-03-14T16:21:38Z",
+  "request": {
+    "request_id": "e42e651c-f0e6-40fd-8398-ad06bb92bfc6",
+    "note": "",
+    "include_state_vector": false
+  },
+  "agent": {
+    "id": "d7d6640c-f17f-4015-bbcb-a4bae36e2b3f"
+  },
+  "prompt": {
+    "game_id": "g238bc3e44dcb",
+    "game_url": "http://localhost:8082/game?id=g238bc3e44dcb",
+    "player_id": "pd443c51d6859",
+    "player_name": "A4_d7d6640c",
+    "phase": "action",
+    "phase_index": 2,
+    "generation": 9,
+    "prompt_type": "card",
+    "prompt_title": "Select card to add ${0} ${1}",
+    "turn_action_count": 16,
+    "sampled_from_policy": true,
+    "send_outcome": "accepted"
+  },
+  "state": {
+    "this_player": {
+      "id": "",
+      "name": "A4_d7d6640c",
+      "color": "yellow",
+      "terraform_rating": 39.0,
+      "resources": {
+        "mc": 0.0,
+        "steel": 1.0,
+        "titanium": 0.0,
+        "plants": 0.0,
+        "energy": 3.0,
+        "heat": 6.0
+      },
+      "production": {
+        "mc": 6.0,
+        "steel": 4.0,
+        "titanium": 3.0,
+        "plants": 1.0,
+        "energy": 8.0,
+        "heat": 4.0
+      },
+      "hand_count": 14,
+      "tableau_count": 21,
+      "cities_count": 0,
+      "greeneries_count": 0
+    },
+    "hand": [
+      {
+        "name": "Pets",
+        "cost": 10.0,
+        "calculated_cost": 10.0,
+        "base_cost": 10.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Pets",
+        "requirements": []
+      },
+      {
+        "name": "Herbivores",
+        "cost": 12.0,
+        "calculated_cost": 12.0,
+        "base_cost": 12.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Herbivores",
+        "requirements": [
+          {
+            "oxygen": 8,
+            "count": 8
+          }
+        ]
+      },
+      {
+        "name": "Road Piracy",
+        "cost": 10.0,
+        "calculated_cost": 10.0,
+        "base_cost": 10.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Road Piracy",
+        "requirements": [
+          {
+            "logisticRate": 3,
+            "count": 3
+          }
+        ]
+      },
+      {
+        "name": "Water Treatment Complex",
+        "cost": 12.0,
+        "calculated_cost": 12.0,
+        "base_cost": 12.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Water Treatment Complex",
+        "requirements": [
+          {
+            "habitatTiles": 1,
+            "all": true,
+            "count": 1
+          }
+        ]
+      },
+      {
+        "name": "Algae",
+        "cost": 10.0,
+        "calculated_cost": 10.0,
+        "base_cost": 10.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Algae",
+        "requirements": [
+          {
+            "oceans": 5,
+            "count": 5
+          }
+        ]
+      },
+      {
+        "name": "Luxury Foods",
+        "cost": 8.0,
+        "calculated_cost": 8.0,
+        "base_cost": 8.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Luxury Foods",
+        "requirements": [
+          {
+            "tag": "venus"
+          },
+          {
+            "tag": "earth"
+          },
+          {
+            "tag": "jovian"
+          }
+        ]
+      },
+      {
+        "name": "Thorium Rush",
+        "cost": 39.0,
+        "calculated_cost": 39.0,
+        "base_cost": 39.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Thorium Rush",
+        "requirements": []
+      },
+      {
+        "name": "Hypersensitive Silicon Chip Factory",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Hypersensitive Silicon Chip Factory",
+        "requirements": [
+          {
+            "miningTiles": 2,
+            "all": true,
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Ice Cap Melting",
+        "cost": 5.0,
+        "calculated_cost": 5.0,
+        "base_cost": 5.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Ice Cap Melting",
+        "requirements": [
+          {
+            "temperature": 2,
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Lunar Security Stations",
+        "cost": 9.0,
+        "calculated_cost": 9.0,
+        "base_cost": 9.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Lunar Security Stations",
+        "requirements": [
+          {
+            "roadTiles": 3,
+            "all": true,
+            "count": 3
+          }
+        ]
+      },
+      {
+        "name": "ArchaeBacteria",
+        "cost": 6.0,
+        "calculated_cost": 6.0,
+        "base_cost": 6.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "ArchaeBacteria",
+        "requirements": [
+          {
+            "temperature": -18,
+            "max": true,
+            "count": -18
+          }
+        ]
+      },
+      {
+        "name": "Advanced Ecosystems",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Advanced Ecosystems",
+        "requirements": [
+          {
+            "tag": "plant"
+          },
+          {
+            "tag": "animal"
+          },
+          {
+            "tag": "microbe"
+          }
+        ]
+      },
+      {
+        "name": "Nitrite Reducing Bacteria",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Nitrite Reducing Bacteria",
+        "requirements": []
+      },
+      {
+        "name": "Shuttles",
+        "cost": 10.0,
+        "calculated_cost": 10.0,
+        "base_cost": 10.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Shuttles",
+        "requirements": [
+          {
+            "oxygen": 5,
+            "count": 5
+          }
+        ]
+      }
+    ],
+    "tableau": [
+      {
+        "name": "Vitor",
+        "cost": 0.0,
+        "calculated_cost": 0.0,
+        "base_cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Vitor",
+        "requirements": []
+      },
+      {
+        "name": "Mohole",
+        "cost": 0.0,
+        "calculated_cost": 0.0,
+        "base_cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mohole",
+        "requirements": []
+      },
+      {
+        "name": "Nobel Prize",
+        "cost": 0.0,
+        "calculated_cost": 0.0,
+        "base_cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Nobel Prize",
+        "requirements": []
+      },
+      {
+        "name": "Mare Imbrium Mine",
+        "cost": 19.0,
+        "calculated_cost": 19.0,
+        "base_cost": 19.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mare Imbrium Mine",
+        "requirements": []
+      },
+      {
+        "name": "Space Hotels",
+        "cost": 12.0,
+        "calculated_cost": 12.0,
+        "base_cost": 12.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Space Hotels",
+        "requirements": [
+          {
+            "tag": "earth",
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Lunar Dust Processing Plant",
+        "cost": 6.0,
+        "calculated_cost": 6.0,
+        "base_cost": 6.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Lunar Dust Processing Plant",
+        "requirements": []
+      },
+      {
+        "name": "Search For Life",
+        "cost": 3.0,
+        "calculated_cost": 3.0,
+        "base_cost": 3.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Search For Life",
+        "requirements": [
+          {
+            "oxygen": 6,
+            "max": true,
+            "count": 6
+          }
+        ]
+      },
+      {
+        "name": "Luna Project Office",
+        "cost": 4.0,
+        "calculated_cost": 4.0,
+        "base_cost": 4.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Luna Project Office",
+        "requirements": [
+          {
+            "tag": "science",
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Thermophiles",
+        "cost": 9.0,
+        "calculated_cost": 9.0,
+        "base_cost": 9.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Thermophiles",
+        "requirements": [
+          {
+            "venus": 6,
+            "count": 6
+          }
+        ]
+      },
+      {
+        "name": "Deuterium Export",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Deuterium Export",
+        "requirements": []
+      },
+      {
+        "name": "Solar Panel Foundry",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Solar Panel Foundry",
+        "requirements": []
+      },
+      {
+        "name": "Venus Waystation",
+        "cost": 9.0,
+        "calculated_cost": 9.0,
+        "base_cost": 9.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Venus Waystation",
+        "requirements": []
+      },
+      {
+        "name": "Release of Inert Gases",
+        "cost": 14.0,
+        "calculated_cost": 14.0,
+        "base_cost": 14.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Release of Inert Gases",
+        "requirements": []
+      },
+      {
+        "name": "Sulphur-Eating Bacteria",
+        "cost": 6.0,
+        "calculated_cost": 6.0,
+        "base_cost": 6.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Sulphur-Eating Bacteria",
+        "requirements": [
+          {
+            "venus": 6,
+            "count": 6
+          }
+        ]
+      },
+      {
+        "name": "Luna Mining Hub",
+        "cost": 23.0,
+        "calculated_cost": 23.0,
+        "base_cost": 23.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Luna Mining Hub",
+        "requirements": [
+          {
+            "miningRate": 5,
+            "count": 5
+          }
+        ]
+      },
+      {
+        "name": "Io Sulphur Research",
+        "cost": 17.0,
+        "calculated_cost": 17.0,
+        "base_cost": 17.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Io Sulphur Research",
+        "requirements": []
+      },
+      {
+        "name": "Lunar Observation Post",
+        "cost": 7.0,
+        "calculated_cost": 7.0,
+        "base_cost": 7.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Lunar Observation Post",
+        "requirements": []
+      },
+      {
+        "name": "Solar Power",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Solar Power",
+        "requirements": []
+      },
+      {
+        "name": "Orbital Power Grid",
+        "cost": 19.0,
+        "calculated_cost": 19.0,
+        "base_cost": 19.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Orbital Power Grid",
+        "requirements": []
+      },
+      {
+        "name": "Dirigibles",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Dirigibles",
+        "requirements": []
+      },
+      {
+        "name": "Microsingularity Plant",
+        "cost": 10.0,
+        "calculated_cost": 10.0,
+        "base_cost": 10.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Microsingularity Plant",
+        "requirements": [
+          {
+            "habitatTiles": 2,
+            "all": true,
+            "count": 2
+          }
+        ]
+      }
+    ],
+    "opponents": [
+      {
+        "id": "",
+        "name": "A1_f2cf2ad6",
+        "color": "red",
+        "terraform_rating": 42.0,
+        "resources": {
+          "mc": 0.0,
+          "steel": 2.0,
+          "titanium": 0.0,
+          "plants": 1.0,
+          "energy": 3.0,
+          "heat": 2.0
+        },
+        "production": {
+          "mc": 10.0,
+          "steel": 2.0,
+          "titanium": 2.0,
+          "plants": 1.0,
+          "energy": 3.0,
+          "heat": 5.0
+        },
+        "hand_count": 0,
+        "tableau_count": 16,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A2_0ced88fd",
+        "color": "blue",
+        "terraform_rating": 41.0,
+        "resources": {
+          "mc": 2.0,
+          "steel": 1.0,
+          "titanium": 15.0,
+          "plants": 6.0,
+          "energy": 7.0,
+          "heat": 4.0
+        },
+        "production": {
+          "mc": 5.0,
+          "steel": 2.0,
+          "titanium": 5.0,
+          "plants": 5.0,
+          "energy": 7.0,
+          "heat": 4.0
+        },
+        "hand_count": 0,
+        "tableau_count": 22,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A3_06ea4d0a",
+        "color": "green",
+        "terraform_rating": 32.0,
+        "resources": {
+          "mc": 8.0,
+          "steel": 0.0,
+          "titanium": 0.0,
+          "plants": 5.0,
+          "energy": 1.0,
+          "heat": 1.0
+        },
+        "production": {
+          "mc": 11.0,
+          "steel": 2.0,
+          "titanium": 2.0,
+          "plants": 3.0,
+          "energy": 2.0,
+          "heat": 1.0
+        },
+        "hand_count": 0,
+        "tableau_count": 20,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A4_d7d6640c",
+        "color": "yellow",
+        "terraform_rating": 39.0,
+        "resources": {
+          "mc": 0.0,
+          "steel": 1.0,
+          "titanium": 0.0,
+          "plants": 0.0,
+          "energy": 3.0,
+          "heat": 6.0
+        },
+        "production": {
+          "mc": 6.0,
+          "steel": 4.0,
+          "titanium": 3.0,
+          "plants": 1.0,
+          "energy": 8.0,
+          "heat": 4.0
+        },
+        "hand_count": 0,
+        "tableau_count": 21,
+        "cities_count": 0,
+        "greeneries_count": 0
+      }
+    ],
+    "board": {
+      "temperature": 8.0,
+      "oxygen": 13.0,
+      "oceans": 7.0,
+      "venus": 18.0,
+      "map_name": ""
+    },
+    "awards": [
+      {
+        "index": 0,
+        "name": "Forecaster",
+        "funded_by": "A3_06ea4d0a",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 6.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 7.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Edgedancer",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 2,
+        "name": "Visionary",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 3,
+        "name": "Naturalist",
+        "funded_by": "A4_d7d6640c",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 6.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 9.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 5.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Voyager",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 5,
+        "name": "Venuphile",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 6,
+        "name": "Lunar Magnate",
+        "funded_by": "A1_f2cf2ad6",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 10.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 4.0
+          }
+        ]
+      }
+    ],
+    "milestones": [
+      {
+        "index": 0,
+        "name": "V. Electrician",
+        "claimed_by": "A2_0ced88fd",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 1,
+        "name": "Smith",
+        "claimed_by": "A4_d7d6640c",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 2,
+        "name": "Tradesman",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 3,
+        "name": "Irrigator",
+        "claimed_by": "A2_0ced88fd",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 4,
+        "name": "Capitalist",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 5,
+        "name": "Hoverlord",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 6,
+        "name": "One Giant Step",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      }
+    ],
+    "prompt_candidates": {
+      "cards": [
+        {
+          "name": "Thermophiles",
+          "cost": 9.0,
+          "calculated_cost": 9.0,
+          "base_cost": 9.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Thermophiles",
+          "requirements": [
+            {
+              "venus": 6,
+              "count": 6
+            }
+          ],
+          "requirement_plan": [
+            {
+              "type": "venus",
+              "label": "venus",
+              "satisfied": true,
+              "target": 6,
+              "current": 18,
+              "remaining": 0,
+              "remaining_steps": null,
+              "is_max": false,
+              "all_players": false,
+              "count": 6,
+              "next_to": false,
+              "text": "venus >= 6, now 18",
+              "advisory_only": false,
+              "server_override": false,
+              "masked_by_server": false
+            }
+          ],
+          "plan_summary": "All requirements satisfied.",
+          "reachability_score": 1.0,
+          "readiness_score": 1.0,
+          "all_satisfied": true,
+          "blocking_count": 0,
+          "server_override": false,
+          "masked_by_server": false,
+          "selection_score": 2.6837500137090684
+        },
+        {
+          "name": "Sulphur-Eating Bacteria",
+          "cost": 6.0,
+          "calculated_cost": 6.0,
+          "base_cost": 6.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Sulphur-Eating Bacteria",
+          "requirements": [
+            {
+              "venus": 6,
+              "count": 6
+            }
+          ],
+          "requirement_plan": [
+            {
+              "type": "venus",
+              "label": "venus",
+              "satisfied": true,
+              "target": 6,
+              "current": 18,
+              "remaining": 0,
+              "remaining_steps": null,
+              "is_max": false,
+              "all_players": false,
+              "count": 6,
+              "next_to": false,
+              "text": "venus >= 6, now 18",
+              "advisory_only": false,
+              "server_override": false,
+              "masked_by_server": false
+            }
+          ],
+          "plan_summary": "All requirements satisfied.",
+          "reachability_score": 1.0,
+          "readiness_score": 1.0,
+          "all_satisfied": true,
+          "blocking_count": 0,
+          "server_override": false,
+          "masked_by_server": false,
+          "selection_score": 2.861499986290932
+        }
+      ],
+      "options": [],
+      "map_candidates": [],
+      "moon_candidates": [],
+      "players": [],
+      "colonies": [],
+      "parties": [],
+      "global_events": [],
+      "tokens": [],
+      "policies": [],
+      "resource_types": [],
+      "payment_context": {
+        "amount": 0.0,
+        "min": 1.0,
+        "max": 1.0,
+        "title": "Select card to add ${0} ${1}"
+      }
+    },
+    "prompt_card_rankings": [
+      {
+        "name": "Sulphur-Eating Bacteria",
+        "cost": 6.0,
+        "tags": [
+          "Microbe",
+          "Venus"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 2.861499986290932,
+        "affordability": 0.699999988079071,
+        "vp_proxy": 0.14500000000000002,
+        "requirements": [
+          {
+            "venus": 6,
+            "count": 6
+          }
+        ],
+        "requirement_plan": [
+          {
+            "type": "venus",
+            "label": "venus",
+            "satisfied": true,
+            "target": 6,
+            "current": 18,
+            "remaining": 0,
+            "remaining_steps": null,
+            "is_max": false,
+            "all_players": false,
+            "count": 6,
+            "next_to": false,
+            "text": "venus >= 6, now 18",
+            "advisory_only": false,
+            "server_override": false,
+            "masked_by_server": false
+          }
+        ],
+        "plan_summary": "All requirements satisfied.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      },
+      {
+        "name": "Thermophiles",
+        "cost": 9.0,
+        "tags": [
+          "Microbe",
+          "Venus"
+        ],
+        "disabled": false,
+        "warnings": [],
+        "selection_score": 2.6837500137090684,
+        "affordability": 0.550000011920929,
+        "vp_proxy": 0.1525,
+        "requirements": [
+          {
+            "venus": 6,
+            "count": 6
+          }
+        ],
+        "requirement_plan": [
+          {
+            "type": "venus",
+            "label": "venus",
+            "satisfied": true,
+            "target": 6,
+            "current": 18,
+            "remaining": 0,
+            "remaining_steps": null,
+            "is_max": false,
+            "all_players": false,
+            "count": 6,
+            "next_to": false,
+            "text": "venus >= 6, now 18",
+            "advisory_only": false,
+            "server_override": false,
+            "masked_by_server": false
+          }
+        ],
+        "plan_summary": "All requirements satisfied.",
+        "reachability_score": 1.0,
+        "readiness_score": 1.0,
+        "all_satisfied": true,
+        "blocking_count": 0,
+        "server_override": false,
+        "masked_by_server": false
+      }
+    ]
+  },
+  "policy": {
+    "chosen_action_index": 1,
+    "chosen_action_label": "PLAY_CARD(Sulphur-Eating Bacteria)",
+    "chosen_action_payload": {
+      "type": "card",
+      "cards": [
+        "Sulphur-Eating Bacteria"
+      ]
+    },
+    "policy_temperature": 1.0,
+    "value_estimate": 0.2921333611011505,
+    "raw_available_actions": [
+      0,
+      1
+    ],
+    "filtered_available_actions": [
+      0,
+      1
+    ],
+    "legal_actions": [
+      0,
+      1
+    ],
+    "action_rankings": [
+      {
+        "action_index": 1,
+        "label": "PLAY_CARD(Sulphur-Eating Bacteria)",
+        "decoded_action": {
+          "type": "card",
+          "cards": [
+            "Sulphur-Eating Bacteria"
+          ]
+        },
+        "raw_probability": 0.0012515579583123326,
+        "masked_probability": 0.6616304516792297,
+        "logit": 0.5575597882270813,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 0,
+        "label": "PLAY_CARD(Thermophiles)",
+        "decoded_action": {
+          "type": "card",
+          "cards": [
+            "Thermophiles"
+          ]
+        },
+        "raw_probability": 0.0006400690763257444,
+        "masked_probability": 0.33836960792541504,
+        "logit": -0.11300843954086304,
+        "chosen": false,
+        "legal": true
+      }
+    ],
+    "top_actions": [
+      {
+        "action_index": 1,
+        "label": "PLAY_CARD(Sulphur-Eating Bacteria)",
+        "decoded_action": {
+          "type": "card",
+          "cards": [
+            "Sulphur-Eating Bacteria"
+          ]
+        },
+        "raw_probability": 0.0012515579583123326,
+        "masked_probability": 0.6616304516792297,
+        "logit": 0.5575597882270813,
+        "chosen": true,
+        "legal": true
+      },
+      {
+        "action_index": 0,
+        "label": "PLAY_CARD(Thermophiles)",
+        "decoded_action": {
+          "type": "card",
+          "cards": [
+            "Thermophiles"
+          ]
+        },
+        "raw_probability": 0.0006400690763257444,
+        "masked_probability": 0.33836960792541504,
+        "logit": -0.11300843954086304,
+        "chosen": false,
+        "legal": true
+      }
+    ]
+  },
+  "aux": {
+    "targets": {
+      "milestone_claimability": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "award_ev": 0.4666666666666667,
+      "playable_cards": 0.0,
+      "steel_target": 0.08035714285714286,
+      "titanium_target": 0.060714285714285714
+    },
+    "predictions": {
+      "award_ev": 0.3431294858455658,
+      "playable_cards": 0.05148657038807869,
+      "steel_target": 0.11918450891971588,
+      "titanium_target": 0.08218895643949509,
+      "top_milestone_predictions": [
+        {
+          "index": 12,
+          "value": 0.1956481784582138
+        },
+        {
+          "index": 22,
+          "value": 0.18562102317810059
+        },
+        {
+          "index": 30,
+          "value": 0.17759424448013306
+        },
+        {
+          "index": 36,
+          "value": 0.17055028676986694
+        },
+        {
+          "index": 41,
+          "value": 0.14199696481227875
+        },
+        {
+          "index": 20,
+          "value": 0.13423006236553192
+        },
+        {
+          "index": 27,
+          "value": 0.1340397298336029
+        },
+        {
+          "index": 9,
+          "value": 0.11544892936944962
+        },
+        {
+          "index": 10,
+          "value": 0.09723497927188873
+        },
+        {
+          "index": 57,
+          "value": 0.09038834273815155
+        }
+      ]
+    }
+  },
+  "diagnostics": {
+    "transformer": {
+      "enabled": true,
+      "active_token_ratio": 0.38461539149284363,
+      "active_row_ratio": 1.0,
+      "attention_context_norm": 16.027015686035156,
+      "fusion_delta_norm": 16.16145896911621,
+      "fusion_share": 2.8748629706371225,
+      "shared_pre_norm": 5.621644973754883,
+      "shared_post_norm": 16.61105728149414,
+      "token_count": 78,
+      "token_dim": 20,
+      "timestamp": 1773505298.0017543,
+      "hand_token_count": 64,
+      "tableau_token_count": 8,
+      "opponent_token_count": 6,
+      "card_token_dim": 20
+    },
+    "rare_state": {
+      "weight": 1.0,
+      "award_funding": 0.0,
+      "milestone_timing": 0.0,
+      "draft_keep_buy": 0.0,
+      "high_cost_payment": 0.0,
+      "payment_value_estimate": 0.0
+    }
+  },
+  "snapshot_id": "20260314T162138Z_d7d6640c-f17_card_g238bc3e44dc_e42e651c-f0e",
+  "snapshot_path": "/app/debug_snapshots/20260314T162138Z_d7d6640c-f17_card_g238bc3e44dc_e42e651c-f0e.json"
+}

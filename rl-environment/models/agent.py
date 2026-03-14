@@ -46,6 +46,42 @@ from debug_decision_snapshot import (
 
 logger = logging.getLogger(__name__)
 
+_AGENT_ARCHITECTURE_FIELDS: Tuple[str, ...] = (
+    "state_size",
+    "hidden_size",
+    "num_layers",
+    "recurrent_size",
+    "phase_head_count",
+    "transformer_enabled",
+    "card_token_dim",
+    "tableau_token_count",
+    "hand_token_count",
+    "opponent_token_count",
+    "transformer_embed_dim",
+    "transformer_heads",
+    "transformer_layers",
+    "transformer_dropout",
+)
+
+
+def _safe_env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return int(default)
+
+
+def _safe_env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return float(default)
+
+
+def _safe_env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
 # ---------------------------------------------------------------------------
 # Inference device resolution (GPU when available, controlled by env var)
 # ---------------------------------------------------------------------------
@@ -393,6 +429,39 @@ class AgentConfig:
     transformer_heads: int = 4
     transformer_layers: int = 2
     transformer_dropout: float = 0.1
+
+    @classmethod
+    def from_env(cls, base: Optional["AgentConfig"] = None) -> "AgentConfig":
+        seed = base or cls()
+        payload = asdict(seed)
+        payload.update({
+            "state_size": _safe_env_int("AGENT_STATE_SIZE", int(payload["state_size"])),
+            "hidden_size": _safe_env_int("AGENT_HIDDEN_SIZE", int(payload["hidden_size"])),
+            "num_layers": _safe_env_int("AGENT_NUM_LAYERS", int(payload["num_layers"])),
+            "recurrent_size": _safe_env_int("AGENT_RECURRENT_SIZE", int(payload["recurrent_size"])),
+            "phase_head_count": _safe_env_int("AGENT_PHASE_HEAD_COUNT", int(payload["phase_head_count"])),
+            "transformer_enabled": _safe_env_bool("AGENT_TRANSFORMER_ENABLED", bool(payload["transformer_enabled"])),
+            "card_token_dim": _safe_env_int("AGENT_CARD_TOKEN_DIM", int(payload["card_token_dim"])),
+            "tableau_token_count": _safe_env_int("AGENT_TABLEAU_TOKEN_COUNT", int(payload["tableau_token_count"])),
+            "hand_token_count": _safe_env_int("AGENT_HAND_TOKEN_COUNT", int(payload["hand_token_count"])),
+            "opponent_token_count": _safe_env_int("AGENT_OPPONENT_TOKEN_COUNT", int(payload["opponent_token_count"])),
+            "transformer_embed_dim": _safe_env_int("AGENT_TRANSFORMER_EMBED_DIM", int(payload["transformer_embed_dim"])),
+            "transformer_heads": _safe_env_int("AGENT_TRANSFORMER_HEADS", int(payload["transformer_heads"])),
+            "transformer_layers": _safe_env_int("AGENT_TRANSFORMER_LAYERS", int(payload["transformer_layers"])),
+            "transformer_dropout": _safe_env_float("AGENT_TRANSFORMER_DROPOUT", float(payload["transformer_dropout"])),
+        })
+        return cls(**payload)
+
+    def architecture_dict(self) -> Dict[str, Any]:
+        payload = asdict(self)
+        return {
+            key: payload[key]
+            for key in _AGENT_ARCHITECTURE_FIELDS
+            if key in payload
+        }
+
+    def architecture_signature(self) -> str:
+        return json.dumps(self.architecture_dict(), sort_keys=True, separators=(",", ":"))
 
 
 class CardAttentionModule(nn.Module):
@@ -846,21 +915,7 @@ class RLAgent:
     def __init__(self, config: AgentConfig = None, agent_id: str = None):
         self.id = agent_id or str(uuid.uuid4())
         if config is None:
-            # Read environment variables for default config
-            config = AgentConfig(
-                state_size=RLAgent._safe_env_int("AGENT_STATE_SIZE", 3072),
-                hidden_size=RLAgent._safe_env_int("AGENT_HIDDEN_SIZE", 256),
-                num_layers=RLAgent._safe_env_int("AGENT_NUM_LAYERS", 3),
-                transformer_enabled=str(os.getenv("AGENT_TRANSFORMER_ENABLED", "1")).strip().lower() not in ("0", "false", "no", "off"),
-                card_token_dim=RLAgent._safe_env_int("AGENT_CARD_TOKEN_DIM", 20),
-                tableau_token_count=RLAgent._safe_env_int("AGENT_TABLEAU_TOKEN_COUNT", 8),
-                hand_token_count=RLAgent._safe_env_int("AGENT_HAND_TOKEN_COUNT", 64),
-                opponent_token_count=RLAgent._safe_env_int("AGENT_OPPONENT_TOKEN_COUNT", 6),
-                transformer_embed_dim=RLAgent._safe_env_int("AGENT_TRANSFORMER_EMBED_DIM", 64),
-                transformer_heads=RLAgent._safe_env_int("AGENT_TRANSFORMER_HEADS", 4),
-                transformer_layers=RLAgent._safe_env_int("AGENT_TRANSFORMER_LAYERS", 2),
-                transformer_dropout=RLAgent._safe_env_float("AGENT_TRANSFORMER_DROPOUT", 0.1),
-            )
+            config = self.build_env_config()
         self.config = config
         # PPO optimizer LR is decoupled from evolutionary config learning_rate by default.
         self.ppo_learning_rate = self._safe_env_float("PPO_LEARNING_RATE", 3e-4)
@@ -1055,6 +1110,32 @@ class RLAgent:
             'timing_counts': {},
             'timing_log_events': 0,
         }
+
+    @staticmethod
+    def build_env_config(base: Optional[AgentConfig] = None) -> AgentConfig:
+        return AgentConfig.from_env(base=base)
+
+    @staticmethod
+    def peek_checkpoint_config(path: str) -> Optional[AgentConfig]:
+        try:
+            try:
+                checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+            except TypeError:
+                checkpoint = torch.load(path, map_location="cpu")
+        except Exception:
+            return None
+        config_payload = checkpoint.get("config", {})
+        if not isinstance(config_payload, dict):
+            return None
+        defaults = asdict(AgentConfig())
+        merged = defaults.copy()
+        for key, value in config_payload.items():
+            if key in defaults:
+                merged[key] = value
+        try:
+            return AgentConfig(**merged)
+        except Exception:
+            return None
 
     @staticmethod
     def _safe_env_float(name: str, default: float) -> float:

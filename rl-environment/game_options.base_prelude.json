@@ -15,7 +15,7 @@
     "ares": false,
     "ceo": false,
     "colonies": false,
-    "community": false,
+    "community": true,
     "corpera": false,
     "moon": true,
     "pathfinders": false,
@@ -50,6 +50,6 @@
   "startingCeos": 0,
   "startingCorporations": 2,
   "startingPreludes": 4,
-  "twoCorpsVariant": false,
+  "twoCorpsVariant": true,
   "undoOption": false
 }

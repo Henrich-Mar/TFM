@@ -53,6 +53,39 @@ def test_transformer_network_output_shapes() -> None:
     assert tuple(output["aux_predictions"].shape) == (5, 74)
 
 
+def test_agent_config_from_env_respects_full_transformer_architecture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if "rl-environment" not in sys.path:
+        sys.path.append("rl-environment")
+
+    from models.agent import AgentConfig
+
+    monkeypatch.setenv("AGENT_STATE_SIZE", "3072")
+    monkeypatch.setenv("AGENT_HIDDEN_SIZE", "1024")
+    monkeypatch.setenv("AGENT_NUM_LAYERS", "8")
+    monkeypatch.setenv("AGENT_RECURRENT_SIZE", "128")
+    monkeypatch.setenv("AGENT_PHASE_HEAD_COUNT", "6")
+    monkeypatch.setenv("AGENT_CARD_TOKEN_DIM", "20")
+    monkeypatch.setenv("AGENT_TABLEAU_TOKEN_COUNT", "8")
+    monkeypatch.setenv("AGENT_HAND_TOKEN_COUNT", "64")
+    monkeypatch.setenv("AGENT_OPPONENT_TOKEN_COUNT", "6")
+    monkeypatch.setenv("AGENT_TRANSFORMER_EMBED_DIM", "256")
+    monkeypatch.setenv("AGENT_TRANSFORMER_HEADS", "16")
+    monkeypatch.setenv("AGENT_TRANSFORMER_LAYERS", "4")
+
+    config = AgentConfig.from_env()
+
+    assert config.state_size == 3072
+    assert config.hidden_size == 1024
+    assert config.num_layers == 8
+    assert config.card_token_dim == 20
+    assert config.hand_token_count == 64
+    assert config.transformer_embed_dim == 256
+    assert config.transformer_heads == 16
+    assert config.transformer_layers == 4
+
+
 def test_state_encoder_injects_card_token_segment() -> None:
     if "rl-environment" not in sys.path:
         sys.path.append("rl-environment")

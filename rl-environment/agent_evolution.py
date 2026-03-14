@@ -64,14 +64,16 @@ class EvolutionManager:
     async def create_initial_population(self, population_size: int) -> List[RLAgent]:
         """Create initial diverse population of agents"""
         population = []
-        default_config = AgentConfig()
+        default_config = RLAgent.build_env_config()
         
         for i in range(population_size):
             # Create diverse initial configurations
             config = AgentConfig(
-                state_size=self._safe_env_int("AGENT_STATE_SIZE", int(default_config.state_size)),
-                hidden_size=self._safe_env_int("AGENT_HIDDEN_SIZE", int(default_config.hidden_size)),
-                num_layers=self._safe_env_int("AGENT_NUM_LAYERS", int(default_config.num_layers)),
+                state_size=int(default_config.state_size),
+                hidden_size=int(default_config.hidden_size),
+                num_layers=int(default_config.num_layers),
+                recurrent_size=int(default_config.recurrent_size),
+                phase_head_count=int(default_config.phase_head_count),
                 learning_rate=random.uniform(1e-5, 1e-3),
                 epsilon=random.uniform(
                     min(self.epsilon_init_min, self.epsilon_init_max),
@@ -81,7 +83,16 @@ class EvolutionManager:
                     min(self.temperature_init_min, self.temperature_init_max),
                     max(self.temperature_init_min, self.temperature_init_max),
                 ),
-                max_thinking_time=random.uniform(1.0, 10.0)
+                max_thinking_time=random.uniform(1.0, 10.0),
+                transformer_enabled=bool(default_config.transformer_enabled),
+                card_token_dim=int(default_config.card_token_dim),
+                tableau_token_count=int(default_config.tableau_token_count),
+                hand_token_count=int(default_config.hand_token_count),
+                opponent_token_count=int(default_config.opponent_token_count),
+                transformer_embed_dim=int(default_config.transformer_embed_dim),
+                transformer_heads=int(default_config.transformer_heads),
+                transformer_layers=int(default_config.transformer_layers),
+                transformer_dropout=float(default_config.transformer_dropout),
             )
             
             agent = RLAgent(config)

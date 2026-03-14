@@ -155,19 +155,21 @@ def print_hardware(hw: HardwareInfo) -> None:
 
 def build_agent_config() -> AgentConfig:
     """Build AgentConfig from environment variables, same as the coordinator."""
-    return AgentConfig(
-        state_size=int(os.getenv("AGENT_STATE_SIZE", "3072")),
-        hidden_size=int(os.getenv("AGENT_HIDDEN_SIZE", "1024")),
-        num_layers=int(os.getenv("AGENT_NUM_LAYERS", "8")),
-        recurrent_size=int(os.getenv("AGENT_RECURRENT_SIZE", "128")),
-        phase_head_count=int(os.getenv("AGENT_PHASE_HEAD_COUNT", "6")),
-        card_token_dim=int(os.getenv("AGENT_CARD_TOKEN_DIM", "20")),
-        tableau_token_count=int(os.getenv("AGENT_TABLEAU_TOKEN_COUNT", "8")),
-        hand_token_count=int(os.getenv("AGENT_HAND_TOKEN_COUNT", "64")),
-        opponent_token_count=int(os.getenv("AGENT_OPPONENT_TOKEN_COUNT", "6")),
-        transformer_embed_dim=int(os.getenv("AGENT_TRANSFORMER_EMBED_DIM", "256")),
-        transformer_heads=int(os.getenv("AGENT_TRANSFORMER_HEADS", "16")),
-        transformer_layers=int(os.getenv("AGENT_TRANSFORMER_LAYERS", "4")),
+    return AgentConfig.from_env(
+        AgentConfig(
+            state_size=3072,
+            hidden_size=1024,
+            num_layers=8,
+            recurrent_size=128,
+            phase_head_count=6,
+            card_token_dim=20,
+            tableau_token_count=8,
+            hand_token_count=64,
+            opponent_token_count=6,
+            transformer_embed_dim=256,
+            transformer_heads=16,
+            transformer_layers=4,
+        )
     )
 
 

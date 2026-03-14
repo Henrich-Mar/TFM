@@ -1,0 +1,1136 @@
+{
+  "schema_version": "decision_snapshot.v1",
+  "captured_at": "2026-03-14T17:02:17Z",
+  "request": {
+    "request_id": "02d307c4-da4c-4d36-bb71-5ffa0ff6e50c",
+    "note": "",
+    "include_state_vector": false
+  },
+  "agent": {
+    "id": "163f6422-82c8-4300-8dbe-119dafbbbc61"
+  },
+  "prompt": {
+    "game_id": "g657c263fdb2c",
+    "game_url": "http://localhost:8083/game?id=g657c263fdb2c",
+    "player_id": "pf50f08c91b57",
+    "player_name": "A4_163f6422",
+    "phase": "research",
+    "phase_index": 0,
+    "generation": 11,
+    "prompt_type": "card",
+    "prompt_title": "Select card(s) to buy",
+    "turn_action_count": 14,
+    "sampled_from_policy": true,
+    "send_outcome": "accepted"
+  },
+  "state": {
+    "this_player": {
+      "id": "",
+      "name": "A4_163f6422",
+      "color": "yellow",
+      "terraform_rating": 41.0,
+      "resources": {
+        "mc": 51.0,
+        "steel": 13.0,
+        "titanium": 4.0,
+        "plants": 4.0,
+        "energy": 0.0,
+        "heat": 11.0
+      },
+      "production": {
+        "mc": 8.0,
+        "steel": 5.0,
+        "titanium": 4.0,
+        "plants": 2.0,
+        "energy": 0.0,
+        "heat": 4.0
+      },
+      "hand_count": 17,
+      "tableau_count": 18,
+      "cities_count": 0,
+      "greeneries_count": 0
+    },
+    "hand": [
+      {
+        "name": "Adaptation Technology",
+        "cost": 12.0,
+        "calculated_cost": 12.0,
+        "base_cost": 12.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Adaptation Technology",
+        "requirements": []
+      },
+      {
+        "name": "Atmoscoop",
+        "cost": 22.0,
+        "calculated_cost": 22.0,
+        "base_cost": 22.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Atmoscoop",
+        "requirements": [
+          {
+            "tag": "science",
+            "count": 3
+          }
+        ]
+      },
+      {
+        "name": "Protected Valley",
+        "cost": 23.0,
+        "calculated_cost": 23.0,
+        "base_cost": 23.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Protected Valley",
+        "requirements": []
+      },
+      {
+        "name": "Worms",
+        "cost": 8.0,
+        "calculated_cost": 8.0,
+        "base_cost": 8.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Worms",
+        "requirements": [
+          {
+            "oxygen": 4,
+            "count": 4
+          }
+        ]
+      },
+      {
+        "name": "Arctic Algae",
+        "cost": 12.0,
+        "calculated_cost": 12.0,
+        "base_cost": 12.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Arctic Algae",
+        "requirements": [
+          {
+            "temperature": -12,
+            "max": true,
+            "count": -12
+          }
+        ]
+      },
+      {
+        "name": "Permafrost Extraction",
+        "cost": 8.0,
+        "calculated_cost": 8.0,
+        "base_cost": 8.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Permafrost Extraction",
+        "requirements": [
+          {
+            "temperature": -8,
+            "count": -8
+          }
+        ]
+      },
+      {
+        "name": "Big Asteroid",
+        "cost": 27.0,
+        "calculated_cost": 27.0,
+        "base_cost": 27.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Big Asteroid",
+        "requirements": []
+      },
+      {
+        "name": "Magnetic Field Generators",
+        "cost": 20.0,
+        "calculated_cost": 20.0,
+        "base_cost": 20.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Magnetic Field Generators",
+        "requirements": []
+      },
+      {
+        "name": "Grass",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Grass",
+        "requirements": [
+          {
+            "temperature": -16,
+            "count": -16
+          }
+        ]
+      },
+      {
+        "name": "Maxwell Base",
+        "cost": 18.0,
+        "calculated_cost": 18.0,
+        "base_cost": 18.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Maxwell Base",
+        "requirements": [
+          {
+            "venus": 12,
+            "count": 12
+          }
+        ]
+      },
+      {
+        "name": "Power Grid",
+        "cost": 18.0,
+        "calculated_cost": 18.0,
+        "base_cost": 18.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Power Grid",
+        "requirements": []
+      },
+      {
+        "name": "Venus Soils",
+        "cost": 20.0,
+        "calculated_cost": 20.0,
+        "base_cost": 20.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Venus Soils",
+        "requirements": []
+      },
+      {
+        "name": "Subterranean Reservoir",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Subterranean Reservoir",
+        "requirements": []
+      },
+      {
+        "name": "Giant Solar Shade",
+        "cost": 27.0,
+        "calculated_cost": 27.0,
+        "base_cost": 27.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Giant Solar Shade",
+        "requirements": []
+      },
+      {
+        "name": "Microsingularity Plant",
+        "cost": 10.0,
+        "calculated_cost": 10.0,
+        "base_cost": 10.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Microsingularity Plant",
+        "requirements": [
+          {
+            "habitatTiles": 2,
+            "all": true,
+            "count": 2
+          }
+        ]
+      },
+      {
+        "name": "Underground Detonators",
+        "cost": 9.0,
+        "calculated_cost": 9.0,
+        "base_cost": 9.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Underground Detonators",
+        "requirements": []
+      },
+      {
+        "name": "Urbanized Area",
+        "cost": 10.0,
+        "calculated_cost": 10.0,
+        "base_cost": 10.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Urbanized Area",
+        "requirements": []
+      }
+    ],
+    "tableau": [
+      {
+        "name": "Celestic",
+        "cost": 0.0,
+        "calculated_cost": 0.0,
+        "base_cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Celestic",
+        "requirements": []
+      },
+      {
+        "name": "Self-Sufficient Settlement",
+        "cost": 0.0,
+        "calculated_cost": 0.0,
+        "base_cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Self-Sufficient Settlement",
+        "requirements": []
+      },
+      {
+        "name": "Smelting Plant",
+        "cost": 0.0,
+        "calculated_cost": 0.0,
+        "base_cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Smelting Plant",
+        "requirements": []
+      },
+      {
+        "name": "Mare Imbrium Mine",
+        "cost": 19.0,
+        "calculated_cost": 19.0,
+        "base_cost": 19.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mare Imbrium Mine",
+        "requirements": []
+      },
+      {
+        "name": "Forced Precipitation",
+        "cost": 8.0,
+        "calculated_cost": 8.0,
+        "base_cost": 8.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Forced Precipitation",
+        "requirements": []
+      },
+      {
+        "name": "Ironworks",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Ironworks",
+        "requirements": []
+      },
+      {
+        "name": "Equatorial Magnetizer",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Equatorial Magnetizer",
+        "requirements": []
+      },
+      {
+        "name": "Asteroid",
+        "cost": 14.0,
+        "calculated_cost": 14.0,
+        "base_cost": 14.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Asteroid",
+        "requirements": []
+      },
+      {
+        "name": "Ishtar Mining",
+        "cost": 5.0,
+        "calculated_cost": 5.0,
+        "base_cost": 5.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Ishtar Mining",
+        "requirements": [
+          {
+            "venus": 8,
+            "count": 8
+          }
+        ]
+      },
+      {
+        "name": "Cloud Tourism",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Cloud Tourism",
+        "requirements": []
+      },
+      {
+        "name": "Mare Serenitatis Mine",
+        "cost": 21.0,
+        "calculated_cost": 21.0,
+        "base_cost": 21.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mare Serenitatis Mine",
+        "requirements": []
+      },
+      {
+        "name": "GHG Import From Venus",
+        "cost": 23.0,
+        "calculated_cost": 23.0,
+        "base_cost": 23.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "GHG Import From Venus",
+        "requirements": []
+      },
+      {
+        "name": "Local Heat Trapping",
+        "cost": 1.0,
+        "calculated_cost": 1.0,
+        "base_cost": 1.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Local Heat Trapping",
+        "requirements": []
+      },
+      {
+        "name": "Mooncrate Block Factory",
+        "cost": 8.0,
+        "calculated_cost": 8.0,
+        "base_cost": 8.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mooncrate Block Factory",
+        "requirements": [
+          {
+            "miningTiles": 1,
+            "all": true,
+            "count": 1
+          }
+        ]
+      },
+      {
+        "name": "Earth Embassy",
+        "cost": 16.0,
+        "calculated_cost": 16.0,
+        "base_cost": 16.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Earth Embassy",
+        "requirements": []
+      },
+      {
+        "name": "Lichen",
+        "cost": 7.0,
+        "calculated_cost": 7.0,
+        "base_cost": 7.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Lichen",
+        "requirements": [
+          {
+            "temperature": -24,
+            "count": -24
+          }
+        ]
+      },
+      {
+        "name": "Off-World City Living",
+        "cost": 35.0,
+        "calculated_cost": 35.0,
+        "base_cost": 35.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Off-World City Living",
+        "requirements": []
+      },
+      {
+        "name": "Ice Cap Melting",
+        "cost": 5.0,
+        "calculated_cost": 5.0,
+        "base_cost": 5.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Ice Cap Melting",
+        "requirements": [
+          {
+            "temperature": 2,
+            "count": 2
+          }
+        ]
+      }
+    ],
+    "opponents": [
+      {
+        "id": "",
+        "name": "A3_06ea4d0a",
+        "color": "green",
+        "terraform_rating": 43.0,
+        "resources": {
+          "mc": 39.0,
+          "steel": 4.0,
+          "titanium": 14.0,
+          "plants": 5.0,
+          "energy": 7.0,
+          "heat": 13.0
+        },
+        "production": {
+          "mc": 3.0,
+          "steel": 2.0,
+          "titanium": 2.0,
+          "plants": 2.0,
+          "energy": 7.0,
+          "heat": 3.0
+        },
+        "hand_count": 0,
+        "tableau_count": 16,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A4_163f6422",
+        "color": "yellow",
+        "terraform_rating": 41.0,
+        "resources": {
+          "mc": 51.0,
+          "steel": 13.0,
+          "titanium": 4.0,
+          "plants": 4.0,
+          "energy": 0.0,
+          "heat": 11.0
+        },
+        "production": {
+          "mc": 8.0,
+          "steel": 5.0,
+          "titanium": 4.0,
+          "plants": 2.0,
+          "energy": 0.0,
+          "heat": 4.0
+        },
+        "hand_count": 0,
+        "tableau_count": 18,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A1_3ebdb2e3",
+        "color": "red",
+        "terraform_rating": 42.0,
+        "resources": {
+          "mc": 59.0,
+          "steel": 10.0,
+          "titanium": 2.0,
+          "plants": 9.0,
+          "energy": 5.0,
+          "heat": 11.0
+        },
+        "production": {
+          "mc": 16.0,
+          "steel": 6.0,
+          "titanium": 2.0,
+          "plants": 5.0,
+          "energy": 5.0,
+          "heat": 4.0
+        },
+        "hand_count": 0,
+        "tableau_count": 24,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A2_ed85ebb5",
+        "color": "blue",
+        "terraform_rating": 36.0,
+        "resources": {
+          "mc": 44.0,
+          "steel": 6.0,
+          "titanium": 4.0,
+          "plants": 3.0,
+          "energy": 14.0,
+          "heat": 19.0
+        },
+        "production": {
+          "mc": 6.0,
+          "steel": 4.0,
+          "titanium": 2.0,
+          "plants": 0.0,
+          "energy": 14.0,
+          "heat": 3.0
+        },
+        "hand_count": 0,
+        "tableau_count": 17,
+        "cities_count": 0,
+        "greeneries_count": 0
+      }
+    ],
+    "board": {
+      "temperature": 8.0,
+      "oxygen": 14.0,
+      "oceans": 9.0,
+      "venus": 30.0,
+      "map_name": ""
+    },
+    "awards": [
+      {
+        "index": 0,
+        "name": "Landlord",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 1,
+        "name": "Scientist",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 2,
+        "name": "Banker",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 3,
+        "name": "Thermalist",
+        "funded_by": "A3_06ea4d0a",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 20.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 36.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 23.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 15.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Miner",
+        "funded_by": "",
+        "scores": []
+      },
+      {
+        "index": 5,
+        "name": "Venuphile",
+        "funded_by": "A2_ed85ebb5",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 7.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 3.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 4.0
+          }
+        ]
+      },
+      {
+        "index": 6,
+        "name": "Lunar Magnate",
+        "funded_by": "A2_ed85ebb5",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "red",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "blue",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "green",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "yellow",
+            "score": 8.0
+          }
+        ]
+      }
+    ],
+    "milestones": [
+      {
+        "index": 0,
+        "name": "Terraformer",
+        "claimed_by": "A1_3ebdb2e3",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 1,
+        "name": "Mayor",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 2,
+        "name": "Gardener",
+        "claimed_by": "A3_06ea4d0a",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 3,
+        "name": "Builder",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 4,
+        "name": "Planner",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 5,
+        "name": "Hoverlord",
+        "claimed_by": "A2_ed85ebb5",
+        "minimum": 0.0,
+        "scores": []
+      },
+      {
+        "index": 6,
+        "name": "One Giant Step",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": []
+      }
+    ],
+    "prompt_candidates": {
+      "cards": [
+        {
+          "name": "Omnicourt",
+          "cost": 11.0,
+          "calculated_cost": 11.0,
+          "base_cost": 11.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Omnicourt",
+          "requirements": [
+            {
+              "tag": "venus"
+            },
+            {
+              "tag": "earth"
+            },
+            {
+              "tag": "jovian"
+            }
+          ]
+        },
+        {
+          "name": "Venus Orbital Survey",
+          "cost": 18.0,
+          "calculated_cost": 18.0,
+          "base_cost": 18.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Venus Orbital Survey",
+          "requirements": []
+        },
+        {
+          "name": "Immigration Shuttles",
+          "cost": 31.0,
+          "calculated_cost": 31.0,
+          "base_cost": 31.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Immigration Shuttles",
+          "requirements": []
+        },
+        {
+          "name": "Energy Saving",
+          "cost": 15.0,
+          "calculated_cost": 15.0,
+          "base_cost": 15.0,
+          "tags": [],
+          "victory_points": 0.0,
+          "type": "",
+          "has_action": false,
+          "disabled": false,
+          "label": "Energy Saving",
+          "requirements": []
+        }
+      ],
+      "options": [],
+      "map_candidates": [],
+      "moon_candidates": [],
+      "players": [],
+      "colonies": [],
+      "parties": [],
+      "global_events": [],
+      "tokens": [],
+      "policies": [],
+      "resource_types": [],
+      "payment_context": {
+        "amount": 0.0,
+        "min": 0.0,
+        "max": 4.0,
+        "title": "Select card(s) to buy"
+      }
+    },
+    "prompt_card_rankings": []
+  },
+  "policy": {
+    "chosen_action_index": 521,
+    "chosen_action_label": "CARD_SELECTION_MASK(1)",
+    "chosen_action_payload": {
+      "type": "card",
+      "cards": [
+        "Omnicourt",
+        "Venus Orbital Survey",
+        "Immigration Shuttles"
+      ]
+    },
+    "policy_temperature": 1.0,
+    "value_estimate": 0.463566392660141,
+    "raw_available_actions": [
+      520,
+      521,
+      522,
+      523,
+      524,
+      525,
+      526,
+      527,
+      528,
+      529,
+      530,
+      531,
+      532,
+      533,
+      534,
+      535
+    ],
+    "filtered_available_actions": [
+      520,
+      521,
+      522,
+      523,
+      524,
+      525,
+      526,
+      527,
+      528,
+      529,
+      530,
+      531,
+      532,
+      533,
+      534,
+      535
+    ],
+    "legal_actions": [
+      520,
+      521,
+      522,
+      523,
+      524,
+      525,
+      526,
+      527,
+      528,
+      529,
+      530,
+      531,
+      532,
+      533,
+      534,
+      535
+    ],
+    "action_rankings": [],
+    "top_actions": []
+  },
+  "aux": {
+    "targets": {
+      "milestone_claimability": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "award_ev": 0.4666666666666667,
+      "playable_cards": 1.0,
+      "steel_target": 0.21985294117647056,
+      "titanium_target": 0.15294117647058825
+    },
+    "predictions": {
+      "award_ev": 0.5099862813949585,
+      "playable_cards": 0.7505399584770203,
+      "steel_target": 0.1695253700017929,
+      "titanium_target": 0.11101065576076508,
+      "top_milestone_predictions": [
+        {
+          "index": 22,
+          "value": 0.36637991666793823
+        },
+        {
+          "index": 36,
+          "value": 0.23478160798549652
+        },
+        {
+          "index": 30,
+          "value": 0.1350782811641693
+        },
+        {
+          "index": 12,
+          "value": 0.1330760419368744
+        },
+        {
+          "index": 41,
+          "value": 0.12818500399589539
+        },
+        {
+          "index": 63,
+          "value": 0.1221059188246727
+        },
+        {
+          "index": 9,
+          "value": 0.1052665114402771
+        },
+        {
+          "index": 66,
+          "value": 0.10132645070552826
+        },
+        {
+          "index": 54,
+          "value": 0.08565580099821091
+        },
+        {
+          "index": 34,
+          "value": 0.08520978689193726
+        }
+      ]
+    }
+  },
+  "diagnostics": {
+    "transformer": {},
+    "rare_state": {
+      "weight": 1.9,
+      "award_funding": 0.0,
+      "milestone_timing": 0.0,
+      "draft_keep_buy": 1.0,
+      "high_cost_payment": 0.0,
+      "payment_value_estimate": 0.0
+    }
+  },
+  "snapshot_id": "20260314T170217Z_163f6422-82c_card_g657c263fdb2_02d307c4-da4",
+  "snapshot_path": "/app/debug_snapshots/20260314T170217Z_163f6422-82c_card_g657c263fdb2_02d307c4-da4.json"
+}

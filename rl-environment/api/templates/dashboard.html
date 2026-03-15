@@ -328,7 +328,7 @@
 
     <div class="row">
       <div class="card">
-        <h3>Auxiliary Head Errors</h3>
+        <h3>Planner Head Errors</h3>
         <div id="auxErrors"></div>
       </div>
       <div class="card">
@@ -766,16 +766,20 @@
         ]);
 
         renderKV(document.getElementById("auxErrors"), [
-          ["MSE milestone_claimability", f4(gm["ppo/aux_mse_milestone_claimability"])],
-          ["MSE award_ev", f4(gm["ppo/aux_mse_award_ev"])],
-          ["MSE playable_cards", f4(gm["ppo/aux_mse_playable_cards"])],
-          ["MSE steel_target", f4(gm["ppo/aux_mse_steel_target"])],
-          ["MSE titanium_target", f4(gm["ppo/aux_mse_titanium_target"])],
-          ["MAE milestone_claimability", f4(gm["ppo/aux_mae_milestone_claimability"])],
-          ["MAE award_ev", f4(gm["ppo/aux_mae_award_ev"])],
-          ["MAE playable_cards", f4(gm["ppo/aux_mae_playable_cards"])],
-          ["MAE steel_target", f4(gm["ppo/aux_mae_steel_target"])],
-          ["MAE titanium_target", f4(gm["ppo/aux_mae_titanium_target"])],
+          ["MSE milestone claim now", f4(gm["ppo/aux_mse_milestone_claim_now"] ?? gm["ppo/aux_mse_milestone_claimability"])],
+          ["MSE milestone turns", f4(gm["ppo/aux_mse_milestone_turns_to_claim_bucket"])],
+          ["MSE award fund EV", f4(gm["ppo/aux_mse_award_fund_now_ev"] ?? gm["ppo/aux_mse_award_ev"])],
+          ["MSE award rank", f4(gm["ppo/aux_mse_award_rank_class"])],
+          ["MSE carry plants / heat", `${f4(gm["ppo/aux_mse_carry_save_plants_value"])} / ${f4(gm["ppo/aux_mse_carry_save_heat_value"])}`],
+          ["MSE next-turn / next-gen combo", `${f4(gm["ppo/aux_mse_next_turn_combo_value"])} / ${f4(gm["ppo/aux_mse_next_generation_combo_value"])}`],
+          ["MSE board opp / deny", `${f4(gm["ppo/aux_mse_board_opportunity_value"])} / ${f4(gm["ppo/aux_mse_deny_risk"])}`],
+          ["MAE milestone claim now", f4(gm["ppo/aux_mae_milestone_claim_now"] ?? gm["ppo/aux_mae_milestone_claimability"])],
+          ["MAE milestone turns", f4(gm["ppo/aux_mae_milestone_turns_to_claim_bucket"])],
+          ["MAE award fund EV", f4(gm["ppo/aux_mae_award_fund_now_ev"] ?? gm["ppo/aux_mae_award_ev"])],
+          ["MAE award rank", f4(gm["ppo/aux_mae_award_rank_class"])],
+          ["MAE carry plants / heat", `${f4(gm["ppo/aux_mae_carry_save_plants_value"])} / ${f4(gm["ppo/aux_mae_carry_save_heat_value"])}`],
+          ["MAE next-turn / next-gen combo", `${f4(gm["ppo/aux_mae_next_turn_combo_value"])} / ${f4(gm["ppo/aux_mae_next_generation_combo_value"])}`],
+          ["MAE board opp / deny", `${f4(gm["ppo/aux_mae_board_opportunity_value"])} / ${f4(gm["ppo/aux_mae_deny_risk"])}`],
         ]);
 
         renderKV(document.getElementById("rareShaping"), [

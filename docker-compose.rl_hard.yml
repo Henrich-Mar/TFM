@@ -185,7 +185,7 @@ services:
       - MAX_ACTIVE_GAMES_PER_SERVER=2
       - GAME_OPTIONS_FILE=/app/game_options.base_prelude.json
       # Timeouts & transport
-      - TM_GAME_TIMEOUT_SEC=420
+      - TM_GAME_TIMEOUT_SEC=720
       - TM_HTTP_CONNECTOR_LIMIT=160
       - TM_HTTP_CONNECTOR_LIMIT_PER_HOST=30
       - TM_HTTP_FORCE_CLOSE_CONNECTIONS=1
@@ -209,23 +209,26 @@ services:
       - PPO_DEVICE=cuda
       - PPO_PARALLEL_AGENTS=1
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-      # BOOTSTRAP_CHECKPOINT_PATH=/app/rl-models/start/agent_0_fitness_187.19.pth
-      # BOOTSTRAP_POPULATION_MODE=mutated_copies
-      # BOOTSTRAP_MUTATION_RATE=0.08
-      # TRAINING_START_GENERATION=0
-      # BOOTSTRAP_IF_NO_CHECKPOINT=1
       
-      # Agent Architecture (Resource-pattern upgrade)
+      # Planner architecture (policy_mars.md)
+      # Token-budget knobs for StateEncoder bundle construction.
       - AGENT_STATE_SIZE=3072
-      - AGENT_HIDDEN_SIZE=1024
-      - AGENT_NUM_LAYERS=8
       - AGENT_CARD_TOKEN_DIM=20
       - AGENT_TABLEAU_TOKEN_COUNT=8
       - AGENT_HAND_TOKEN_COUNT=64
       - AGENT_OPPONENT_TOKEN_COUNT=6
-      - AGENT_TRANSFORMER_EMBED_DIM=256
+      # Planner policy/value network.
+      - AGENT_HIDDEN_SIZE=1024
+      - AGENT_RECURRENT_SIZE=128
+      - AGENT_PHASE_HEAD_COUNT=6
       - AGENT_TRANSFORMER_HEADS=16
       - AGENT_TRANSFORMER_LAYERS=4
+      - AGENT_TRANSFORMER_DROPOUT=0.10
+      - AGENT_PLANNER_AUX_OUTPUT_DIM=280
+      # Compatibility-only config fields still included in architecture matching.
+      - AGENT_TRANSFORMER_ENABLED=1
+      - AGENT_NUM_LAYERS=8
+      - AGENT_TRANSFORMER_EMBED_DIM=256
       
       # Scoring Mode
       - SCORING_MODE=HARD
@@ -297,7 +300,8 @@ services:
       # League - momentalne vypnuto aby sme najpr generizovali
       - LEAGUE_ENABLE=true
       - TRAINING_POOL_GENERATION_WINDOW=10
-      - TRAINING_POOL_GAMES_PER_AGENT=1
+      - TRAINING_POOL_GAMES_PER_AGENT=0
+      
       - FIXED_BENCHMARK_INTERVAL=1
       
       # System
@@ -311,8 +315,10 @@ services:
       - AGENT_INITIAL_CARDS_FALLBACK_MAX_ATTEMPTS=1
       - AGENT_INITIAL_CARDS_REJECT_PAUSE_SEC=0.5
       - AGENT_STARTUP_SEAT_STAGGER_MS=10
-      - AGENT_STARTUP_PLAN_RANDOM_TOP_K=8
-      - AGENT_STARTUP_PLAN_SELECTION=best
+      - AGENT_STARTUP_AUTOSUBMIT=1
+      - AGENT_STARTUP_PLAN_RANDOM_TOP_K=1
+      - AGENT_STARTUP_PLAN_SELECTION=legacy
+
     depends_on:
       - tfm-server-1
       - tfm-server-2

@@ -231,16 +231,6 @@ class GameInstance:
             poll_sec = max(0.05, self._env_float("TM_DEBUG_PAUSE_POLL_SEC", 0.5))
             timeout_sec = max(0.0, self._env_float("TM_DEBUG_PAUSE_TIMEOUT_SEC", 0.0))
             clear_release_file = self._env_flag("TM_DEBUG_PAUSE_CLEAR_RELEASE_FILE", default=True)
-            dump_path_raw = str(os.getenv("TM_DEBUG_INITIAL_CARDS_DUMP_FILE", "/app/logs/initial-cards-first.json")).strip()
-
-            if dump_path_raw:
-                try:
-                    dump_path = Path(dump_path_raw)
-                    dump_path.parent.mkdir(parents=True, exist_ok=True)
-                    dump_path.write_text(payload_full, encoding="utf-8")
-                    logger.warning("Initial cards debug payload written to %s", dump_path.as_posix())
-                except Exception as e:
-                    logger.warning("Failed to write initial cards debug payload dump to %s: %s", dump_path_raw, e)
 
             if clear_release_file and release_path.exists():
                 try:
@@ -258,7 +248,6 @@ class GameInstance:
                 release_path.as_posix(),
                 timeout_sec,
             )
-            logger.warning("First initialCards payload snapshot: %s", payload_full)
 
             loop = asyncio.get_running_loop()
             started = loop.time()
@@ -579,13 +568,6 @@ class GameInstance:
                 input_type=input_type,
                 payload_full=payload_full,
             )
-            if self._env_flag("TM_DEBUG_LOG_INITIAL_CARDS", default=False):
-                logger.warning(
-                    "Sending initialCards payload (player=%s, game=%s): %s",
-                    player_id,
-                    self.get_public_game_url(),
-                    payload_full,
-                )
             should_skip, prepared_input_data = await self._refresh_or_skip_initial_cards_send(
                 player_id=player_id,
                 payload=prepared_input_data,

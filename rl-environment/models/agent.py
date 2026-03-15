@@ -22,6 +22,15 @@ from collections import deque
 from game_interface import GameInstance, ServerTransportError
 from .state_encoder import StateEncoder
 from .action_decoder import ActionDecoder
+from .planner_common import (
+    PLANNER_GLOBAL_DIM,
+    PLANNER_OPPORTUNITY_LIMIT,
+    PLANNER_TOKEN_DIM,
+    bundle_to_torch,
+    planner_aux_layout,
+    planner_aux_dim,
+    pad_bundle_batch,
+)
 from .rust_backend import require_backend_info
 from scoring import calculate_terminal_reward, calculate_step_reward_decomposition
 import random
@@ -61,6 +70,7 @@ _AGENT_ARCHITECTURE_FIELDS: Tuple[str, ...] = (
     "transformer_heads",
     "transformer_layers",
     "transformer_dropout",
+    "planner_aux_output_dim",
 )
 
 
@@ -81,6 +91,7 @@ def _safe_env_float(name: str, default: float) -> float:
 def _safe_env_bool(name: str, default: bool) -> bool:
     raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
     return raw not in ("0", "false", "no", "off")
+
 
 # ---------------------------------------------------------------------------
 # Inference device resolution (GPU when available, controlled by env var)
@@ -429,6 +440,7 @@ class AgentConfig:
     transformer_heads: int = 4
     transformer_layers: int = 2
     transformer_dropout: float = 0.1
+    planner_aux_output_dim: int = 280
 
     @classmethod
     def from_env(cls, base: Optional["AgentConfig"] = None) -> "AgentConfig":
@@ -449,6 +461,7 @@ class AgentConfig:
             "transformer_heads": _safe_env_int("AGENT_TRANSFORMER_HEADS", int(payload["transformer_heads"])),
             "transformer_layers": _safe_env_int("AGENT_TRANSFORMER_LAYERS", int(payload["transformer_layers"])),
             "transformer_dropout": _safe_env_float("AGENT_TRANSFORMER_DROPOUT", float(payload["transformer_dropout"])),
+            "planner_aux_output_dim": _safe_env_int("AGENT_PLANNER_AUX_OUTPUT_DIM", int(payload["planner_aux_output_dim"])),
         })
         return cls(**payload)
 
@@ -603,62 +616,62 @@ class CardAttentionModule(nn.Module):
 class TerraformingMarsNetwork(nn.Module):
     def __init__(self, config: AgentConfig):
         super().__init__()
-
-        self.action_dim = 1000
         self.recurrent_size = max(16, int(config.recurrent_size))
         self.phase_head_count = max(2, int(config.phase_head_count))
-        self.use_transformer = bool(getattr(config, "transformer_enabled", True))
-        self.card_token_dim = max(1, int(getattr(config, "card_token_dim", 20)))
-        self.tableau_token_count = max(0, int(getattr(config, "tableau_token_count", 8)))
-        self.hand_token_count = max(0, int(getattr(config, "hand_token_count", 64)))
-        self.opponent_token_count = max(0, int(getattr(config, "opponent_token_count", 6)))
-        self.card_token_count = self.tableau_token_count + self.hand_token_count + self.opponent_token_count
-        self.card_token_vector_size = self.card_token_count * self.card_token_dim
-        self.card_token_start = max(0, int(config.state_size) - int(self.card_token_vector_size))
-        if self.card_token_vector_size > int(config.state_size):
-            raise ValueError(
-                f"Card token vector size {self.card_token_vector_size} exceeds state_size {config.state_size}"
-            )
-        self.transformer_embed_dim = max(16, int(getattr(config, "transformer_embed_dim", 64)))
+        self.hidden_size = max(64, int(config.hidden_size))
+        self.transformer_embed_dim = max(32, int(getattr(config, "transformer_embed_dim", 64)))
         transformer_heads = max(1, int(getattr(config, "transformer_heads", 4)))
         transformer_layers = max(1, int(getattr(config, "transformer_layers", 2)))
         transformer_dropout = max(0.0, float(getattr(config, "transformer_dropout", 0.1)))
+        self.planner_aux_output_dim = max(32, int(getattr(config, "planner_aux_output_dim", 280)))
+        self.action_dim = 0
 
-        # Shared state encoder trunk.
-        layers = []
-        layers.append(nn.Linear(config.state_size, config.hidden_size))
-        layers.append(nn.ReLU())
-        layers.append(nn.Dropout(0.1))
-
-        for _ in range(max(1, config.num_layers - 2)):
-            layers.append(nn.Linear(config.hidden_size, config.hidden_size))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(0.1))
-
-        layers.append(nn.Linear(config.hidden_size, config.hidden_size))
-        layers.append(nn.ReLU())
-
-        self.state_encoder = nn.Sequential(*layers)
-        self.recurrent_cell = nn.GRUCell(config.hidden_size, self.recurrent_size)
-        self.recurrent_to_hidden = nn.Linear(self.recurrent_size, config.hidden_size)
-        self.phase_embedding = nn.Embedding(self.phase_head_count, config.hidden_size)
-        if self.use_transformer and self.card_token_count > 0 and self.card_token_vector_size > 0:
-            self.card_attention_module = CardAttentionModule(
-                card_token_dim=self.card_token_dim,
-                embed_dim=self.transformer_embed_dim,
-                nhead=transformer_heads,
+        self.world_projection = nn.Linear(PLANNER_TOKEN_DIM, self.hidden_size)
+        self.hand_projection = nn.Linear(PLANNER_TOKEN_DIM, self.hidden_size)
+        self.action_projection = nn.Linear(PLANNER_TOKEN_DIM, self.hidden_size)
+        self.global_projection = nn.Linear(PLANNER_GLOBAL_DIM, self.hidden_size)
+        self.world_type_embedding = nn.Embedding(16, self.hidden_size)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_size,
+            nhead=transformer_heads,
+            dim_feedforward=self.hidden_size * 4,
+            dropout=transformer_dropout,
+            batch_first=True,
+            activation='gelu',
+        )
+        try:
+            self.world_encoder = nn.TransformerEncoder(
+                encoder_layer,
                 num_layers=transformer_layers,
-                dropout=transformer_dropout,
+                enable_nested_tensor=False,
             )
-            self.transformer_fusion = nn.Sequential(
-                nn.Linear(self.transformer_embed_dim, config.hidden_size),
-                nn.Tanh(),
-            )
-        else:
-            self.card_attention_module = None
-            self.transformer_fusion = None
+        except TypeError:
+            self.world_encoder = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
+        self.hand_to_world = nn.MultiheadAttention(
+            embed_dim=self.hidden_size,
+            num_heads=transformer_heads,
+            dropout=transformer_dropout,
+            batch_first=True,
+        )
+        self.action_to_world = nn.MultiheadAttention(
+            embed_dim=self.hidden_size,
+            num_heads=transformer_heads,
+            dropout=transformer_dropout,
+            batch_first=True,
+        )
+        self.summary_norm = nn.LayerNorm(self.hidden_size)
+        self.recurrent_cell = nn.GRUCell(self.hidden_size, self.recurrent_size)
+        self.recurrent_to_hidden = nn.Linear(self.recurrent_size, self.hidden_size)
+        self.phase_embedding = nn.Embedding(self.phase_head_count, self.hidden_size)
+        self.action_context_fuser = nn.Sequential(
+            nn.Linear(self.hidden_size * 3, self.hidden_size),
+            nn.GELU(),
+            nn.Linear(self.hidden_size, self.hidden_size),
+            nn.GELU(),
+        )
+        self.action_logit_head = nn.Linear(self.hidden_size, 1)
         self.last_transformer_stats: Dict[str, Any] = {
-            "enabled": bool(self.card_attention_module is not None and self.transformer_fusion is not None),
+            "enabled": True,
             "active_token_ratio": 0.0,
             "active_row_ratio": 0.0,
             "attention_context_norm": 0.0,
@@ -666,220 +679,153 @@ class TerraformingMarsNetwork(nn.Module):
             "fusion_share": 0.0,
             "shared_pre_norm": 0.0,
             "shared_post_norm": 0.0,
-            "token_count": int(self.card_token_count),
-            "token_dim": int(self.card_token_dim),
+            "token_count": 0,
+            "token_dim": int(PLANNER_TOKEN_DIM),
             "timestamp": 0.0,
         }
-
-        # Phase-specific policy heads.
-        self.policy_heads = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(config.hidden_size, config.hidden_size),
-                nn.ReLU(),
-                nn.Linear(config.hidden_size, self.action_dim),
-            )
-            for _ in range(self.phase_head_count)
-        ])
-
-        # Wider value path for better return prediction with large models.
-        value_hidden_1 = max(64, int(config.hidden_size))
-        value_hidden_2 = max(32, int(config.hidden_size // 2))
+        value_hidden_1 = max(64, int(self.hidden_size))
+        value_hidden_2 = max(32, int(self.hidden_size // 2))
         self.value_trunk = nn.Sequential(
-            nn.Linear(config.hidden_size, value_hidden_1),
+            nn.Linear(self.hidden_size, value_hidden_1),
             nn.ReLU(),
             nn.Linear(value_hidden_1, value_hidden_2),
             nn.ReLU(),
         )
-        # Unclamped scalar value output: rewards are not naturally bounded to [-1, 1].
         self.value_head = nn.Linear(value_hidden_2, 1)
-
-        # ---------------------------------------------------------------------------
-        # Learnable action-type bias (replaces hard-coded probability multipliers).
-        #
-        # Each action index is mapped to one of 10 semantic categories.  A small
-        # per-category logit adjustment is added to the policy head output BEFORE
-        # softmax.  Initialised to the log of the old hard-coded multipliers so
-        # initial behaviour is identical, but gradient can move values freely.
-        #
-        # Category index → action ranges:
-        #   0  play_card           (0  – 99)   init: ln(1.55) ≈  0.44
-        #   1  standard_project    (100–199)   init: ln(0.75) ≈ -0.29
-        #   2  select_option       (200–299)   init:  0.0
-        #   3  payment_action      (400–499)   init:  0.0
-        #   4  card_selection_mask (520–599)   init:  0.0
-        #   5  convert_plants      (700)       init: ln(1.30) ≈  0.26
-        #   6  convert_heat        (701)       init: ln(1.30) ≈  0.26
-        #   7  sell_patents        (702)       init: ln(0.08) ≈ -2.53
-        #   8  pass                (900+)      init: ln(0.30) ≈ -1.20
-        #   9  other               (rest)      init:  0.0
-        # ---------------------------------------------------------------------------
-        import math as _math
-        _bias_init = torch.zeros(10, dtype=torch.float32)
-        _bias_init[0] = _math.log(1.80)   # play_card
-        _bias_init[1] = _math.log(0.65)   # standard_project
-        _bias_init[2] = 0.0               # select_option
-        _bias_init[3] = 0.0               # payment_action
-        _bias_init[4] = 0.0               # card_selection_mask
-        _bias_init[5] = _math.log(1.30)   # convert_plants
-        _bias_init[6] = _math.log(1.30)   # convert_heat
-        _bias_init[7] = _math.log(0.08)   # sell_patents
-        _bias_init[8] = _math.log(0.30)   # pass
-        _bias_init[9] = 0.0               # other
-        self.action_type_bias = nn.Parameter(_bias_init)
-
-        # Fixed mapping: action_index → category (registered as buffer, not trained)
-        _amap = torch.zeros(self.action_dim, dtype=torch.long)
-        _amap[0:100] = 0    # play_card
-        _amap[100:200] = 1  # standard_project
-        _amap[200:300] = 2  # select_option
-        _amap[850:882] = 2  # startup_plan selections
-        _amap[400:500] = 3  # payment_action
-        _amap[520:600] = 4  # card_selection_mask
-        _amap[700] = 5      # convert_plants
-        _amap[701] = 6      # convert_heat
-        _amap[702] = 7      # sell_patents
-        for _i in range(900, self.action_dim):
-            _amap[_i] = 8   # pass
-        # everything else stays 9 (other)
-        self.register_buffer("action_type_map", _amap)
-
-        # Auxiliary targets:
-        # [milestone_claimability (70), award_ev, playable_cards, steel_target, titanium_target]
-        # Total: 70 milestones + 4 other = 74 outputs
         self.aux_head = nn.Sequential(
-            nn.Linear(config.hidden_size, config.hidden_size // 2),
+            nn.Linear(self.hidden_size, self.hidden_size // 2),
             nn.ReLU(),
-            nn.Linear(config.hidden_size // 2, 74),  # 70 milestones + 4 other aux targets
+            nn.Linear(self.hidden_size // 2, self.planner_aux_output_dim),
         )
+
+    @staticmethod
+    def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        if values.numel() == 0:
+            return torch.zeros((int(values.shape[0]), int(values.shape[-1])), dtype=values.dtype, device=values.device)
+        mask_f = mask.to(dtype=values.dtype).unsqueeze(-1)
+        denom = torch.clamp(mask_f.sum(dim=1), min=1.0)
+        return (values * mask_f).sum(dim=1) / denom
+
+    def _prepare_recurrent(self, batch_size: int, device: torch.device, dtype: torch.dtype, recurrent_state: Optional[torch.Tensor]) -> torch.Tensor:
+        if recurrent_state is None:
+            return torch.zeros((batch_size, self.recurrent_size), dtype=dtype, device=device)
+        recurrent_state = recurrent_state.to(device=device, dtype=dtype)
+        if recurrent_state.dim() == 1:
+            recurrent_state = recurrent_state.unsqueeze(0)
+        if int(recurrent_state.shape[0]) != batch_size:
+            recurrent_state = recurrent_state[:1].repeat(batch_size, 1)
+        if int(recurrent_state.shape[1]) < self.recurrent_size:
+            padded = torch.zeros((batch_size, self.recurrent_size), dtype=dtype, device=device)
+            padded[:, :int(recurrent_state.shape[1])] = recurrent_state
+            recurrent_state = padded
+        elif int(recurrent_state.shape[1]) > self.recurrent_size:
+            recurrent_state = recurrent_state[:, :self.recurrent_size]
+        return recurrent_state
 
     def forward(
         self,
-        state: torch.Tensor,
+        state: Any,
         phase_indices: Optional[torch.Tensor] = None,
         recurrent_state: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Forward pass with phase-conditioned policy, recurrent memory, and auxiliary heads."""
-        if state.dim() == 1:
-            state = state.unsqueeze(0)
-        state = state.float()
+        if not isinstance(state, dict):
+            raise TypeError("Planner policy expects a structured planner state bundle")
 
-        shared = self.state_encoder(state)
-        batch_size = int(shared.shape[0])
-        device = shared.device
-        transformer_path_active = (
-            self.card_attention_module is not None
-            and self.transformer_fusion is not None
-            and self.card_token_count > 0
-            and self.card_token_vector_size > 0
-            and int(state.shape[1]) >= int(self.card_token_start + self.card_token_vector_size)
-        )
-        active_token_ratio = 0.0
-        active_row_ratio = 0.0
-        attention_context_norm = 0.0
-        fusion_delta_norm = 0.0
-        fusion_share = 0.0
-        with torch.no_grad():
-            shared_pre_norm = float(shared.detach().norm(dim=1).mean().item()) if batch_size > 0 else 0.0
-        shared_post_norm = shared_pre_norm
+        world_tokens = state["world_tokens"].float()
+        world_token_types = state["world_token_types"].long()
+        world_mask = state["world_mask"].bool()
+        hand_tokens = state["hand_tokens"].float()
+        hand_mask = state["hand_mask"].bool()
+        action_tokens = state["action_tokens"].float()
+        action_mask = state["action_mask"].bool()
+        global_scalars = state["global_scalars"].float()
 
-        if transformer_path_active:
-            token_flat = state[:, self.card_token_start:self.card_token_start + self.card_token_vector_size]
-            card_tokens = token_flat.reshape(batch_size, self.card_token_count, self.card_token_dim)
-            token_present = card_tokens.abs().sum(dim=-1) > 1e-8
-            with torch.no_grad():
-                active_token_ratio = float(token_present.float().mean().item()) if token_present.numel() > 0 else 0.0
-                active_row_ratio = float(token_present.any(dim=1).float().mean().item()) if batch_size > 0 else 0.0
-            attention_context = self.card_attention_module(
-                card_tokens=card_tokens,
-                tableau_token_count=self.tableau_token_count,
-                hand_token_count=self.hand_token_count,
-                opponent_token_count=self.opponent_token_count,
-            )
-            fusion_delta = self.transformer_fusion(attention_context)
-            shared = shared + fusion_delta
-            with torch.no_grad():
-                attention_context_norm = float(attention_context.detach().norm(dim=1).mean().item()) if batch_size > 0 else 0.0
-                fusion_delta_norm = float(fusion_delta.detach().norm(dim=1).mean().item()) if batch_size > 0 else 0.0
-                shared_post_norm = float(shared.detach().norm(dim=1).mean().item()) if batch_size > 0 else 0.0
-                fusion_share = float(fusion_delta_norm / max(shared_pre_norm, 1e-8))
+        batch_size = int(world_tokens.shape[0])
+        device = world_tokens.device
 
-        self.last_transformer_stats = {
-            "enabled": bool(transformer_path_active),
-            "active_token_ratio": float(active_token_ratio),
-            "active_row_ratio": float(active_row_ratio),
-            "attention_context_norm": float(attention_context_norm),
-            "fusion_delta_norm": float(fusion_delta_norm),
-            "fusion_share": float(fusion_share),
-            "shared_pre_norm": float(shared_pre_norm),
-            "shared_post_norm": float(shared_post_norm),
-            "token_count": int(self.card_token_count),
-            "token_dim": int(self.card_token_dim),
-            "timestamp": float(time.time()),
-        }
-
-        if recurrent_state is None:
-            recurrent_state = torch.zeros((batch_size, self.recurrent_size), dtype=shared.dtype, device=device)
+        world_embed = self.world_projection(world_tokens) + self.world_type_embedding(torch.clamp(world_token_types, 0, 15))
+        global_embed = self.global_projection(global_scalars).unsqueeze(1)
+        world_embed = world_embed + global_embed
+        safe_world_mask = world_mask.clone()
+        if safe_world_mask.numel() > 0:
+            empty_rows = ~safe_world_mask.any(dim=1)
+            if bool(empty_rows.any()):
+                safe_world_mask[empty_rows, 0] = True
         else:
-            recurrent_state = recurrent_state.to(device=device, dtype=shared.dtype)
-            if recurrent_state.dim() == 1:
-                recurrent_state = recurrent_state.unsqueeze(0)
-            if int(recurrent_state.shape[0]) != batch_size:
-                recurrent_state = recurrent_state[:1].repeat(batch_size, 1)
-            if int(recurrent_state.shape[1]) < self.recurrent_size:
-                padded = torch.zeros((batch_size, self.recurrent_size), dtype=shared.dtype, device=device)
-                padded[:, :int(recurrent_state.shape[1])] = recurrent_state
-                recurrent_state = padded
-            elif int(recurrent_state.shape[1]) > self.recurrent_size:
-                recurrent_state = recurrent_state[:, :self.recurrent_size]
+            empty_rows = torch.zeros((batch_size,), dtype=torch.bool, device=device)
+        encoded_world = self.world_encoder(world_embed, src_key_padding_mask=~safe_world_mask)
+        world_summary = self._masked_mean(encoded_world, safe_world_mask)
 
-        recurrent_out = self.recurrent_cell(shared, recurrent_state)
-        recurrent_context = torch.tanh(self.recurrent_to_hidden(recurrent_out))
-        fused = shared + recurrent_context
+        if hand_tokens.shape[1] > 0 and bool(hand_mask.any()):
+            projected_hand = self.hand_projection(hand_tokens)
+            hand_attended, _ = self.hand_to_world(
+                query=projected_hand,
+                key=encoded_world,
+                value=encoded_world,
+                key_padding_mask=~safe_world_mask,
+                need_weights=False,
+            )
+            hand_summary = self._masked_mean(hand_attended, hand_mask)
+        else:
+            hand_summary = torch.zeros_like(world_summary)
 
         if phase_indices is None:
             phase_indices = torch.zeros((batch_size,), dtype=torch.long, device=device)
         else:
-            phase_indices = phase_indices.to(device=device, dtype=torch.long).reshape(-1)
+            phase_indices = torch.clamp(phase_indices.to(device=device, dtype=torch.long).reshape(-1), 0, self.phase_head_count - 1)
             if int(phase_indices.shape[0]) != batch_size:
                 phase_indices = phase_indices[:1].repeat(batch_size)
-        phase_indices = torch.clamp(phase_indices, 0, self.phase_head_count - 1)
+        phase_context = self.phase_embedding(phase_indices)
 
-        phase_bias = self.phase_embedding(phase_indices)
-        policy_input = fused + phase_bias
+        summary = self.summary_norm(world_summary + hand_summary + phase_context + global_embed.squeeze(1))
+        recurrent_in = self._prepare_recurrent(batch_size, device, summary.dtype, recurrent_state)
+        recurrent_out = self.recurrent_cell(summary, recurrent_in)
+        recurrent_context = torch.tanh(self.recurrent_to_hidden(recurrent_out))
+        fused_summary = summary + recurrent_context
 
-        all_phase_logits = torch.stack([head(policy_input) for head in self.policy_heads], dim=1)
-        gather_idx = phase_indices.view(batch_size, 1, 1).expand(-1, 1, self.action_dim)
-        policy_logits = all_phase_logits.gather(1, gather_idx).squeeze(1)
+        projected_actions = self.action_projection(action_tokens)
+        if projected_actions.shape[1] > 0 and bool(action_mask.any()):
+            action_attended, _ = self.action_to_world(
+                query=projected_actions,
+                key=encoded_world,
+                value=encoded_world,
+                key_padding_mask=~safe_world_mask,
+                need_weights=False,
+            )
+        else:
+            action_attended = projected_actions
 
-        # Add learnable per-category bias to logits (before softmax in the caller).
-        # action_type_map maps each action index to a category; action_type_bias
-        # holds one offset per category.  This replaces the hard-coded probability
-        # multipliers in _sample_action so the network can learn its own preferences.
-        policy_logits = policy_logits + self.action_type_bias[self.action_type_map]
+        summary_expanded = fused_summary.unsqueeze(1).expand(-1, int(projected_actions.shape[1]), -1)
+        fused_actions = self.action_context_fuser(torch.cat([projected_actions, action_attended, summary_expanded], dim=-1))
+        policy_logits = self.action_logit_head(fused_actions).squeeze(-1)
+        policy_logits = policy_logits.masked_fill(~action_mask, -1e9)
 
-        value_features = self.value_trunk(fused)
+        value_features = self.value_trunk(fused_summary)
         value = self.value_head(value_features)
-        aux_raw = self.aux_head(fused)
-        
-        # Split aux predictions: first 70 are milestones (use sigmoid for multi-label binary classification)
-        # Last 4 are other aux targets (award_ev, playable_cards, steel_target, titanium_target)
-        aux_milestone_logits = aux_raw[:, :70]  # Logits for 70 milestones
-        aux_other = aux_raw[:, 70:]  # Other 4 aux targets
-        
-        # Apply sigmoid to milestones (multi-label binary classification)
-        aux_milestone_preds = torch.sigmoid(aux_milestone_logits)
-        # Apply sigmoid to other aux targets (keeping original behavior)
-        aux_other_preds = torch.sigmoid(aux_other)
-        
-        # Concatenate back together for compatibility
-        aux_predictions = torch.cat([aux_milestone_preds, aux_other_preds], dim=1)
+        aux_raw = self.aux_head(fused_summary)
+        aux_predictions = torch.sigmoid(aux_raw)
+
+        with torch.no_grad():
+            self.last_transformer_stats = {
+                "enabled": True,
+                "active_token_ratio": float(world_mask.float().mean().item()) if world_mask.numel() > 0 else 0.0,
+                "active_row_ratio": float(world_mask.any(dim=1).float().mean().item()) if world_mask.numel() > 0 else 0.0,
+                "attention_context_norm": float(encoded_world.detach().norm(dim=-1).mean().item()) if encoded_world.numel() > 0 else 0.0,
+                "fusion_delta_norm": float(fused_summary.detach().norm(dim=-1).mean().item()) if fused_summary.numel() > 0 else 0.0,
+                "fusion_share": 0.0,
+                "shared_pre_norm": float(world_summary.detach().norm(dim=-1).mean().item()) if world_summary.numel() > 0 else 0.0,
+                "shared_post_norm": float(fused_summary.detach().norm(dim=-1).mean().item()) if fused_summary.numel() > 0 else 0.0,
+                "token_count": int(world_tokens.shape[1]),
+                "token_dim": int(world_tokens.shape[2]) if world_tokens.dim() == 3 else int(PLANNER_TOKEN_DIM),
+                "timestamp": float(time.time()),
+            }
 
         return {
             "policy_logits": policy_logits,
             "value": value,
             "recurrent_state": recurrent_out,
             "aux_predictions": aux_predictions,
-            "aux_milestone_logits": aux_milestone_logits,  # Raw logits for BCE loss
+            "aux_milestone_logits": None,
         }
 
 
@@ -1049,7 +995,14 @@ class RLAgent:
                 max(self.failure_pause_sec, self.poll_interval_sec),
             ),
         )
-        self.startup_autosubmit = str(os.getenv("AGENT_STARTUP_AUTOSUBMIT", "0")).strip().lower() in ("1", "true", "yes", "on")
+        startup_autosubmit_raw = str(os.getenv("AGENT_STARTUP_AUTOSUBMIT", "")).strip().lower()
+        startup_selection_mode = str(os.getenv("AGENT_STARTUP_PLAN_SELECTION", "best")).strip().lower()
+        if startup_autosubmit_raw:
+            self.startup_autosubmit = startup_autosubmit_raw in ("1", "true", "yes", "on")
+        else:
+            # Legacy startup selection expects deterministic heuristic submission,
+            # not policy-sampled startup-plan actions.
+            self.startup_autosubmit = startup_selection_mode in ("legacy", "original", "legacy_only")
         self.stuck_log_cooldown_sec = float(os.getenv("AGENT_STUCK_LOG_COOLDOWN_SEC", "5.0"))
         self._last_stuck_log_by_player: Dict[str, float] = {}
         self._rejected_actions_by_prompt: Dict[str, set[int]] = {}
@@ -1399,7 +1352,7 @@ class RLAgent:
             return 2.0
         return 0.0
 
-    def _compute_aux_targets(self, player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _compute_aux_targets_legacy(self, player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         targets = {
             "milestone_claimability": np.zeros(70, dtype=np.float32),  # Vector of 70 milestone claimability scores
             "award_ev": 0.0,
@@ -1521,6 +1474,63 @@ class RLAgent:
         titanium_liquidity = min(((titanium * titanium_value) + (max(titanium_prod, 0.0) * titanium_value * 2.0)) / 90.0, 1.0)
         targets["steel_target"] = float(max(0.0, min(steel_liquidity * (0.25 + 0.75 * building_ratio), 1.0)))
         targets["titanium_target"] = float(max(0.0, min(titanium_liquidity * (0.25 + 0.75 * space_ratio), 1.0)))
+        return targets
+
+    def _compute_aux_targets(self, player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        num_milestones = len(StateEncoder._ALL_MILESTONES)
+        num_awards = len(StateEncoder._ALL_AWARDS)
+        layout = planner_aux_layout(
+            num_milestones=num_milestones,
+            num_awards=num_awards,
+            opportunity_limit=PLANNER_OPPORTUNITY_LIMIT,
+        )
+        total_size = planner_aux_dim(
+            num_milestones=num_milestones,
+            num_awards=num_awards,
+            opportunity_limit=PLANNER_OPPORTUNITY_LIMIT,
+        )
+        targets = {"planner_vector": np.zeros(total_size, dtype=np.float32)}
+        if not isinstance(player_state, dict):
+            return targets
+
+        game = player_state.get("game", {}) or {}
+        player = player_state.get("thisPlayer", {}) or {}
+        vector = targets["planner_vector"]
+        milestone_claim_slice = layout["milestone_claim_now"]
+        milestone_turns_slice = layout["milestone_turns_to_claim_bucket"]
+        award_ev_slice = layout["award_fund_now_ev"]
+        award_rank_slice = layout["award_rank_class"]
+        carry_plants_slice = layout["carry_save_plants_value"]
+        carry_heat_slice = layout["carry_save_heat_value"]
+        next_turn_slice = layout["next_turn_combo_value"]
+        next_gen_slice = layout["next_generation_combo_value"]
+        opp_value_slice = layout["board_opportunity_value"]
+        deny_risk_slice = layout["deny_risk"]
+
+        for idx, milestone_name in enumerate(StateEncoder._ALL_MILESTONES):
+            features = self.state_encoder._milestone_token_features(game, player, milestone_name)
+            vector[milestone_claim_slice.start + idx] = float(features[6] if len(features) > 6 else 0.0)
+            vector[milestone_turns_slice.start + idx] = float(1.0 - (features[5] if len(features) > 5 else 1.0))
+
+        for idx, award_name in enumerate(StateEncoder._ALL_AWARDS):
+            features = self.state_encoder._award_token_features(game, player, award_name)
+            vector[award_ev_slice.start + idx] = float(features[6] if len(features) > 6 else 0.0)
+            vector[award_rank_slice.start + idx] = float(features[5] if len(features) > 5 else 0.0)
+
+        generation = max(1.0, float(game.get("generation", 1) or 1))
+        plants = max(0.0, float(player.get("plants", 0) or 0))
+        heat = max(0.0, float(player.get("heat", 0) or 0))
+        plant_prod = max(0.0, float(player.get("plantProduction", 0) or 0))
+        heat_prod = max(0.0, float(player.get("heatProduction", 0) or 0))
+        vector[carry_plants_slice.start] = max(0.0, min(((plants + plant_prod) - 8.0 + 2.0) / 6.0, 1.0))
+        vector[carry_heat_slice.start] = max(0.0, min(((heat + heat_prod) - 8.0 + 2.0) / 6.0, 1.0))
+        vector[next_turn_slice.start] = max(0.0, min((generation - 8.0) / 6.0, 1.0))
+        vector[next_gen_slice.start] = max(0.0, min((generation - 6.0) / 8.0, 1.0))
+
+        opportunities = self.state_encoder._collect_board_opportunity_rows(player_state)
+        for idx, row in enumerate(opportunities[:PLANNER_OPPORTUNITY_LIMIT]):
+            vector[opp_value_slice.start + idx] = float(row[6] if len(row) > 6 else 0.0)
+            vector[deny_risk_slice.start + idx] = float(row[8] if len(row) > 8 else 0.0)
         return targets
 
     def _exploration_progress(self) -> float:
@@ -2034,7 +2044,7 @@ class RLAgent:
             game_instance.get_internal_player_api_url(player_id),
             waiting_preview,
         )
-    
+
     async def _make_move(
         self,
         game_instance: GameInstance,
@@ -2048,14 +2058,42 @@ class RLAgent:
             self._maybe_reset_turn_action_count(player_id, player_state)
             turn_action_count = self._get_turn_action_count(player_id)
 
+            availability_started = time.perf_counter()
+            raw_action_descriptors = self.action_decoder.get_legal_action_descriptors(player_state)
+            raw_available_actions = [int(item.get("action_index", -1)) for item in raw_action_descriptors]
+            filtered_available_actions = self._filter_pass_actions(raw_available_actions, player_state)
+            filtered_action_set = set(int(item) for item in filtered_available_actions)
+            filtered_action_descriptors = [
+                item for item in raw_action_descriptors
+                if int(item.get("action_index", -1)) in filtered_action_set
+            ]
+            if player_id:
+                rejected_actions = self._get_rejected_actions_for_prompt(player_id, player_state)
+                if rejected_actions:
+                    before = len(filtered_action_descriptors)
+                    filtered_action_descriptors = [
+                        item for item in filtered_action_descriptors
+                        if int(item.get("action_index", -1)) not in rejected_actions
+                    ]
+                    blocked_count = max(0, before - len(filtered_action_descriptors))
+                    if blocked_count > 0:
+                        self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
+            if not filtered_action_descriptors:
+                filtered_action_descriptors = list(raw_action_descriptors)
+            if not filtered_action_descriptors:
+                logger.warning("Agent %s found no legal action descriptors for player %s", self.id[:8], player_id)
+                return False
+            self._record_pipeline_timing("action_availability_sec", time.perf_counter() - availability_started)
+
             loop = asyncio.get_running_loop()
             encode_started = time.perf_counter()
             try:
-                state_vector = await loop.run_in_executor(
+                planner_state = await loop.run_in_executor(
                     _get_inference_executor(),
                     self.state_encoder.encode,
                     player_state,
                     turn_action_count,
+                    filtered_action_descriptors,
                 )
             finally:
                 self._record_pipeline_timing("encode_state_sec", time.perf_counter() - encode_started)
@@ -2085,8 +2123,10 @@ class RLAgent:
 
             # 1. Try a policy-driven action
             policy_action, policy_action_idx, sampled_from_policy, action_meta = await self._get_action_from_network(
-                state_vector,
+                planner_state,
                 player_state,
+                filtered_action_descriptors,
+                raw_available_actions,
                 player_id=player_id,
                 force_random=False,
             )
@@ -2211,8 +2251,9 @@ class RLAgent:
                         if action_meta is not None:
                             episode_steps.append(
                                 {
-                                    "state": state_vector.astype(np.float32),
-                                    "action": int(policy_action_idx),
+                                    "state_bundle": planner_state,
+                                    "action_position": int(action_meta.get("chosen_action_position", 0)),
+                                    "action_index": int(policy_action_idx),
                                     "reward": float(step_reward),
                                     "logp_old": float(action_meta.get("logp_old", 0.0)),
                                     "value_old": float(action_meta.get("value_old", 0.0)),
@@ -2245,7 +2286,7 @@ class RLAgent:
                         sampled_from_policy=sampled_from_policy,
                         send_outcome="accepted",
                         turn_action_count=turn_action_count,
-                        state_vector=state_vector,
+                        state_vector=None,
                     )
                     await self._sleep_if_needed(self.post_move_sleep_sec)
                     return True
@@ -2268,7 +2309,7 @@ class RLAgent:
                         sampled_from_policy=sampled_from_policy,
                         send_outcome="rejected",
                         turn_action_count=turn_action_count,
-                        state_vector=state_vector,
+                        state_vector=None,
                     )
                     pause_after_reject = self.failure_pause_sec
                     if is_initial_cards_prompt:
@@ -2821,9 +2862,9 @@ class RLAgent:
         probs_vec = policy_probs.detach().cpu().reshape(-1)
         masked_vec = masked_distribution.detach().cpu().reshape(-1) if isinstance(masked_distribution, torch.Tensor) else None
 
-        for action_idx in available_actions:
+        for pos, action_idx in enumerate(available_actions):
             idx = int(action_idx)
-            if idx < 0 or idx >= int(probs_vec.numel()):
+            if pos < 0 or pos >= int(probs_vec.numel()):
                 continue
             try:
                 decoded_action = self.action_decoder.decode_action(idx, player_state)
@@ -2834,9 +2875,9 @@ class RLAgent:
                     "action_index": idx,
                     "label": self._describe_action(idx, player_state),
                     "decoded_action": decoded_action,
-                    "raw_probability": float(probs_vec[idx].item()),
-                    "masked_probability": float(masked_vec[idx].item()) if masked_vec is not None and idx < int(masked_vec.numel()) else 0.0,
-                    "logit": float(logits_vec[idx].item()) if idx < int(logits_vec.numel()) else 0.0,
+                    "raw_probability": float(probs_vec[pos].item()),
+                    "masked_probability": float(masked_vec[pos].item()) if masked_vec is not None and pos < int(masked_vec.numel()) else 0.0,
+                    "logit": float(logits_vec[pos].item()) if pos < int(logits_vec.numel()) else 0.0,
                     "chosen": bool(chosen_action_index is not None and idx == int(chosen_action_index)),
                     "legal": True,
                 }
@@ -3041,7 +3082,7 @@ class RLAgent:
     
     def _sync_forward_and_probs(
         self,
-        state_vector: np.ndarray,
+        planner_state: Dict[str, Any],
         phase_index: int,
         recurrent_state: "torch.Tensor",
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
@@ -3052,21 +3093,18 @@ class RLAgent:
         cache and retries on CPU so the game keeps running.
         """
         device = self._inference_device
-        return self._sync_forward_impl(state_vector, phase_index, recurrent_state, device)
+        return self._sync_forward_impl(planner_state, phase_index, recurrent_state, device)
 
     def _sync_forward_impl(
         self,
-        state_vector: np.ndarray,
+        planner_state: Dict[str, Any],
         phase_index: int,
         recurrent_state: "torch.Tensor",
         device: torch.device,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
         with self._model_device_lock:
             device = self._ensure_network_device_consistency(device)
-
-            state_tensor = torch.tensor(
-                state_vector, dtype=torch.float32, device=device,
-            ).unsqueeze(0)
+            state_tensor = bundle_to_torch(planner_state, device=device)
             phase_tensor = torch.tensor(
                 [phase_index], dtype=torch.long, device=device,
             )
@@ -3113,12 +3151,14 @@ class RLAgent:
                 cpu = torch.device("cpu")
                 _move_network_and_optimizer_to(self.network, self.optimizer, cpu)
                 self._inference_device = cpu
-                return self._sync_forward_impl(state_vector, phase_index, recurrent_state, cpu)
+                return self._sync_forward_impl(planner_state, phase_index, recurrent_state, cpu)
 
     async def _get_action_from_network(
         self,
-        state_vector: np.ndarray,
+        planner_state: Dict[str, Any],
         player_state: Dict[str, Any],
+        action_descriptors: List[Dict[str, Any]],
+        raw_available_actions: List[int],
         player_id: Optional[str] = None,
         force_random: bool = False,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool, Optional[Dict[str, Any]]]:
@@ -3129,9 +3169,9 @@ class RLAgent:
 
             forward_started = time.perf_counter()
             try:
-                if self._inference_batcher is not None:
+                if self._inference_batcher is not None and isinstance(planner_state, np.ndarray):
                     policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = (
-                        await self._inference_batcher.infer(state_vector, phase_index, recurrent_state_in)
+                        await self._inference_batcher.infer(planner_state, phase_index, recurrent_state_in)
                     )
                 else:
                     loop = asyncio.get_running_loop()
@@ -3139,7 +3179,7 @@ class RLAgent:
                     policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = await loop.run_in_executor(
                         executor,
                         self._sync_forward_and_probs,
-                        state_vector,
+                        planner_state,
                         phase_index,
                         recurrent_state_in,
                     )
@@ -3150,20 +3190,7 @@ class RLAgent:
                 self._set_recurrent_state_for_player(player_id, recurrent_state_out)
 
             policy_temperature = self._effective_policy_temperature()
-
-            # Get available actions
-            availability_started = time.perf_counter()
-            raw_available_actions = self.action_decoder.get_available_actions(player_state)
-            available_actions = self._filter_pass_actions(raw_available_actions, player_state)
-            if player_id:
-                rejected_actions = self._get_rejected_actions_for_prompt(player_id, player_state)
-                if rejected_actions:
-                    filtered_actions = [a for a in available_actions if int(a) not in rejected_actions]
-                    blocked_count = max(0, int(len(available_actions) - len(filtered_actions)))
-                    if blocked_count > 0:
-                        self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
-                    available_actions = filtered_actions
-            self._record_pipeline_timing("action_availability_sec", time.perf_counter() - availability_started)
+            available_actions = [int(item.get("action_index", -1)) for item in action_descriptors]
             waiting_for = player_state.get('waitingFor', {})
             self._bump_decision_stat('available_action_observations')
             self._bump_decision_stat('sum_available_actions', len(available_actions))
@@ -3248,7 +3275,7 @@ class RLAgent:
                 pass
 
             # Sample action based on policy
-            action_index, sampled_from_policy, sampled_distribution = self._sample_action(
+            action_position, action_index, sampled_from_policy, sampled_distribution = self._sample_action(
                 policy_probs.squeeze(),
                 available_actions,
                 force_random=force_random,
@@ -3268,6 +3295,10 @@ class RLAgent:
             aux_pred_vec: List[float] = []
             if isinstance(aux_predictions, torch.Tensor):
                 aux_pred_vec = aux_predictions.detach().cpu().reshape(-1).tolist()
+            action_family_counts: Dict[str, int] = {}
+            for descriptor in action_descriptors:
+                family = str(descriptor.get("family", "other") or "other").strip() or "other"
+                action_family_counts[family] = int(action_family_counts.get(family, 0)) + 1
             action_meta: Optional[Dict[str, Any]] = {
                 "phase_index": int(phase_index),
                 "recurrent_state": recurrent_state_in.detach().cpu().reshape(-1).tolist(),
@@ -3282,8 +3313,17 @@ class RLAgent:
                 "payment_value_estimate": float(rare_flags.get("payment_value", 0.0)),
                 "available_actions_raw": [int(a) for a in raw_available_actions],
                 "available_actions_filtered": [int(a) for a in available_actions],
+                "action_descriptors": list(action_descriptors),
+                "chosen_action_position": int(action_position),
                 "chosen_action_label": self._describe_action(int(action_index), player_state),
                 "sampled_from_policy": bool(sampled_from_policy),
+                "bundle_summary": {
+                    "world_token_count": int(planner_state["world_tokens"].shape[0]),
+                    "hand_token_count": int(planner_state["hand_tokens"].shape[0]),
+                    "action_token_count": int(planner_state["action_tokens"].shape[0]),
+                    "legal_action_count": int(sum(1 for item in available_actions if int(item) >= 0)),
+                    "action_family_counts": action_family_counts,
+                },
             }
             if has_pending_capture_request(agent_id=self.id):
                 transformer_stats = dict(getattr(self.network, "last_transformer_stats", {}) or {})
@@ -3312,7 +3352,8 @@ class RLAgent:
                 action_meta["legal_actions"] = [int(a) for a in available_actions]
                 action_meta["policy_temperature"] = float(policy_temperature)
             if sampled_from_policy and sampled_distribution is not None:
-                action_prob = float(sampled_distribution[int(action_index)].item())
+                chosen_pos = max(0, min(int(action_position), int(sampled_distribution.numel()) - 1))
+                action_prob = float(sampled_distribution[chosen_pos].item())
                 action_meta["logp_old"] = float(np.log(max(1e-8, action_prob)))
 
             return action_input, action_index, sampled_from_policy, action_meta
@@ -3328,7 +3369,7 @@ class RLAgent:
         force_random: bool = False,
         action_weight_adjustments: Optional[Dict[int, float]] = None,
         prefer_project_cards: bool = False,
-    ) -> Tuple[int, bool, Optional[torch.Tensor]]:
+    ) -> Tuple[int, int, bool, Optional[torch.Tensor]]:
         """Sample action from policy, restricted to available actions.
 
         Hard-coded probability multipliers have been removed from this method.
@@ -3343,25 +3384,18 @@ class RLAgent:
           3. Contextual OR-menu title adjustments (action_weight_adjustments).
           4. Mild prefer_project_cards boost (kept small; network learns the rest).
         """
-        # Mask unavailable actions (strict mask; never sample hidden actions).
-        masked_probs = torch.zeros_like(policy_probs)
-        valid_actions = [
-            int(action_idx)
-            for action_idx in available_actions
-            if 0 <= int(action_idx) < len(policy_probs)
-        ]
-        if not valid_actions:
-            return np.random.choice(available_actions), False, None
-        for action_idx in valid_actions:
-            masked_probs[action_idx] = torch.clamp(policy_probs[action_idx], min=0.0)
-
-        # Renormalize after masking
+        masked_probs = torch.clamp(policy_probs.reshape(-1).float(), min=0.0)
+        valid_positions = list(range(min(int(masked_probs.numel()), len(available_actions))))
+        if not valid_positions:
+            fallback_idx = int(np.random.choice(available_actions))
+            return 0, fallback_idx, False, None
+        if int(masked_probs.numel()) > len(available_actions):
+            masked_probs = masked_probs[:len(available_actions)]
         total = float(masked_probs.sum().item())
         if total > 0:
             masked_probs = masked_probs / total
         else:
-            for action_idx in valid_actions:
-                masked_probs[action_idx] = 1.0
+            masked_probs = torch.ones((len(valid_positions),), dtype=torch.float32, device=policy_probs.device)
             masked_probs = masked_probs / masked_probs.sum()
 
         # Small residual boost when the prompt is explicitly a project-card play
@@ -3369,38 +3403,42 @@ class RLAgent:
         # The network's action_type_bias handles the general preference; this is
         # a context-specific nudge based on waiting-for type, not a hand-tuned value.
         if prefer_project_cards:
-            play_card_actions = [a for a in valid_actions if 0 <= a < 100]
-            if play_card_actions:
-                for action_idx in play_card_actions:
-                    masked_probs[action_idx] *= float(self.project_card_priority_weight)
+            for pos, action_idx in enumerate(available_actions[:len(masked_probs)]):
+                if 0 <= int(action_idx) < 100:
+                    masked_probs[pos] *= float(self.project_card_priority_weight)
 
         # Apply OR-menu title adjustments (e.g. downweight pass/sell options).
         if action_weight_adjustments:
-            for action_idx, mult in action_weight_adjustments.items():
-                if action_idx in valid_actions and action_idx < len(masked_probs):
-                    masked_probs[action_idx] *= float(mult)
+            for pos, action_idx in enumerate(available_actions[:len(masked_probs)]):
+                if int(action_idx) in action_weight_adjustments:
+                    masked_probs[pos] *= float(action_weight_adjustments[int(action_idx)])
 
         # Numerical stability
-        for action_idx in valid_actions:
-            masked_probs[action_idx] += 1e-8
+        masked_probs = masked_probs + 1e-8
 
         total_prob = float(masked_probs.sum().item())
         if total_prob <= 0:
-            return np.random.choice(valid_actions), False, None
+            random_pos = int(np.random.choice(valid_positions))
+            return random_pos, int(available_actions[random_pos]), False, None
         masked_probs = masked_probs / total_prob
 
         effective_epsilon = self._effective_policy_epsilon(force_random=force_random)
         if np.random.random() < float(effective_epsilon):
-            return np.random.choice(available_actions), False, masked_probs
+            random_pos = int(np.random.choice(valid_positions))
+            return random_pos, int(available_actions[random_pos]), False, masked_probs
 
         try:
-            return torch.multinomial(masked_probs, 1).item(), True, masked_probs
+            chosen_pos = int(torch.multinomial(masked_probs, 1).item())
+            return chosen_pos, int(available_actions[chosen_pos]), True, masked_probs
         except RuntimeError:
             pass_action_base = int(self.action_decoder.action_types.get('PASS', 900))
             non_pass_actions = [a for a in available_actions if a < pass_action_base]
             if non_pass_actions:
-                return np.random.choice(non_pass_actions), False, None
-            return np.random.choice(available_actions), False, None
+                fallback_idx = int(np.random.choice(non_pass_actions))
+                fallback_pos = max(0, available_actions.index(fallback_idx))
+                return fallback_pos, fallback_idx, False, None
+            fallback_pos = int(np.random.choice(valid_positions))
+            return fallback_pos, int(available_actions[fallback_pos]), False, None
     
     async def _record_game_result(self, final_state: Dict[str, Any], player_name: str, game_instance: GameInstance) -> Dict[str, Any]:
         """Record the result of a completed game"""
@@ -3474,10 +3512,8 @@ class RLAgent:
         rollout_steps: List[PPORolloutStep] = []
         for idx, step in enumerate(steps):
             try:
-                state_vector = np.asarray(step.get("state"), dtype=np.float32).reshape(-1)
-                if int(state_vector.size) != int(self.config.state_size):
-                    continue
-                if not np.isfinite(state_vector).all():
+                state_bundle = step.get("state_bundle")
+                if not isinstance(state_bundle, dict):
                     continue
                 reward = float(step.get("reward", 0.0))
                 if idx == len(steps) - 1:
@@ -3486,29 +3522,14 @@ class RLAgent:
                 if not isinstance(aux_raw, dict):
                     aux_raw = {}
                 aux_pred_raw = list(step.get("aux_predictions", []) or [])
-                while len(aux_pred_raw) < 74:
+                while len(aux_pred_raw) < int(self.config.planner_aux_output_dim):
                     aux_pred_raw.append(0.0)
-                
-                # Extract milestone claimability vector
-                milestone_target = aux_raw.get("milestone_claimability")
-                if isinstance(milestone_target, (list, tuple)):
-                    milestone_target = np.asarray(milestone_target[:70], dtype=np.float32)
-                elif isinstance(milestone_target, np.ndarray):
-                    milestone_target = milestone_target.flatten()[:70].astype(np.float32)
-                elif isinstance(milestone_target, (int, float)):
-                    # Backward compatibility: single float -> put in first position
-                    milestone_target = np.zeros(70, dtype=np.float32)
-                    milestone_target[0] = float(milestone_target)
-                else:
-                    milestone_target = np.zeros(70, dtype=np.float32)
-                
-                # Extract milestone predictions (first 70 values)
-                milestone_pred = np.asarray(aux_pred_raw[:70], dtype=np.float32)
-                
+
                 rollout_steps.append(
                     PPORolloutStep(
-                        state=state_vector,
-                        action=int(step.get("action", 0)),
+                        state_bundle=state_bundle,
+                        action=int(step.get("action_position", 0)),
+                        action_index=int(step.get("action_index", step.get("action_position", 0))),
                         logp_old=float(step.get("logp_old", 0.0)),
                         value_old=float(step.get("value_old", 0.0)),
                         reward=reward,
@@ -3516,16 +3537,8 @@ class RLAgent:
                         legal_actions=[int(a) for a in step.get("legal_actions", [])],
                         phase_index=int(step.get("phase_index", 0)),
                         recurrent_state=np.asarray(step.get("recurrent_state", []), dtype=np.float32).reshape(-1),
-                        aux_milestone_claimability=milestone_target,
-                        aux_award_ev=float(aux_raw.get("award_ev", 0.0)),
-                        aux_playable_cards=float(aux_raw.get("playable_cards", 0.0)),
-                        aux_steel_target=float(aux_raw.get("steel_target", 0.0)),
-                        aux_titanium_target=float(aux_raw.get("titanium_target", 0.0)),
-                        aux_pred_milestone_claimability=milestone_pred,
-                        aux_pred_award_ev=float(aux_pred_raw[70] if len(aux_pred_raw) > 70 else 0.0),
-                        aux_pred_playable_cards=float(aux_pred_raw[71] if len(aux_pred_raw) > 71 else 0.0),
-                        aux_pred_steel_target=float(aux_pred_raw[72] if len(aux_pred_raw) > 72 else 0.0),
-                        aux_pred_titanium_target=float(aux_pred_raw[73] if len(aux_pred_raw) > 73 else 0.0),
+                        aux_targets=np.asarray(aux_raw.get("planner_vector", []), dtype=np.float32).reshape(-1),
+                        aux_predictions=np.asarray(aux_pred_raw[:int(self.config.planner_aux_output_dim)], dtype=np.float32).reshape(-1),
                         rare_state_weight=float(step.get("rare_state_weight", 1.0) or 1.0),
                         rare_award_funding=float(step.get("rare_award_funding", 0.0) or 0.0),
                         rare_milestone_timing=float(step.get("rare_milestone_timing", 0.0) or 0.0),
@@ -3665,9 +3678,18 @@ class RLAgent:
         # Protect optimizer/network updates when the same agent appears in concurrent games.
         async with self.training_lock:
             steps = list(episode_steps)  # deque already capped at max_episode_steps
-            states = torch.from_numpy(np.stack([np.asarray(step.get("state"), dtype=np.float32) for step in steps], axis=0)).float()
-            actions = torch.tensor([int(step.get("action", 0)) for step in steps], dtype=torch.long)
-            phase_indices = torch.tensor([int(step.get("phase_index", 0)) for step in steps], dtype=torch.long)
+            device = next(self.network.parameters()).device
+            states = pad_bundle_batch([step.get("state_bundle", {}) for step in steps], device)
+            actions = torch.tensor(
+                [int(step.get("action_position", step.get("action", 0))) for step in steps],
+                dtype=torch.long,
+                device=device,
+            )
+            phase_indices = torch.tensor(
+                [int(step.get("phase_index", 0)) for step in steps],
+                dtype=torch.long,
+                device=device,
+            )
             step_rewards = [
                 float(step.get("reward", 0.0))
                 for step in steps
@@ -3675,39 +3697,24 @@ class RLAgent:
             recurrent_states: Optional[torch.Tensor] = None
             recurrent_dim = max(0, int(getattr(self.network, "recurrent_size", 0)))
             if recurrent_dim > 0:
-                recurrent_states = torch.zeros((len(steps), recurrent_dim), dtype=torch.float32)
+                recurrent_states = torch.zeros((len(steps), recurrent_dim), dtype=torch.float32, device=device)
                 for row_idx, step in enumerate(steps):
                     vec = np.asarray(step.get("recurrent_state", []), dtype=np.float32).reshape(-1)
                     if vec.size <= 0:
                         continue
                     use = min(recurrent_dim, int(vec.size))
-                    recurrent_states[row_idx, :use] = torch.from_numpy(vec[:use])
+                    recurrent_states[row_idx, :use] = torch.from_numpy(vec[:use]).to(device)
 
-            aux_targets = torch.zeros((len(steps), 74), dtype=torch.float32)  # 70 milestones + 4 other
+            aux_dim = max(1, int(getattr(self.config, "planner_aux_output_dim", 280)))
+            aux_targets = torch.zeros((len(steps), aux_dim), dtype=torch.float32, device=device)
             for row_idx, step in enumerate(steps):
-                aux = step.get("aux_targets", {}) or {}
-                if not isinstance(aux, dict):
-                    aux = {}
-                
-                # Milestone claimability: vector of 70 values
-                milestone_target = aux.get("milestone_claimability")
-                if isinstance(milestone_target, (list, tuple)):
-                    milestone_vec = np.asarray(milestone_target[:70], dtype=np.float32)
-                    aux_targets[row_idx, :70] = torch.from_numpy(milestone_vec)
-                elif isinstance(milestone_target, np.ndarray):
-                    milestone_vec = milestone_target.flatten()[:70].astype(np.float32)
-                    aux_targets[row_idx, :70] = torch.from_numpy(milestone_vec)
-                elif isinstance(milestone_target, (int, float)):
-                    # Backward compatibility: single float -> put in first position
-                    aux_targets[row_idx, 0] = float(milestone_target)
-                else:
-                    pass  # Already zeros
-                
-                # Other aux targets (indices 70-73)
-                aux_targets[row_idx, 70] = float(aux.get("award_ev", 0.0))
-                aux_targets[row_idx, 71] = float(aux.get("playable_cards", 0.0))
-                aux_targets[row_idx, 72] = float(aux.get("steel_target", 0.0))
-                aux_targets[row_idx, 73] = float(aux.get("titanium_target", 0.0))
+                raw_aux = step.get("aux_targets", {}) or {}
+                if isinstance(raw_aux, dict):
+                    raw_aux = raw_aux.get("planner_vector", [])
+                aux_vec = np.asarray(raw_aux, dtype=np.float32).reshape(-1)
+                take = min(aux_dim, int(aux_vec.size))
+                if take > 0:
+                    aux_targets[row_idx, :take] = torch.from_numpy(aux_vec[:take]).to(device)
 
             # Dense+terminal reward: back-propagate step shaping and final outcome.
             running_return = float(terminal_reward)
@@ -3716,7 +3723,7 @@ class RLAgent:
                 running_return = float(immediate_reward) + (float(self.config.discount_factor) * running_return)
                 returns.append(running_return)
             returns.reverse()
-            returns_t = torch.tensor(returns, dtype=torch.float32)
+            returns_t = torch.tensor(returns, dtype=torch.float32, device=device)
             if returns_t.numel() > 1:
                 returns_t = (returns_t - returns_t.mean()) / (returns_t.std() + 1e-6)
 
@@ -3730,7 +3737,7 @@ class RLAgent:
             values = out["value"]
             aux_predictions = out.get("aux_predictions")
             policy_logits = policy_logits / max(float(self.config.temperature), 1e-3)
-            log_probs = F.log_softmax(policy_logits, dim=-1)
+            log_probs = F.log_softmax(policy_logits.masked_fill(~states["action_mask"], -1e9), dim=-1)
             chosen_log_probs = log_probs.gather(1, actions.unsqueeze(1)).squeeze(1)
 
             probs = torch.exp(log_probs)

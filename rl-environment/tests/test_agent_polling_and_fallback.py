@@ -10,6 +10,8 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from models.agent import AgentConfig, RLAgent
+from models.planner_common import PLANNER_GLOBAL_DIM, PLANNER_OPPORTUNITY_LIMIT, PLANNER_TOKEN_DIM, planner_aux_layout
+from models.state_encoder import StateEncoder
 
 
 class _GameStub:
@@ -36,6 +38,15 @@ class _DecoderStub:
 
     def get_available_actions(self, _player_state):
         raise AssertionError("get_available_actions should not be called on fallback when raw actions are cached")
+
+    def get_legal_action_descriptors(self, _player_state):
+        return [
+            {
+                "action_index": 5,
+                "action_position": 0,
+                "token_features": np.zeros((PLANNER_TOKEN_DIM,), dtype=np.float32),
+            }
+        ]
 
     def decode_action(self, action_index, _player_state):
         return {"type": "selectOption", "index": int(action_index)}
@@ -73,6 +84,32 @@ class TestAgentPollingAndFallback(unittest.TestCase):
         self.assertAlmostEqual(agent._poll_interval_for_state({"waitingFor": None}), 0.12, places=6)
         self.assertAlmostEqual(agent._poll_interval_for_state({}), 0.12, places=6)
 
+    def test_legacy_startup_selection_defaults_to_autosubmit(self):
+        env = dict(os.environ)
+        env["AGENT_STARTUP_PLAN_SELECTION"] = "legacy"
+        env.pop("AGENT_STARTUP_AUTOSUBMIT", None)
+        with patch.dict(os.environ, env, clear=True):
+            with patch(
+                "models.agent.require_backend_info",
+                return_value={"module": "rust_tfm_rl", "api_version": "1.0", "crate_version": "test"},
+            ):
+                agent = RLAgent(AgentConfig())
+
+        self.assertTrue(agent.startup_autosubmit)
+
+    def test_explicit_startup_autosubmit_off_overrides_legacy_default(self):
+        env = dict(os.environ)
+        env["AGENT_STARTUP_PLAN_SELECTION"] = "legacy"
+        env["AGENT_STARTUP_AUTOSUBMIT"] = "0"
+        with patch.dict(os.environ, env, clear=True):
+            with patch(
+                "models.agent.require_backend_info",
+                return_value={"module": "rust_tfm_rl", "api_version": "1.0", "crate_version": "test"},
+            ):
+                agent = RLAgent(AgentConfig())
+
+        self.assertFalse(agent.startup_autosubmit)
+
     def test_fallback_reuses_cached_raw_actions_without_recomputing(self):
         with patch(
             "models.agent.require_backend_info",
@@ -80,7 +117,18 @@ class TestAgentPollingAndFallback(unittest.TestCase):
         ):
             agent = RLAgent(AgentConfig())
 
-        agent.state_encoder.encode = lambda _state, _turn=0: np.zeros((agent.config.state_size,), dtype=np.float32)
+        agent.state_encoder.encode = lambda _state, _turn=0, _descriptors=None: {
+            "world_tokens": np.zeros((2, PLANNER_TOKEN_DIM), dtype=np.float32),
+            "world_token_types": np.asarray([1, 2], dtype=np.int64),
+            "world_mask": np.asarray([True, True], dtype=np.bool_),
+            "hand_tokens": np.zeros((0, PLANNER_TOKEN_DIM), dtype=np.float32),
+            "hand_mask": np.zeros((0,), dtype=np.bool_),
+            "action_tokens": np.zeros((1, PLANNER_TOKEN_DIM), dtype=np.float32),
+            "action_mask": np.asarray([True], dtype=np.bool_),
+            "action_indices": np.asarray([5], dtype=np.int64),
+            "action_positions": np.asarray([0], dtype=np.int64),
+            "global_scalars": np.zeros((PLANNER_GLOBAL_DIM,), dtype=np.float32),
+        }
         agent.action_decoder = _DecoderStub()
         agent.post_move_sleep_sec = 0.0
         agent.failure_pause_sec = 0.0
@@ -115,12 +163,18 @@ class TestAgentPollingAndFallback(unittest.TestCase):
                 "megaCredits": 21,
                 "steel": 3,
                 "titanium": 9,
+                "plants": 7,
+                "heat": 8,
                 "steelProduction": 1,
                 "titaniumProduction": 2,
                 "steelValue": 2,
                 "titaniumValue": 3,
             },
-            "game": {"milestones": [], "awards": []},
+            "game": {
+                "generation": 10,
+                "milestones": [],
+                "awards": [],
+            },
             "waitingFor": {
                 "type": "or",
                 "options": [
@@ -137,7 +191,16 @@ class TestAgentPollingAndFallback(unittest.TestCase):
         }
 
         targets = agent._compute_aux_targets(player_state)
-        self.assertAlmostEqual(targets["playable_cards"], 0.2, places=6)
+        self.assertIn("planner_vector", targets)
+        vector = np.asarray(targets["planner_vector"], dtype=np.float32)
+        layout = planner_aux_layout(
+            num_milestones=len(StateEncoder._ALL_MILESTONES),
+            num_awards=len(StateEncoder._ALL_AWARDS),
+            opportunity_limit=PLANNER_OPPORTUNITY_LIMIT,
+        )
+        self.assertGreater(vector.size, 200)
+        self.assertGreater(float(vector[layout["carry_save_plants_value"].start]), 0.0)
+        self.assertGreater(float(vector[layout["carry_save_heat_value"].start]), 0.0)
 
 
 if __name__ == "__main__":

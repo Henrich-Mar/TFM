@@ -9,6 +9,16 @@ import logging
 
 from .rust_backend import get_rust_module
 from .requirement_planning import RequirementPlanner
+from .planner_common import (
+    PLANNER_GLOBAL_DIM,
+    PLANNER_OPPORTUNITY_LIMIT,
+    PLANNER_TOKEN_DIM,
+    PlannerStateBundle,
+    empty_bool_vector,
+    empty_int_vector,
+    empty_token_matrix,
+    token_from_features,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -629,32 +639,336 @@ class StateEncoder:
             'PhysicsComplex', 'ResearchCoordination', 'TechnologyDemonstration'
         ] + [f"Card_{i}" for i in range(200)]  # Fallback when card_metadata not loaded
     
-    def encode(self, player_state: Dict[str, Any], turn_action_count: int = 0) -> np.ndarray:
-        """Encode complete game state into feature vector.
+    def encode(
+        self,
+        player_state: Dict[str, Any],
+        turn_action_count: int = 0,
+        action_descriptors: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, np.ndarray]:
+        game_state = player_state.get('game', {}) or {}
+        current_player = player_state.get('thisPlayer', {}) or {}
+        players = [item for item in (player_state.get('players', []) or []) if isinstance(item, dict)]
+        own_color = str(current_player.get('color', '') or '').strip().lower()
 
-        Args:
-            player_state: Full player-state dict from the game server.
-            turn_action_count: Number of actions already taken this turn by this
-                player (0 = first action slot, 1 = second action slot, …).
-                Supplied by the agent so the network can plan sequences.
-        """
-        rust_tfm_rl = get_rust_module(required=True)
+        world_tokens: List[np.ndarray] = []
+        world_types: List[int] = []
 
-        # The JSON payload is passed as a raw string to bypass Python object churn.
-        rust_encoded = rust_tfm_rl.encode_state(
-            json.dumps(player_state),
-            int(turn_action_count),
-            int(self.state_size),
-        )
-        encoded = np.array(rust_encoded, dtype=np.float32)
-        if encoded.shape != (int(self.state_size),):
-            raise RuntimeError(
-                f"Rust encoder returned invalid shape {encoded.shape}, expected ({int(self.state_size)},)"
-            )
-        self._inject_dense_context_features(encoded, player_state, turn_action_count)
-        self._inject_space_prompt_features(encoded, player_state)
-        self._inject_card_token_features(encoded, player_state)
-        return encoded
+        def add_world(type_id: int, features: List[float]) -> None:
+            world_tokens.append(token_from_features(type_id=type_id, features=features, feature_dim=PLANNER_TOKEN_DIM))
+            world_types.append(int(type_id))
+
+        resources = self._encode_player_resources(current_player)
+        production = self._encode_player_production(current_player)
+        add_world(1, resources + production + [
+            min(len(current_player.get('tableau', []) or []) / 20.0, 1.0),
+            min(len(self._get_owned_hand_cards(player_state)) / 10.0, 1.0),
+            min(float(((current_player.get('victoryPointsBreakdown', {}) or {}).get('terraforming', 0) or 0)) / 20.0, 1.0),
+            min(float(((current_player.get('victoryPointsBreakdown', {}) or {}).get('greenery', 0) or 0)) / 15.0, 1.0),
+            min(float(((current_player.get('victoryPointsBreakdown', {}) or {}).get('city', 0) or 0)) / 15.0, 1.0),
+        ])
+
+        generation = max(1.0, float(game_state.get('generation', 1) or 1))
+        add_world(2, self._encode_game_phase(game_state, turn_action_count) + [
+            min(float(turn_action_count) / 4.0, 1.0),
+            min(generation / 14.0, 1.0),
+            max(0.0, min((generation - 9.0) / 5.0, 1.0)),
+            1.0 if int(turn_action_count) == 0 else 0.0,
+            1.0 if int(turn_action_count) == 1 else 0.0,
+            1.0 if int(turn_action_count) >= 2 else 0.0,
+        ])
+
+        global_features = self._encode_global_parameters(game_state)
+        for idx, value in enumerate(global_features):
+            add_world(3, [float(idx) / 8.0, float(value)])
+        add_world(3, [
+            min(float(game_state.get('oceans', 0) or 0) / 9.0, 1.0),
+            min(float(len(game_state.get('awards', []) or [])) / 8.0, 1.0),
+            min(float(len(game_state.get('milestones', []) or [])) / 8.0, 1.0),
+            min(float(sum(1 for award in (game_state.get('awards', []) or []) if isinstance(award, dict) and (award.get('playerName') or award.get('playerColor')))) / 3.0, 1.0),
+            min(float(sum(1 for milestone in (game_state.get('milestones', []) or []) if isinstance(milestone, dict) and (milestone.get('playerName') or milestone.get('playerColor')))) / 3.0, 1.0),
+        ])
+
+        for opponent in players[:4]:
+            if opponent.get('id') == current_player.get('id'):
+                continue
+            opp_vp = ((opponent.get('victoryPointsBreakdown', {}) or {}).get('total', 0) or 0)
+            add_world(4, self._encode_player_resources(opponent) + self._encode_player_production(opponent) + [
+                min(len(opponent.get('tableau', []) or []) / 20.0, 1.0),
+                min(float(opp_vp) / 50.0, 1.0),
+            ])
+
+        for milestone_name in self._ALL_MILESTONES:
+            add_world(5, self._milestone_token_features(game_state, current_player, milestone_name))
+        for award_name in self._ALL_AWARDS:
+            add_world(6, self._award_token_features(game_state, current_player, award_name))
+
+        opportunity_rows = self._collect_board_opportunity_rows(player_state)
+        for row in opportunity_rows[:PLANNER_OPPORTUNITY_LIMIT]:
+            add_world(7, list(row))
+
+        tableau_tokens: List[np.ndarray] = []
+        for card in (current_player.get('tableau', []) or [])[:24]:
+            if not isinstance(card, dict):
+                continue
+            tableau_tokens.append(self._card_token_features(card, player_state, from_hand=False))
+        for card_token in tableau_tokens:
+            world_tokens.append(card_token)
+            world_types.append(8)
+
+        hand_tokens: List[np.ndarray] = []
+        for card in self._get_candidate_hand_cards(player_state)[:24]:
+            if not isinstance(card, dict):
+                continue
+            hand_tokens.append(self._card_token_features(card, player_state, from_hand=True))
+
+        action_tokens: List[np.ndarray] = []
+        action_indices: List[int] = []
+        action_positions: List[int] = []
+        for pos, descriptor in enumerate(action_descriptors or []):
+            token = np.asarray(descriptor.get('token_features', np.zeros((PLANNER_TOKEN_DIM,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+            if token.size != PLANNER_TOKEN_DIM:
+                fixed = np.zeros((PLANNER_TOKEN_DIM,), dtype=np.float32)
+                take = min(int(token.size), PLANNER_TOKEN_DIM)
+                if take > 0:
+                    fixed[:take] = token[:take]
+                token = fixed
+            action_tokens.append(token)
+            action_indices.append(int(descriptor.get('action_index', pos)))
+            action_positions.append(int(descriptor.get('action_position', pos)))
+
+        global_scalars = self._planner_global_scalars(player_state, opportunity_rows, turn_action_count)
+
+        return PlannerStateBundle(
+            world_tokens=np.asarray(world_tokens, dtype=np.float32) if world_tokens else empty_token_matrix(),
+            world_token_types=np.asarray(world_types, dtype=np.int64) if world_types else empty_int_vector(),
+            world_mask=np.ones((len(world_tokens),), dtype=np.bool_) if world_tokens else empty_bool_vector(),
+            hand_tokens=np.asarray(hand_tokens, dtype=np.float32) if hand_tokens else empty_token_matrix(),
+            hand_mask=np.ones((len(hand_tokens),), dtype=np.bool_) if hand_tokens else empty_bool_vector(),
+            action_tokens=np.asarray(action_tokens, dtype=np.float32) if action_tokens else empty_token_matrix(),
+            action_mask=np.ones((len(action_tokens),), dtype=np.bool_) if action_tokens else empty_bool_vector(),
+            action_indices=np.asarray(action_indices, dtype=np.int64) if action_indices else empty_int_vector(),
+            action_positions=np.asarray(action_positions, dtype=np.int64) if action_positions else empty_int_vector(),
+            global_scalars=np.asarray(global_scalars, dtype=np.float32),
+        ).to_serializable()
+
+    def _planner_global_scalars(
+        self,
+        player_state: Dict[str, Any],
+        opportunity_rows: List[Tuple[float, ...]],
+        turn_action_count: int,
+    ) -> np.ndarray:
+        player = player_state.get('thisPlayer', {}) or {}
+        game = player_state.get('game', {}) or {}
+        out = np.zeros((PLANNER_GLOBAL_DIM,), dtype=np.float32)
+        out[0:8] = np.asarray(self._encode_player_resources(player)[:8], dtype=np.float32)
+        out[8] = min(float(player.get('plantProduction', 0) or 0) / 12.0, 1.0)
+        out[9] = min(float(player.get('heatProduction', 0) or 0) / 12.0, 1.0)
+        out[10] = min(float(game.get('generation', 1) or 1) / 14.0, 1.0)
+        out[11] = min(float(turn_action_count) / 4.0, 1.0)
+        if opportunity_rows:
+            out[12] = float(opportunity_rows[0][7]) if len(opportunity_rows[0]) > 7 else 0.0
+            out[13] = float(opportunity_rows[0][8]) if len(opportunity_rows[0]) > 8 else 0.0
+            out[14] = float(opportunity_rows[0][9]) if len(opportunity_rows[0]) > 9 else 0.0
+        out[15] = min(float(len(self._get_candidate_hand_cards(player_state))) / 12.0, 1.0)
+        return out
+
+    def _card_token_features(self, card: Dict[str, Any], player_state: Dict[str, Any], from_hand: bool) -> np.ndarray:
+        player = player_state.get('thisPlayer', {}) or {}
+        name = str(card.get('name', '') or '')
+        tags = self._get_card_tags(name, fallback=card.get('tags', {}))
+        cost = self._get_card_cost(card)
+        vp_proxy = self._get_card_vp_proxy(card, tags)
+        requirement_plan = self._evaluate_card_requirement_plan(card, player_state)
+        readiness_score, reachability_score, unmet_requirement_penalty = self._requirement_penalty_details(requirement_plan)
+        affordability = self._simple_affordability_score(player, card, tags)
+        features = [
+            1.0 if from_hand else 0.0,
+            min(float(cost) / 40.0, 1.0),
+            min(float(vp_proxy) / 5.0, 1.0),
+            float(affordability),
+            float(readiness_score),
+            float(reachability_score),
+            float(unmet_requirement_penalty),
+            1.0 if tags.get('Building', 0) > 0 else 0.0,
+            1.0 if tags.get('Space', 0) > 0 else 0.0,
+            1.0 if tags.get('Science', 0) > 0 else 0.0,
+            1.0 if tags.get('Plant', 0) > 0 else 0.0,
+            1.0 if tags.get('Jovian', 0) > 0 else 0.0,
+            1.0 if tags.get('Moon', 0) > 0 else 0.0,
+            min(float(player.get('steel', 0) or 0) * float(player.get('steelValue', 2) or 2) / max(float(cost), 1.0), 1.0) if tags.get('Building', 0) > 0 else 0.0,
+            min(float(player.get('titanium', 0) or 0) * float(player.get('titaniumValue', 3) or 3) / max(float(cost), 1.0), 1.0) if tags.get('Space', 0) > 0 else 0.0,
+            1.0 if self._get_card_type(name, fallback=card.get('type')) == 'active' else 0.0,
+            1.0 if self._get_card_type(name, fallback=card.get('type')) == 'event' else 0.0,
+        ]
+        return token_from_features(type_id=9 if from_hand else 8, features=features, feature_dim=PLANNER_TOKEN_DIM)
+
+    def _simple_affordability_score(self, player: Dict[str, Any], card: Dict[str, Any], tags: Dict[str, int]) -> float:
+        cost = max(float(self._get_card_cost(card)), 0.0)
+        mc = max(float(player.get('megaCredits', 0) or 0), 0.0)
+        if tags.get('Building', 0) > 0:
+            mc += max(float(player.get('steel', 0) or 0), 0.0) * max(float(player.get('steelValue', 2) or 2), 0.0)
+        if tags.get('Space', 0) > 0:
+            mc += max(float(player.get('titanium', 0) or 0), 0.0) * max(float(player.get('titaniumValue', 3) or 3), 0.0)
+        if cost <= 0:
+            return 1.0
+        return max(0.0, min(mc / cost, 1.0))
+
+    def _milestone_token_features(
+        self,
+        game_state: Dict[str, Any],
+        current_player: Dict[str, Any],
+        milestone_name: str,
+    ) -> List[float]:
+        milestone = None
+        for item in (game_state.get('milestones', []) or []):
+            if isinstance(item, dict) and str(item.get('name', '') or '').strip() == milestone_name:
+                milestone = item
+                break
+        if not milestone:
+            return [0.0] * 12
+        own_color = str((current_player or {}).get('color', '') or '').strip().lower()
+        owner_color = str(milestone.get('playerColor', '') or '').strip().lower()
+        owner_name = str(milestone.get('playerName', '') or '').strip()
+        scores = [row for row in (milestone.get('scores', []) or []) if isinstance(row, dict)]
+        own_score = 0.0
+        best_score = 0.0
+        opp_best = 0.0
+        for row in scores:
+            try:
+                score = float(row.get('playerScore', 0) or 0)
+            except Exception:
+                score = 0.0
+            best_score = max(best_score, score)
+            row_color = str(row.get('playerColor', '') or '').strip().lower()
+            if own_color and row_color == own_color:
+                own_score = score
+            else:
+                opp_best = max(opp_best, score)
+        denominator = max(3.0, best_score, 1.0)
+        my_progress = min(own_score / denominator, 1.0)
+        opp_progress = min(opp_best / denominator, 1.0)
+        claim_now = 1.0 if (not owner_name and own_score >= 3.0) else 0.0
+        turns_bucket = max(0.0, min((3.0 - own_score) / 3.0, 1.0))
+        deny_risk = max(0.0, min((opp_progress - my_progress + 0.25), 1.0))
+        return [
+            1.0,
+            1.0 if owner_color == own_color and owner_color else 0.0,
+            1.0 if owner_color and owner_color != own_color else 0.0,
+            my_progress,
+            opp_progress,
+            turns_bucket,
+            claim_now,
+            deny_risk,
+            1.0 if milestone_name.lower() in ('gardener', 'mayor', 'terraformer', 'planner') else 0.0,
+            1.0 if 'builder' in milestone_name.lower() or 'architect' in milestone_name.lower() else 0.0,
+            1.0 if 'moon' in milestone_name.lower() or 'luna' in milestone_name.lower() else 0.0,
+            min(abs(own_score - opp_best) / 5.0, 1.0),
+        ]
+
+    def _award_token_features(
+        self,
+        game_state: Dict[str, Any],
+        current_player: Dict[str, Any],
+        award_name: str,
+    ) -> List[float]:
+        award = None
+        for item in (game_state.get('awards', []) or []):
+            if isinstance(item, dict) and str(item.get('name', item.get('title', '')) or '').strip() == award_name:
+                award = item
+                break
+        if not award:
+            return [0.0] * 12
+        own_color = str((current_player or {}).get('color', '') or '').strip().lower()
+        funder_color = str(award.get('playerColor', '') or '').strip().lower()
+        scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
+        own_score = 0.0
+        best_score = 0.0
+        opp_best = 0.0
+        own_rank_points = self._project_award_points_for_color(scores, own_color)
+        for row in scores:
+            try:
+                score = float(row.get('playerScore', 0) or 0)
+            except Exception:
+                score = 0.0
+            best_score = max(best_score, score)
+            row_color = str(row.get('playerColor', '') or '').strip().lower()
+            if own_color and row_color == own_color:
+                own_score = score
+            else:
+                opp_best = max(opp_best, score)
+        denominator = max(best_score, 1.0)
+        progress = min(own_score / denominator, 1.0)
+        opp_progress = min(opp_best / denominator, 1.0)
+        funded_count = sum(1 for item in (game_state.get('awards', []) or []) if isinstance(item, dict) and (item.get('playerName') or item.get('playerColor')))
+        estimated_cost = [8.0, 14.0, 20.0][min(funded_count, 2)]
+        fund_now_ev = max(0.0, min((own_rank_points - (estimated_cost / 5.0) + 3.0) / 6.0, 1.0))
+        contestability = max(0.0, min(1.0 - abs(progress - opp_progress), 1.0))
+        return [
+            1.0,
+            1.0 if funder_color == own_color and funder_color else 0.0,
+            1.0 if funder_color and funder_color != own_color else 0.0,
+            progress,
+            opp_progress,
+            min(own_rank_points / 5.0, 1.0),
+            fund_now_ev,
+            contestability,
+            max(0.0, min((opp_progress - progress + 0.25), 1.0)),
+            1.0 if award_name.lower() in ('landscaper', 'thermalist', 'banker', 'scientist') else 0.0,
+            1.0 if 'moon' in award_name.lower() or 'lunar' in award_name.lower() else 0.0,
+            min(abs(own_score - opp_best) / 8.0, 1.0),
+        ]
+
+    def _collect_board_opportunity_rows(self, player_state: Dict[str, Any]) -> List[Tuple[float, ...]]:
+        game_state = player_state.get('game', {}) or {}
+        own_color = str((player_state.get('thisPlayer', {}) or {}).get('color', '') or '').strip().lower()
+        board_spaces = self._all_board_spaces(game_state)
+        board_by_id = {
+            self._space_id(space): space
+            for space in board_spaces
+            if isinstance(space, dict) and self._space_id(space)
+        }
+        adjacency, coord_to_id, middle_row = self._build_board_adjacency_index(board_spaces)
+        rows: List[Tuple[float, ...]] = []
+        for space in board_spaces:
+            if not isinstance(space, dict):
+                continue
+            sid = self._space_id(space)
+            if not sid or space.get('tileType') is not None:
+                continue
+            space_type = self._space_type_lower(space.get('spaceType'))
+            if space_type == 'colony':
+                continue
+            opportunity_types = ['city', 'greenery']
+            if space_type == 'ocean':
+                opportunity_types = ['ocean']
+            elif 'habitat' in space_type or 'mine' in space_type or 'road' in space_type:
+                opportunity_types = ['moon']
+            for kind in opportunity_types:
+                total_score, self_score, deny_score, risk_score = self._space_prompt_candidate_scores(
+                    space,
+                    board_by_id,
+                    adjacency,
+                    coord_to_id,
+                    middle_row,
+                    own_color,
+                    kind if kind in ('city', 'greenery', 'ocean', 'special') else 'special',
+                )
+                combo_value = max(0.0, min((self_score + max(0.0, 1.0 - risk_score)) * 0.5, 1.0))
+                kind_bits = {
+                    'city': [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    'greenery': [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+                    'ocean': [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                    'moon': [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                }.get(kind, [0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                rows.append(tuple(kind_bits + [
+                    total_score,
+                    self_score,
+                    deny_score,
+                    risk_score,
+                    combo_value,
+                ]))
+        rows.sort(key=lambda row: (float(row[6]), float(row[7]), float(row[8]) - float(row[9])), reverse=True)
+        return rows
 
     def _encode_global_parameters(self, game_state: Dict[str, Any]) -> List[float]:
         """Encode global terraforming parameters and Moon parameters with proper discrete value handling"""

@@ -16,6 +16,8 @@ from debug_decision_snapshot import (  # noqa: E402
     reset_capture_state,
     save_snapshot,
 )
+from models.planner_common import PLANNER_OPPORTUNITY_LIMIT, planner_aux_dim, planner_aux_layout  # noqa: E402
+from models.state_encoder import StateEncoder  # noqa: E402
 
 
 def _make_player_state(prompt_type: str, waiting_for: dict) -> dict:
@@ -87,16 +89,30 @@ def _make_player_state(prompt_type: str, waiting_for: dict) -> dict:
 
 
 def _base_action_meta() -> dict:
+    layout = planner_aux_layout(
+        num_milestones=len(StateEncoder._ALL_MILESTONES),
+        num_awards=len(StateEncoder._ALL_AWARDS),
+        opportunity_limit=PLANNER_OPPORTUNITY_LIMIT,
+    )
+    planner_vector = [0.0] * planner_aux_dim(
+        num_milestones=len(StateEncoder._ALL_MILESTONES),
+        num_awards=len(StateEncoder._ALL_AWARDS),
+        opportunity_limit=PLANNER_OPPORTUNITY_LIMIT,
+    )
+    planner_vector[layout["milestone_claim_now"].start + 0] = 0.91
+    planner_vector[layout["award_fund_now_ev"].start + 0] = 0.72
+    planner_vector[layout["carry_save_plants_value"].start] = 0.66
+    planner_vector[layout["carry_save_heat_value"].start] = 0.44
+    planner_vector[layout["next_turn_combo_value"].start] = 0.58
+    planner_vector[layout["next_generation_combo_value"].start] = 0.39
+    planner_vector[layout["board_opportunity_value"].start + 0] = 0.81
+    planner_vector[layout["deny_risk"].start + 0] = 0.37
     return {
         "phase_index": 2,
         "aux_targets": {
-            "milestone_claimability": [0.0] * 70,
-            "award_ev": 0.4,
-            "playable_cards": 2.0,
-            "steel_target": 1.0,
-            "titanium_target": 0.0,
+            "planner_vector": planner_vector,
         },
-        "aux_predictions": ([0.0] * 70) + [0.33, 1.5, 0.8, 0.2],
+        "aux_predictions": list(planner_vector),
         "rare_state_weight": 1.25,
         "rare_award_funding": 0.0,
         "rare_milestone_timing": 1.0,
@@ -109,6 +125,31 @@ def _base_action_meta() -> dict:
         "chosen_action_label": "PLAY_CARD(Asteroid Mining)",
         "policy_temperature": 1.0,
         "value_old": 0.42,
+        "bundle_summary": {
+            "world_token_count": 24,
+            "hand_token_count": 3,
+            "action_token_count": 4,
+            "legal_action_count": 3,
+            "action_family_counts": {"play_card": 1, "standard_project": 1, "fund_award": 1},
+        },
+        "action_descriptors": [
+            {
+                "action_index": 0,
+                "action_position": 0,
+                "family": "play_card",
+                "label": "PLAY_CARD(Asteroid Mining)",
+                "card_name": "Asteroid Mining",
+                "decoded_action": {"type": "card", "card": "Asteroid Mining"},
+            },
+            {
+                "action_index": 100,
+                "action_position": 1,
+                "family": "standard_project",
+                "label": "STANDARD_PROJECT(Aquifer)",
+                "project_name": "Aquifer",
+                "decoded_action": {"type": "standardProject", "project": "Aquifer"},
+            },
+        ],
         "transformer_stats": {
             "enabled": True,
             "token_count": 18,
@@ -213,6 +254,9 @@ def test_snapshot_serialization_supports_prompt_types(monkeypatch, tmp_path: Pat
         assert "map_candidates" in snapshot["state"]["prompt_candidates"]
         assert "payment_context" in snapshot["state"]["prompt_candidates"]
         assert "prompt_card_rankings" in snapshot["state"]
+        assert snapshot["state"]["planner"]["world_token_count"] == 24
+        assert snapshot["policy"]["chosen_action_descriptor"]["family"] == "play_card"
+        assert snapshot["aux"]["predictions"]["carry_save_plants_value"] == pytest.approx(0.66)
 
 
 def test_snapshot_save_normalizes_numpy_payloads(monkeypatch, tmp_path: Path) -> None:
@@ -222,7 +266,7 @@ def test_snapshot_save_normalizes_numpy_payloads(monkeypatch, tmp_path: Path) ->
     reset_capture_state()
     action_meta = _base_action_meta()
     action_meta["transformer_stats"]["attention_map"] = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
-    action_meta["aux_targets"]["milestone_claimability"] = np.array([0.25, 0.5, 0.75], dtype=np.float32)
+    action_meta["aux_targets"]["planner_vector"] = np.array(action_meta["aux_targets"]["planner_vector"], dtype=np.float32)
     action_meta["policy_top_actions"] = [
         {
             "action_index": np.int64(7),
@@ -254,7 +298,7 @@ def test_snapshot_save_normalizes_numpy_payloads(monkeypatch, tmp_path: Path) ->
     loaded = load_snapshot(saved["snapshot_id"])
     assert loaded["diagnostics"]["transformer"]["attention_map"][0] == pytest.approx([0.1, 0.2])
     assert loaded["diagnostics"]["transformer"]["attention_map"][1] == pytest.approx([0.3, 0.4])
-    assert loaded["aux"]["targets"]["milestone_claimability"] == pytest.approx([0.25, 0.5, 0.75])
+    assert loaded["aux"]["targets"]["planner_vector"] == pytest.approx(action_meta["aux_targets"]["planner_vector"].tolist())
     assert loaded["policy"]["top_actions"][0]["action_index"] == 7
     assert loaded["policy"]["top_actions"][0]["score"] == pytest.approx(0.9)
     assert loaded["policy"]["top_actions"][0]["weights"] == pytest.approx([0.6, 0.3, 0.1])
@@ -468,4 +512,5 @@ def test_snapshot_routes_and_page_render(monkeypatch, tmp_path: Path) -> None:
     assert listed[0]["snapshot_id"] == saved["snapshot_id"]
     loaded = load_snapshot(saved["snapshot_id"])
     assert loaded["policy"]["chosen_action_label"] == "PLAY_CARD(Asteroid Mining)"
+    assert loaded["policy"]["chosen_action_descriptor"]["family"] == "play_card"
     assert loaded["state"]["prompt_card_rankings"][0]["name"] == "AI Central"

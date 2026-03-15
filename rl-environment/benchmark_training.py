@@ -34,6 +34,11 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
 from models.agent import AgentConfig, TerraformingMarsNetwork  # noqa: E402
+from models.planner_common import (  # noqa: E402
+    PLANNER_GLOBAL_DIM,
+    PLANNER_TOKEN_DIM,
+    pad_bundle_batch,
+)
 from models.ppo import (  # noqa: E402
     PPOHyperParameters,
     PPORolloutStep,
@@ -191,6 +196,23 @@ def _sync_cuda():
         torch.cuda.synchronize()
 
 
+def _synthetic_bundle(rng: np.random.RandomState, action_count: int = 12) -> Dict[str, np.ndarray]:
+    world_count = int(rng.randint(8, 20))
+    hand_count = int(rng.randint(2, 8))
+    return {
+        "world_tokens": rng.randn(world_count, PLANNER_TOKEN_DIM).astype(np.float32),
+        "world_token_types": rng.randint(1, 9, size=(world_count,), dtype=np.int64),
+        "world_mask": np.ones((world_count,), dtype=np.bool_),
+        "hand_tokens": rng.randn(hand_count, PLANNER_TOKEN_DIM).astype(np.float32),
+        "hand_mask": np.ones((hand_count,), dtype=np.bool_),
+        "action_tokens": rng.randn(action_count, PLANNER_TOKEN_DIM).astype(np.float32),
+        "action_mask": np.ones((action_count,), dtype=np.bool_),
+        "action_indices": np.arange(action_count, dtype=np.int64),
+        "action_positions": np.arange(action_count, dtype=np.int64),
+        "global_scalars": rng.randn(PLANNER_GLOBAL_DIM).astype(np.float32),
+    }
+
+
 def benchmark_inference(
     config: AgentConfig,
     batch_sizes: List[int],
@@ -200,11 +222,12 @@ def benchmark_inference(
 ) -> List[InferenceResult]:
     """Benchmark forward-pass latency at different batch sizes."""
     network = TerraformingMarsNetwork(config).to(device).eval()
-    state_size = config.state_size
     results: List[InferenceResult] = []
+    rng = np.random.RandomState(7)
 
     for bs in batch_sizes:
-        states = torch.randn(bs, state_size, device=device)
+        bundles = [_synthetic_bundle(rng) for _ in range(bs)]
+        states = pad_bundle_batch(bundles, device)
         phase_idx = torch.randint(0, config.phase_head_count, (bs,), device=device)
         recurrent = torch.zeros(bs, config.recurrent_size, device=device)
 
@@ -283,29 +306,34 @@ class PPOTrainingResult:
 
 
 def _generate_synthetic_rollout(
-    count: int, state_size: int, action_dim: int = 1000
+    count: int,
+    planner_aux_dim: int,
+    action_dim: int = 16,
 ) -> List[PPORolloutStep]:
     """Create synthetic rollout data for benchmarking."""
     rng = np.random.RandomState(42)
     steps: List[PPORolloutStep] = []
     for _ in range(count):
         num_legal = rng.randint(2, 20)
-        legal_actions = sorted(rng.choice(action_dim, size=num_legal, replace=False).tolist())
+        num_legal = min(num_legal, action_dim)
+        legal_positions = sorted(rng.choice(action_dim, size=num_legal, replace=False).tolist())
+        state_bundle = _synthetic_bundle(rng, action_count=action_dim)
+        state_bundle["action_mask"][:] = False
+        state_bundle["action_mask"][legal_positions] = True
+        action_pos = int(rng.randint(0, num_legal))
+        chosen_position = int(legal_positions[action_pos])
         steps.append(PPORolloutStep(
-            state=rng.randn(state_size).astype(np.float32),
-            action=int(rng.choice(legal_actions)),
+            state_bundle=state_bundle,
+            action=chosen_position,
             logp_old=float(rng.uniform(-5, 0)),
             value_old=float(rng.uniform(-1, 1)),
             reward=float(rng.uniform(-1, 1)),
             done=bool(rng.rand() < 0.02),
-            legal_actions=legal_actions,
+            legal_actions=list(legal_positions),
+            action_index=int(chosen_position),
             phase_index=int(rng.randint(0, 6)),
             recurrent_state=rng.randn(128).astype(np.float32),
-            aux_milestone_claimability=rng.rand(70).astype(np.float32),
-            aux_award_ev=float(rng.rand()),
-            aux_playable_cards=float(rng.rand()),
-            aux_steel_target=float(rng.rand()),
-            aux_titanium_target=float(rng.rand()),
+            aux_targets=rng.rand(planner_aux_dim).astype(np.float32),
         ))
     return steps
 
@@ -318,10 +346,9 @@ def benchmark_ppo_training(
 ) -> List[PPOTrainingResult]:
     """Benchmark PPO optimize_ppo_policy at different minibatch sizes."""
     results: List[PPOTrainingResult] = []
-    state_size = config.state_size
 
     print(f"\n  Generating {rollout_steps} synthetic rollout steps...")
-    synthetic_steps = _generate_synthetic_rollout(rollout_steps, state_size)
+    synthetic_steps = _generate_synthetic_rollout(rollout_steps, int(config.planner_aux_output_dim))
 
     for mbs in minibatch_sizes:
         print(f"  Benchmarking minibatch_size={mbs}...", end="", flush=True)

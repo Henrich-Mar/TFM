@@ -10,6 +10,7 @@ import json
 import itertools
 
 from .rust_backend import get_rust_module
+from .planner_common import PLANNER_TOKEN_DIM, token_from_features
 
 logger = logging.getLogger(__name__)
 
@@ -884,20 +885,28 @@ def _enumerate_startup_plan_payloads(
         return []
 
     rank_payload = {'candidates': [item[3] for item in top_candidates]}
-    ranked_json = _rust_backend().rank_startup_plans(
-        json.dumps(rank_payload),
-        max(1, int(max_plans)),
-    )
-    ranked = json.loads(str(ranked_json or "[]"))
-    ranked_payloads: List[Dict[str, Any]] = []
-    for row in ranked:
-        idx = _safe_int((row or {}).get('index', -1), -1)
-        if 0 <= idx < len(top_candidates):
-            ranked_payloads.append(top_candidates[idx][1])
-        if len(ranked_payloads) >= max(1, int(max_plans)):
-            break
-    if ranked_payloads:
-        return ranked_payloads
+    backend = get_rust_module(required=False)
+    if backend is not None:
+        try:
+            ranked_json = backend.rank_startup_plans(
+                json.dumps(rank_payload),
+                max(1, int(max_plans)),
+            )
+            ranked = json.loads(str(ranked_json or "[]"))
+            ranked_payloads: List[Dict[str, Any]] = []
+            for row in ranked:
+                idx = _safe_int((row or {}).get('index', -1), -1)
+                if 0 <= idx < len(top_candidates):
+                    ranked_payloads.append(top_candidates[idx][1])
+                if len(ranked_payloads) >= max(1, int(max_plans)):
+                    break
+            if ranked_payloads:
+                return ranked_payloads
+        except Exception as exc:
+            logger.warning(
+                "Rust startup-plan ranking failed; falling back to Python ranking: %s",
+                exc,
+            )
 
     # Strict Rust cutover should always return ranked payloads, but keep this guard
     # in case malformed ranking data is produced.
@@ -2534,48 +2543,305 @@ class ActionDecoder:
         self.card_selection_mask_limit = _CARD_SELECTION_MASK_LIMIT
         self.startup_plan_limit = _STARTUP_PLAN_LIMIT
 
-    def _is_standard_project_wasteful(self, card_payload: Dict[str, Any], player_state: Dict[str, Any]) -> bool:
-        """Check if a standard project is wasteful (maxed out parameter)"""
-        if not player_state or not card_payload:
-            return False
-            
-        name = str(card_payload.get('name', '')).lower()
-        game = player_state.get('game', {})
-        
-        # Asteroid / Temperature
-        if 'asteroid' in name or 'temperature' in name:
-            temp = game.get('temperature', -30)
-            if temp >= 8:
-                return True
-                
-        # Aquifer / Ocean
-        if 'aquifer' in name or 'ocean' in name:
-            oceans = game.get('oceans', 0)
-            if oceans >= 9:
-                return True
-                
-        # Venus projects
-        if 'venus' in name or 'air scrapping' in name or 'buffer gas' in name:
-            venus = game.get('venusScaleLevel', 0)
-            if venus >= 30:
-                return True
+    def _option_payload_for_action(self, action_index: int, waiting_for: Dict[str, Any]) -> Dict[str, Any]:
+        input_type = str(waiting_for.get('type', '') or '').lower()
+        options = waiting_for.get('options', []) or []
+        if input_type == 'or':
+            option_idx = int(action_index) - int(self.action_types['SELECT_OPTION'])
+            if 0 <= option_idx < len(options):
+                option = options[option_idx]
+                if isinstance(option, dict):
+                    return option
+        if input_type in ('option', 'selectoption'):
+            option_idx = int(action_index) - int(self.action_types['SELECT_OPTION'])
+            if 0 <= option_idx < len(options):
+                option = options[option_idx]
+                if isinstance(option, dict):
+                    return option
+        if input_type == 'or':
+            for option in options:
+                if not isinstance(option, dict):
+                    continue
+                option_type = str(option.get('type', '') or '')
+                option_title_l = _title_text(option.get('title', '')).lower()
+                if option_type == 'or' and 'fund an award' in option_title_l and 600 <= int(action_index) < 700:
+                    award_idx = int(action_index) - 600
+                    award_options = option.get('options', []) or []
+                    if 0 <= award_idx < len(award_options):
+                        award_option = award_options[award_idx]
+                        if isinstance(award_option, dict):
+                            return award_option
+        return {}
 
-        # Moon projects: Road Infrastructure / Moon Road (logistics), Lunar Mine (mining), Lunar Habitat (habitat)
-        moon = game.get('moon', {})
-        logistics = moon.get('logisticsRate', 0)
-        mining = moon.get('miningRate', 0)
-        habitat = moon.get('habitatRate', 0)
-        if ('road' in name and 'infrastructure' in name) or 'moon road' in name:
-            if logistics >= 8:
-                return True
-        if ('lunar mine' in name) or ('moon mine' in name):
-            if mining >= 8:
-                return True
-        if ('lunar habitat' in name) or ('moon habitat' in name):
-            if habitat >= 8:
-                return True
-                
-        return False
+    def _semantic_family(
+        self,
+        action_index: int,
+        waiting_for: Dict[str, Any],
+        decoded_action: Optional[Dict[str, Any]],
+    ) -> str:
+        input_type = str(waiting_for.get('type', '') or '').lower()
+        title_l = _title_text(waiting_for.get('title', '')).lower()
+        button_l = str(waiting_for.get('buttonLabel', '') or '').lower()
+        combined = f"{title_l} {button_l}".strip()
+        if int(action_index) == 700:
+            return 'convert_plants'
+        if int(action_index) == 701:
+            return 'convert_heat'
+        if int(action_index) == 702:
+            return 'sell_patents'
+        if int(action_index) >= int(self.action_types['PASS']):
+            return 'pass'
+        if 0 <= int(action_index) < int(self.action_types['STANDARD_PROJECT']):
+            return 'play_card'
+        if int(self.action_types['STANDARD_PROJECT']) <= int(action_index) < int(self.action_types['SELECT_OPTION']):
+            return 'standard_project'
+        if int(self.action_types['SELECT_SPACE']) <= int(action_index) < int(self.action_types['SELECT_PAYMENT']):
+            return 'select_space'
+        if int(self.action_types['SELECT_PAYMENT']) <= int(action_index) < int(self.action_types['SELECT_AMOUNT']):
+            return 'select_payment'
+        if int(self.action_types['SELECT_AMOUNT']) <= int(action_index) < int(_CARD_SELECTION_MASK_BASE):
+            return 'select_amount'
+        if int(_CARD_SELECTION_MASK_BASE) <= int(action_index) < int(_STARTUP_PLAN_BASE):
+            return 'card_subset'
+        if int(_STARTUP_PLAN_BASE) <= int(action_index) < int(self.action_types['PASS']):
+            return 'startup_plan'
+        if 'award' in combined and ('fund' in combined or 'award' in input_type):
+            return 'fund_award'
+        if 'milestone' in combined and ('claim' in combined or 'fund' in combined):
+            return 'claim_milestone'
+        if input_type in ('space', 'selectspace'):
+            return 'select_space'
+        if input_type in ('projectcard', 'selectprojectcardtoplay'):
+            return 'play_card'
+        if input_type in ('card', 'selectcard'):
+            return 'card_prompt'
+        if input_type in ('or', 'option', 'selectoption'):
+            option_payload = self._option_payload_for_action(action_index, waiting_for)
+            option_title_l = _title_text(option_payload.get('title', '')).lower()
+            if 'award' in option_title_l:
+                return 'fund_award'
+            if 'milestone' in option_title_l:
+                return 'claim_milestone'
+            return 'select_option'
+        if isinstance(decoded_action, dict):
+            decoded_type = str(decoded_action.get('type', '') or '').lower()
+            if decoded_type == 'space':
+                return 'select_space'
+            if decoded_type in ('card', 'projectcard'):
+                return 'play_card'
+        return 'other'
+
+    def _descriptor_labels(
+        self,
+        action_index: int,
+        waiting_for: Dict[str, Any],
+        family: str,
+    ) -> Dict[str, str]:
+        title_l = _title_text(waiting_for.get('title', ''))
+        payload = self._option_payload_for_action(action_index, waiting_for)
+        label = _title_text(payload.get('title', '')) or title_l
+        award_name = ''
+        milestone_name = ''
+        card_name = ''
+        project_name = ''
+        if family == 'play_card':
+            cards = waiting_for.get('cards', []) or []
+            card_idx = int(action_index)
+            if str(waiting_for.get('type', '') or '').lower() in ('projectcard', 'selectprojectcardtoplay'):
+                card_idx = int(action_index)
+            if 0 <= card_idx < 100:
+                if 0 <= card_idx < len(cards):
+                    card_name = str((cards[card_idx] or {}).get('name', '') or '')
+            label = card_name or label or 'Play project card'
+        elif family == 'standard_project':
+            project_idx = int(action_index) - int(self.action_types['STANDARD_PROJECT'])
+            if 0 <= project_idx < len(self.standard_projects):
+                project_name = str(self.standard_projects[project_idx] or '')
+            label = project_name or label or 'Standard project'
+        elif family == 'fund_award':
+            award_name = _title_text(payload.get('title', '')) or _title_text(payload.get('name', ''))
+            label = award_name or label or 'Fund award'
+        elif family == 'claim_milestone':
+            milestone_name = _title_text(payload.get('title', '')) or _title_text(payload.get('name', ''))
+            label = milestone_name or label or 'Claim milestone'
+        elif family == 'select_space':
+            label = title_l or 'Select space'
+        return {
+            "label": str(label or family).strip(),
+            "award_name": str(award_name or '').strip(),
+            "milestone_name": str(milestone_name or '').strip(),
+            "card_name": str(card_name or '').strip(),
+            "project_name": str(project_name or '').strip(),
+        }
+
+    def _build_action_token(
+        self,
+        player_state: Dict[str, Any],
+        action_index: int,
+        family: str,
+        label_info: Dict[str, str],
+        decoded_action: Optional[Dict[str, Any]],
+    ) -> np.ndarray:
+        player = player_state.get('thisPlayer', {}) or {}
+        game = player_state.get('game', {}) or {}
+        title_l = _title_text((player_state.get('waitingFor', {}) or {}).get('title', '')).lower()
+        generation = max(1.0, float(game.get('generation', 1) or 1))
+        plants = max(0.0, float(player.get('plants', 0) or 0))
+        heat = max(0.0, float(player.get('heat', 0) or 0))
+        plant_prod = max(0.0, float(player.get('plantProduction', 0) or 0))
+        heat_prod = max(0.0, float(player.get('heatProduction', 0) or 0))
+        mc = max(0.0, float(player.get('megaCredits', 0) or 0))
+        vp = max(0.0, float(((player.get('victoryPointsBreakdown', {}) or {}).get('total', 0) or 0)))
+
+        family_order = [
+            'play_card', 'standard_project', 'select_option', 'select_space',
+            'fund_award', 'claim_milestone', 'convert_plants', 'convert_heat',
+            'select_payment', 'select_amount', 'card_subset', 'startup_plan',
+            'sell_patents', 'pass', 'other',
+        ]
+        features: List[float] = [1.0 if family == name else 0.0 for name in family_order]
+        features.extend([
+            min(generation / 14.0, 1.0),
+            min(mc / 80.0, 1.0),
+            min(plants / 16.0, 1.0),
+            min(heat / 16.0, 1.0),
+            min(plant_prod / 8.0, 1.0),
+            min(heat_prod / 8.0, 1.0),
+            min(vp / 60.0, 1.0),
+        ])
+
+        card_name = label_info.get("card_name", "")
+        project_name = label_info.get("project_name", "")
+        award_name = label_info.get("award_name", "")
+        milestone_name = label_info.get("milestone_name", "")
+
+        cost_norm = 0.0
+        vp_norm = 0.0
+        building_tag = 0.0
+        space_tag = 0.0
+        science_tag = 0.0
+        plant_tag = 0.0
+        city_project = 0.0
+        greenery_project = 0.0
+        moon_project = 0.0
+        if card_name:
+            waiting_for = player_state.get('waitingFor', {}) or {}
+            cards = waiting_for.get('cards', []) or []
+            for card in cards:
+                if not isinstance(card, dict) or str(card.get('name', '') or '') != card_name:
+                    continue
+                cost_norm = min(float(_card_cost(card)) / 40.0, 1.0)
+                vp_norm = min(float(_card_vp(card)) / 5.0, 1.0)
+                tags = _card_tags(card)
+                building_tag = 1.0 if tags.get('Building', 0) > 0 else 0.0
+                space_tag = 1.0 if tags.get('Space', 0) > 0 else 0.0
+                science_tag = 1.0 if tags.get('Science', 0) > 0 else 0.0
+                plant_tag = 1.0 if tags.get('Plant', 0) > 0 else 0.0
+                moon_project = 1.0 if tags.get('Moon', 0) > 0 else 0.0
+                break
+        if project_name:
+            name_l = project_name.lower()
+            cost_lookup = {
+                'greenery': 23.0,
+                'city': 25.0,
+                'aquifer': 18.0,
+                'power plant': 11.0,
+                'asteroid': 14.0,
+                'road infrastructure': 18.0,
+                'lunar mine': 18.0,
+                'lunar habitat': 18.0,
+                'colony': 17.0,
+            }
+            for key, cost in cost_lookup.items():
+                if key in name_l:
+                    cost_norm = min(float(cost) / 40.0, 1.0)
+                    break
+            greenery_project = 1.0 if 'greenery' in name_l else 0.0
+            city_project = 1.0 if 'city' in name_l or 'habitat' in name_l else 0.0
+            moon_project = 1.0 if 'lunar' in name_l or 'road infrastructure' in name_l else moon_project
+
+        spend_threshold_resource = 1.0 if family in ('convert_plants', 'convert_heat', 'standard_project') else 0.0
+        carry_plants = 1.0 if family in ('pass', 'play_card', 'claim_milestone', 'fund_award') and 7.0 <= plants < 8.0 and plant_prod > 0.0 else 0.0
+        carry_heat = 1.0 if family in ('pass', 'play_card', 'claim_milestone', 'fund_award') and 7.0 <= heat < 8.0 and heat_prod > 0.0 else 0.0
+        if family == 'convert_plants' and 7.0 <= plants < 16.0 and plant_prod > 0.0:
+            carry_plants = -1.0
+        if family == 'convert_heat' and 7.0 <= heat < 16.0 and heat_prod > 0.0:
+            carry_heat = -1.0
+        combo_city_anchor = 1.0 if city_project > 0.0 or 'city' in title_l else 0.0
+        combo_greenery_followup = 1.0 if greenery_project > 0.0 or family == 'convert_plants' else 0.0
+        raises_claimability = 1.0 if family == 'claim_milestone' else 0.0
+        locks_award_lead = 1.0 if family == 'fund_award' else 0.0
+        immediate_board = 1.0 if family in ('select_space', 'standard_project', 'convert_plants') else 0.0
+
+        features.extend([
+            cost_norm,
+            vp_norm,
+            building_tag,
+            space_tag,
+            science_tag,
+            plant_tag,
+            city_project,
+            greenery_project,
+            moon_project,
+            1.0 if award_name else 0.0,
+            1.0 if milestone_name else 0.0,
+            spend_threshold_resource,
+            carry_plants,
+            carry_heat,
+            combo_city_anchor,
+            combo_greenery_followup,
+            raises_claimability,
+            locks_award_lead,
+            immediate_board,
+        ])
+
+        label_l = str(label_info.get("label", '') or '').lower()
+        features.extend([
+            1.0 if 'greenery' in label_l else 0.0,
+            1.0 if 'city' in label_l else 0.0,
+            1.0 if 'road' in label_l else 0.0,
+            1.0 if 'mine' in label_l else 0.0,
+            1.0 if 'habitat' in label_l else 0.0,
+            1.0 if 'award' in label_l else 0.0,
+            1.0 if 'milestone' in label_l else 0.0,
+            1.0 if 'pass' in label_l else 0.0,
+        ])
+        return token_from_features(type_id=8, features=features, feature_dim=PLANNER_TOKEN_DIM)
+
+    def _build_action_descriptor(
+        self,
+        action_index: int,
+        action_position: int,
+        player_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        waiting_for = player_state.get('waitingFor', {}) or {}
+        decoded_action = self.decode_action(action_index, player_state)
+        family = self._semantic_family(action_index, waiting_for, decoded_action)
+        label_info = self._descriptor_labels(action_index, waiting_for, family)
+        return {
+            "action_index": int(action_index),
+            "action_position": int(action_position),
+            "family": family,
+            "label": label_info.get("label", family),
+            "decoded_action": decoded_action,
+            "card_name": label_info.get("card_name", ""),
+            "project_name": label_info.get("project_name", ""),
+            "award_name": label_info.get("award_name", ""),
+            "milestone_name": label_info.get("milestone_name", ""),
+            "token_features": self._build_action_token(
+                player_state=player_state,
+                action_index=action_index,
+                family=family,
+                label_info=label_info,
+                decoded_action=decoded_action,
+            ).astype(np.float32),
+        }
+
+    def get_legal_action_descriptors(self, player_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        descriptors: List[Dict[str, Any]] = []
+        for action_position, action_index in enumerate(self.get_available_actions(player_state)):
+            descriptors.append(self._build_action_descriptor(int(action_index), int(action_position), player_state))
+        return descriptors
 
     def _is_convert_heat_wasteful(self, player_state: Dict[str, Any]) -> bool:
         """Check if converting heat to temperature is wasteful"""
@@ -2584,6 +2850,63 @@ class ActionDecoder:
         game = player_state.get('game', {})
         temp = game.get('temperature', -30)
         return temp >= 8
+
+    def _is_standalone_global_option(
+        self,
+        title_l: str,
+        prefixes: Tuple[str, ...],
+    ) -> bool:
+        """Detect simple option titles that only advance a single global parameter."""
+        normalized = ' '.join(str(title_l or '').strip().lower().split())
+        if not normalized:
+            return False
+        for prefix in prefixes:
+            if not normalized.startswith(prefix):
+                continue
+            remainder = normalized[len(prefix):].strip()
+            if not remainder:
+                return True
+            tokens = remainder.replace('+', ' ').split()
+            if tokens and all(token in {'1', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'step', 'steps'} for token in tokens):
+                return True
+        return False
+
+    def _is_option_wasteful(self, option_payload: Dict[str, Any], player_state: Dict[str, Any]) -> bool:
+        """Mask obviously dead endgame branches across option-like prompts."""
+        if not player_state or not isinstance(option_payload, dict):
+            return False
+
+        game = player_state.get('game', {}) or {}
+        title_l = _title_text(option_payload.get('title', '')).strip().lower()
+        if not title_l:
+            return False
+
+        if self._is_convert_heat_wasteful(player_state):
+            if 'convert heat' in title_l or ('8 heat' in title_l and 'temperature' in title_l):
+                return True
+            if self._is_standalone_global_option(title_l, ('increase temperature', 'raise temperature', 'raise the temperature')):
+                return True
+
+        oxygen_level = _safe_int(game.get('oxygenLevel', game.get('oxygen', 0)), 0)
+        if oxygen_level >= 14 and self._is_standalone_global_option(
+            title_l,
+            ('increase oxygen', 'raise oxygen', 'raise the oxygen'),
+        ):
+            return True
+
+        if _safe_int(game.get('oceans', 0), 0) >= 9 and self._is_standalone_global_option(
+            title_l,
+            ('add an ocean', 'place an ocean', 'place ocean'),
+        ):
+            return True
+
+        if _safe_int(game.get('venusScaleLevel', 0), 0) >= 30 and self._is_standalone_global_option(
+            title_l,
+            ('increase venus', 'raise venus', 'raise the venus'),
+        ):
+            return True
+
+        return False
 
     def build_initial_setup_response(self, player_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         waiting_for = player_state.get('waitingFor', {}) if player_state else {}
@@ -2635,6 +2958,7 @@ class ActionDecoder:
                     option_title_l = _title_text(option.get('title', '')).lower()
                     allow_select_option = True
                     added_concrete_action = False
+                    option_is_wasteful = self._is_option_wasteful(option, player_state)
 
                     if option_type in ['selectProjectCardToPlay', 'projectCard']:
                         # Prefer concrete card actions instead of generic OR selection.
@@ -2663,7 +2987,7 @@ class ActionDecoder:
                         cards = option.get('cards', [])
                         enabled_indices = [
                             j for j, card in enumerate(cards) 
-                            if not card.get('isDisabled', False) and not self._is_standard_project_wasteful(card, player_state)
+                            if not card.get('isDisabled', False)
                         ]
                         if enabled_indices:
                             for j in enabled_indices:
@@ -2726,11 +3050,13 @@ class ActionDecoder:
 
                     # Keep SELECT_OPTION only when we do not have a concrete safer index,
                     # or when this option is simple and does not require sub-selection.
-                    if not added_concrete_action and allow_select_option:
+                    if not added_concrete_action and allow_select_option and not option_is_wasteful:
                         available_actions.append(self.action_types['SELECT_OPTION'] + i)
             elif input_type == 'option':
                 options = waiting_for.get('options', [])
-                for i, _ in enumerate(options):
+                for i, option in enumerate(options):
+                    if self._is_option_wasteful(option, player_state or {}):
+                        continue
                     available_actions.append(self.action_types['SELECT_OPTION'] + i)
             elif input_type == 'card':
                 cards = waiting_for.get('cards', [])
@@ -2754,7 +3080,6 @@ class ActionDecoder:
                     enabled_cards = [
                         (i, card) for i, card in enumerate(cards)
                         if not card.get('isDisabled', False)
-                        and not self._is_standard_project_wasteful(card, player_state or {})
                     ]
                     for i, _ in enabled_cards:
                         available_actions.append(self.action_types['STANDARD_PROJECT'] + i)
@@ -2810,7 +3135,6 @@ class ActionDecoder:
                     enabled_cards = [
                         (i, card) for i, card in enumerate(cards)
                         if not card.get('isDisabled', False)
-                        and not self._is_standard_project_wasteful(card, player_state or {})
                     ]
                     for i, _ in enabled_cards:
                         available_actions.append(self.action_types['STANDARD_PROJECT'] + i)
@@ -2892,7 +3216,9 @@ class ActionDecoder:
                     available_actions.append(self.action_types['SELECT_AMOUNT'] + amount)
             elif input_type == 'selectOption' or input_type == 'option':
                 options = waiting_for.get('options', [])
-                for i, _ in enumerate(options):
+                for i, option in enumerate(options):
+                    if self._is_option_wasteful(option, player_state or {}):
+                        continue
                     available_actions.append(self.action_types['SELECT_OPTION'] + i)
             elif input_type == 'selectPlayer' or input_type == 'player':
                 players = waiting_for.get('players', [])

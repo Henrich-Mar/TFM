@@ -106,8 +106,8 @@ def test_agent_decodes_extended_standard_project_action() -> None:
     assert chosen == ["Air Scrapping"], f"Expected ['Air Scrapping'], got {chosen}"
 
 
-def test_agent_filters_wasteful_venus_projects() -> None:
-    """When Venus is maxed (30), Air Scrapping and Buffer Gas should not be available."""
+def test_agent_keeps_offered_venus_projects_available() -> None:
+    """The decoder should trust offered Venus projects instead of locally pruning them."""
     decoder = ActionDecoder()
     cards = _make_standard_project_cards([
         "Power Plant:SP", "Aquifer", "Greenery", "City",
@@ -134,17 +134,14 @@ def test_agent_filters_wasteful_venus_projects() -> None:
     sp_base = decoder.action_types["STANDARD_PROJECT"]
     sp_indices = [a - sp_base for a in available if sp_base <= a < sp_base + 20]
 
-    # Venus projects are at indices 5 and 6 in our 6-card list
-    # They should be filtered (wasteful), so we get fewer SP options
-    assert len(sp_indices) <= 4, (
-        "Venus projects should be filtered when Venus is maxed"
+    assert set(sp_indices) >= set(range(6)), (
+        f"Expected all offered Venus standard projects to remain selectable, got {sp_indices}"
     )
 
 
-def test_agent_filters_wasteful_moon_projects() -> None:
-    """When Moon logistics is maxed (8), Road Infrastructure should not be available."""
+def test_agent_keeps_offered_moon_projects_available() -> None:
+    """Moon tile projects should remain selectable if the server still offers them."""
     decoder = ActionDecoder()
-    # Cards order must match what game would send; Road Infrastructure is typically later
     cards = _make_standard_project_cards([
         "Power Plant:SP", "Aquifer", "Greenery", "City",
         "Road Infrastructure", "Lunar Mine", "Lunar Habitat",
@@ -170,7 +167,90 @@ def test_agent_filters_wasteful_moon_projects() -> None:
     sp_base = decoder.action_types["STANDARD_PROJECT"]
     sp_indices = [a - sp_base for a in available if sp_base <= a < sp_base + 20]
 
-    # Road Infrastructure (index 4) should be filtered; others remain
-    assert len(sp_indices) <= 6, (
-        "Moon Road Infrastructure should be filtered when logistics is maxed"
+    assert set(sp_indices) >= set(range(7)), (
+        f"Expected all offered Moon standard projects to remain selectable, got {sp_indices}"
     )
+
+
+def test_agent_filters_convert_heat_option_when_temperature_is_maxed() -> None:
+    """Plain option prompts should not expose convert heat after temperature is maxed."""
+    decoder = ActionDecoder()
+
+    player_state = {
+        "waitingFor": {
+            "type": "option",
+            "options": [
+                {"title": {"message": "Convert heat"}},
+                {"title": {"message": "Pass for this generation"}},
+            ],
+        },
+        "game": {
+            "temperature": 8,
+            "oxygenLevel": 10,
+            "oceans": 5,
+            "venusScaleLevel": 12,
+            "moon": {"logisticsRate": 0, "miningRate": 0, "habitatRate": 0},
+        },
+    }
+
+    available = decoder.get_available_actions(player_state)
+    select_option_base = decoder.action_types["SELECT_OPTION"]
+
+    assert (select_option_base + 0) not in available
+    assert (select_option_base + 1) in available
+
+
+def test_agent_filters_standalone_temperature_option_in_or_prompt_when_maxed() -> None:
+    """OR fallbacks should not surface dead temperature-only options at max temperature."""
+    decoder = ActionDecoder()
+
+    player_state = {
+        "waitingFor": {
+            "type": "or",
+            "options": [
+                {"type": "option", "title": "Increase temperature"},
+                {"type": "option", "title": "Increase oxygen"},
+            ],
+        },
+        "game": {
+            "temperature": 8,
+            "oxygenLevel": 10,
+            "oceans": 5,
+            "venusScaleLevel": 12,
+            "moon": {"logisticsRate": 0, "miningRate": 0, "habitatRate": 0},
+        },
+    }
+
+    available = decoder.get_available_actions(player_state)
+    select_option_base = decoder.action_types["SELECT_OPTION"]
+
+    assert (select_option_base + 0) not in available
+    assert (select_option_base + 1) in available
+
+
+def test_agent_filters_add_ocean_option_when_oceans_are_maxed() -> None:
+    """Standalone ocean-only options should be masked after oceans are maxed out."""
+    decoder = ActionDecoder()
+
+    player_state = {
+        "waitingFor": {
+            "type": "option",
+            "options": [
+                {"title": {"message": "Add an ocean"}},
+                {"title": {"message": "Increase oxygen"}},
+            ],
+        },
+        "game": {
+            "temperature": -6,
+            "oxygenLevel": 10,
+            "oceans": 9,
+            "venusScaleLevel": 12,
+            "moon": {"logisticsRate": 0, "miningRate": 0, "habitatRate": 0},
+        },
+    }
+
+    available = decoder.get_available_actions(player_state)
+    select_option_base = decoder.action_types["SELECT_OPTION"]
+
+    assert (select_option_base + 0) not in available
+    assert (select_option_base + 1) in available

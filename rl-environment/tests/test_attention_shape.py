@@ -6,12 +6,6 @@ import pytest
 import torch
 
 
-class _FakeRustModule:
-    @staticmethod
-    def encode_state(_payload: str, _turn_action_count: int, state_size: int):
-        return [0.0] * int(state_size)
-
-
 def _install_aiohttp_stub() -> None:
     if "aiohttp" in sys.modules:
         return
@@ -25,12 +19,30 @@ def _install_aiohttp_stub() -> None:
     sys.modules["aiohttp"] = aiohttp_stub
 
 
+def _planner_bundle(batch_action_count: int = 3) -> dict:
+    from models.planner_common import PLANNER_GLOBAL_DIM, PLANNER_TOKEN_DIM
+
+    return {
+        "world_tokens": np.ones((4, PLANNER_TOKEN_DIM), dtype=np.float32),
+        "world_token_types": np.asarray([1, 2, 5, 6], dtype=np.int64),
+        "world_mask": np.asarray([True, True, True, True], dtype=np.bool_),
+        "hand_tokens": np.ones((2, PLANNER_TOKEN_DIM), dtype=np.float32),
+        "hand_mask": np.asarray([True, True], dtype=np.bool_),
+        "action_tokens": np.ones((batch_action_count, PLANNER_TOKEN_DIM), dtype=np.float32),
+        "action_mask": np.ones((batch_action_count,), dtype=np.bool_),
+        "action_indices": np.arange(batch_action_count, dtype=np.int64),
+        "action_positions": np.arange(batch_action_count, dtype=np.int64),
+        "global_scalars": np.zeros((PLANNER_GLOBAL_DIM,), dtype=np.float32),
+    }
+
+
 def test_transformer_network_output_shapes() -> None:
     _install_aiohttp_stub()
     if "rl-environment" not in sys.path:
         sys.path.append("rl-environment")
 
     from models.agent import AgentConfig, TerraformingMarsNetwork
+    from models.planner_common import pad_bundle_batch
 
     config = AgentConfig(
         state_size=1024,
@@ -43,14 +55,15 @@ def test_transformer_network_output_shapes() -> None:
         transformer_embed_dim=64,
         transformer_heads=4,
         transformer_layers=2,
+        planner_aux_output_dim=280,
     )
     network = TerraformingMarsNetwork(config)
-    batch = torch.randn(5, 1024)
+    batch = pad_bundle_batch([_planner_bundle() for _ in range(5)], torch.device("cpu"))
     output = network(batch)
 
-    assert tuple(output["policy_logits"].shape) == (5, 1000)
+    assert tuple(output["policy_logits"].shape) == (5, 3)
     assert tuple(output["value"].shape) == (5, 1)
-    assert tuple(output["aux_predictions"].shape) == (5, 74)
+    assert tuple(output["aux_predictions"].shape) == (5, 280)
 
 
 def test_agent_config_from_env_respects_full_transformer_architecture(
@@ -73,6 +86,7 @@ def test_agent_config_from_env_respects_full_transformer_architecture(
     monkeypatch.setenv("AGENT_TRANSFORMER_EMBED_DIM", "256")
     monkeypatch.setenv("AGENT_TRANSFORMER_HEADS", "16")
     monkeypatch.setenv("AGENT_TRANSFORMER_LAYERS", "4")
+    monkeypatch.setenv("AGENT_PLANNER_AUX_OUTPUT_DIM", "320")
 
     config = AgentConfig.from_env()
 
@@ -84,9 +98,10 @@ def test_agent_config_from_env_respects_full_transformer_architecture(
     assert config.transformer_embed_dim == 256
     assert config.transformer_heads == 16
     assert config.transformer_layers == 4
+    assert config.planner_aux_output_dim == 320
 
 
-def test_state_encoder_injects_card_token_segment() -> None:
+def test_state_encoder_returns_planner_bundle_with_hand_tokens() -> None:
     if "rl-environment" not in sys.path:
         sys.path.append("rl-environment")
     from models.state_encoder import StateEncoder
@@ -127,16 +142,13 @@ def test_state_encoder_injects_card_token_segment() -> None:
         ],
     }
 
-    try:
-        encoded = encoder.encode(player_state)
-    except RuntimeError as exc:
-        if "rust_tfm_rl" in str(exc):
-            pytest.skip("rust_tfm_rl backend not installed")
-        raise
-    assert isinstance(encoded, np.ndarray)
-    assert encoded.shape == (1024,)
-    card_token_tail = encoded[-128:]
-    assert float(np.abs(card_token_tail).sum()) > 0.0
+    encoded = encoder.encode(player_state)
+
+    assert isinstance(encoded, dict)
+    assert encoded["world_tokens"].ndim == 2
+    assert encoded["hand_tokens"].shape[0] == 2
+    assert float(np.abs(encoded["hand_tokens"]).sum()) > 0.0
+    assert 8 in set(encoded["world_token_types"].tolist())
 
 
 def test_state_encoder_merges_prompt_cards_with_owned_hand_context() -> None:
@@ -195,13 +207,12 @@ def test_state_encoder_rejects_token_layout_larger_than_state() -> None:
         )
 
 
-def test_space_prompt_features_prefer_greenery_near_own_city(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_board_opportunity_rows_prefer_greenery_near_own_city() -> None:
     if "rl-environment" not in sys.path:
         sys.path.append("rl-environment")
-    import models.state_encoder as state_encoder_module
+    from models.state_encoder import StateEncoder
 
-    monkeypatch.setattr(state_encoder_module, "get_rust_module", lambda required=True: _FakeRustModule())
-    encoder = state_encoder_module.StateEncoder(
+    encoder = StateEncoder(
         state_size=512,
         card_token_dim=8,
         tableau_token_count=0,
@@ -220,85 +231,22 @@ def test_space_prompt_features_prefer_greenery_near_own_city(monkeypatch: pytest
                 {"id": "bad-greenery", "x": 3, "y": 0, "spaceType": "land"},
             ],
         },
-        "waitingFor": {
-            "type": "space",
-            "title": "Select space for greenery tile",
-            "availableSpaces": [
-                {"id": "good-greenery", "x": 1, "y": 0, "spaceType": "land"},
-                {"id": "bad-greenery", "x": 3, "y": 0, "spaceType": "land"},
-            ],
-        },
     }
 
-    encoded = encoder.encode(player_state)
-    start, slot_count, summary_start, _ = encoder._space_feature_layout()
-    totals = encoded[start:start + slot_count]
-    self_scores = encoded[start + slot_count:start + (2 * slot_count)]
-    risk_scores = encoded[start + (3 * slot_count):start + (4 * slot_count)]
-    summary = encoded[summary_start:summary_start + encoder._SPACE_SUMMARY_FEATURE_COUNT]
+    rows = encoder._collect_board_opportunity_rows(player_state)
+    greenery_rows = [row for row in rows if row[1] > 0.5]
 
-    assert self_scores[0] > self_scores[1]
-    assert risk_scores[1] > risk_scores[0]
-    assert totals[0] > totals[1]
-    assert summary[0] == pytest.approx(1.0)
-    assert summary[2] == pytest.approx(1.0)
+    assert greenery_rows
+    assert greenery_rows[0][6] >= greenery_rows[-1][6]
+    assert greenery_rows[0][7] >= greenery_rows[-1][7]
 
 
-def test_space_prompt_features_prefer_city_with_existing_greenery_cluster(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_state_encoder_emits_milestone_and_award_world_tokens() -> None:
     if "rl-environment" not in sys.path:
         sys.path.append("rl-environment")
-    import models.state_encoder as state_encoder_module
+    from models.state_encoder import StateEncoder
 
-    monkeypatch.setattr(state_encoder_module, "get_rust_module", lambda required=True: _FakeRustModule())
-    encoder = state_encoder_module.StateEncoder(
-        state_size=512,
-        card_token_dim=8,
-        tableau_token_count=0,
-        hand_token_count=0,
-        opponent_token_count=0,
-    )
-
-    player_state = {
-        "thisPlayer": {"id": "p1", "color": "red"},
-        "game": {
-            "spaces": [
-                {"id": "green-a", "x": 0, "y": 0, "spaceType": "land", "tileType": 0, "color": "red"},
-                {"id": "green-b", "x": 1, "y": 1, "spaceType": "land", "tileType": 0, "color": "blue"},
-                {"id": "premium-city", "x": 1, "y": 0, "spaceType": "land", "bonus": ["2 plants"]},
-                {"id": "empty-city", "x": 4, "y": 0, "spaceType": "land"},
-            ],
-        },
-        "waitingFor": {
-            "type": "space",
-            "title": "Select space for city tile",
-            "availableSpaces": [
-                {"id": "premium-city", "x": 1, "y": 0, "spaceType": "land", "bonus": ["2 plants"]},
-                {"id": "empty-city", "x": 4, "y": 0, "spaceType": "land"},
-            ],
-        },
-    }
-
-    encoded = encoder.encode(player_state)
-    start, slot_count, summary_start, _ = encoder._space_feature_layout()
-    totals = encoded[start:start + slot_count]
-    self_scores = encoded[start + slot_count:start + (2 * slot_count)]
-    summary = encoded[summary_start:summary_start + encoder._SPACE_SUMMARY_FEATURE_COUNT]
-
-    assert self_scores[0] > self_scores[1]
-    assert totals[0] > totals[1]
-    assert summary[0] == pytest.approx(1.0)
-    assert summary[1] == pytest.approx(1.0)
-
-
-def test_dense_context_injects_awards_and_milestones_into_observation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    if "rl-environment" not in sys.path:
-        sys.path.append("rl-environment")
-    import models.state_encoder as state_encoder_module
-
-    monkeypatch.setattr(state_encoder_module, "get_rust_module", lambda required=True: _FakeRustModule())
-    encoder = state_encoder_module.StateEncoder(
+    encoder = StateEncoder(
         state_size=2048,
         card_token_dim=20,
         tableau_token_count=0,
@@ -350,8 +298,8 @@ def test_dense_context_injects_awards_and_milestones_into_observation(
     }
 
     encoded = encoder.encode(player_state, turn_action_count=1)
-    awards_start, awards_end = encoder._awards_feature_bounds()
 
-    assert awards_end > awards_start
-    assert float(np.abs(encoded[awards_start:awards_end]).sum()) > 0.0
-    assert encoded[encoder._RUST_BASE_FEATURE_COUNT] == pytest.approx(0.0)
+    token_types = set(encoded["world_token_types"].tolist())
+    assert 5 in token_types
+    assert 6 in token_types
+    assert float(np.abs(encoded["world_tokens"]).sum()) > 0.0

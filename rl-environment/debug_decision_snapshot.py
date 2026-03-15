@@ -8,6 +8,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+try:
+    from models.planner_common import PLANNER_OPPORTUNITY_LIMIT, planner_aux_layout
+    from models.state_encoder import StateEncoder
+except Exception:
+    PLANNER_OPPORTUNITY_LIMIT = 12
+    planner_aux_layout = None
+    StateEncoder = None
+
 
 _REQUEST_LOCK = threading.Lock()
 _PENDING_CAPTURE_REQUESTS: Dict[str, Dict[str, Any]] = {}
@@ -384,11 +392,156 @@ def _milestone_summary(milestone: Any, index: int) -> Dict[str, Any]:
 
 
 def _top_aux_predictions(aux_predictions: List[float]) -> List[Dict[str, Any]]:
+    if StateEncoder is not None:
+        milestone_count = len(getattr(StateEncoder, "_ALL_MILESTONES", []))
+        if len(aux_predictions) >= milestone_count and milestone_count > 0:
+            entries = []
+            for idx, value in enumerate(list(aux_predictions[:milestone_count])):
+                entries.append({"index": int(idx), "value": _safe_float(value)})
+            entries.sort(key=lambda item: item["value"], reverse=True)
+            return entries[:10]
     entries: List[Dict[str, Any]] = []
     for idx, value in enumerate(list(aux_predictions[:70])):
         entries.append({"index": int(idx), "value": _safe_float(value)})
     entries.sort(key=lambda item: item["value"], reverse=True)
     return entries[:10]
+
+
+def _legacy_aux_prediction_summary(aux_predictions: List[float]) -> Dict[str, Any]:
+    return {
+        "award_ev": _safe_float(aux_predictions[70] if len(aux_predictions) > 70 else 0.0),
+        "playable_cards": _safe_float(aux_predictions[71] if len(aux_predictions) > 71 else 0.0),
+        "steel_target": _safe_float(aux_predictions[72] if len(aux_predictions) > 72 else 0.0),
+        "titanium_target": _safe_float(aux_predictions[73] if len(aux_predictions) > 73 else 0.0),
+        "top_milestone_predictions": _top_aux_predictions(aux_predictions),
+    }
+
+
+def _named_prediction_rows(values: List[float], names: List[str], limit: int = 10) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for idx, value in enumerate(values):
+        rows.append(
+            {
+                "index": int(idx),
+                "name": str(names[idx] if idx < len(names) else f"item-{idx}"),
+                "value": _safe_float(value),
+            }
+        )
+    rows.sort(key=lambda item: item["value"], reverse=True)
+    return rows[:limit]
+
+
+def _planner_aux_context() -> Dict[str, Any]:
+    milestone_names = list(getattr(StateEncoder, "_ALL_MILESTONES", [])) if StateEncoder is not None else []
+    award_names = list(getattr(StateEncoder, "_ALL_AWARDS", [])) if StateEncoder is not None else []
+    if planner_aux_layout is None or not milestone_names:
+        return {}
+    layout = planner_aux_layout(len(milestone_names), len(award_names), PLANNER_OPPORTUNITY_LIMIT)
+    return {
+        "milestone_names": milestone_names,
+        "award_names": award_names,
+        "layout": layout,
+    }
+
+
+def _aux_prediction_summary(aux_predictions: List[float]) -> Dict[str, Any]:
+    context = _planner_aux_context()
+    layout = dict(context.get("layout", {}) or {})
+    if not layout:
+        return _legacy_aux_prediction_summary(aux_predictions)
+    planner_dim = max(int(value.stop or 0) for value in layout.values())
+    if len(aux_predictions) < planner_dim:
+        return _legacy_aux_prediction_summary(aux_predictions)
+
+    milestone_names = list(context.get("milestone_names", []) or [])
+    award_names = list(context.get("award_names", []) or [])
+    milestone_claim = aux_predictions[layout["milestone_claim_now"]]
+    award_ev = aux_predictions[layout["award_fund_now_ev"]]
+    award_rank = aux_predictions[layout["award_rank_class"]]
+    opportunity_values = aux_predictions[layout["board_opportunity_value"]]
+    deny_risk_values = aux_predictions[layout["deny_risk"]]
+
+    opportunity_entries = []
+    for idx, value in enumerate(opportunity_values):
+        opportunity_entries.append(
+            {
+                "index": int(idx),
+                "value": _safe_float(value),
+                "deny_risk": _safe_float(deny_risk_values[idx] if idx < len(deny_risk_values) else 0.0),
+            }
+        )
+    opportunity_entries.sort(key=lambda item: (item["value"], item["deny_risk"]), reverse=True)
+
+    return {
+        "milestone_claim_now": _named_prediction_rows(list(milestone_claim), milestone_names),
+        "award_fund_now_ev": _named_prediction_rows(list(award_ev), award_names),
+        "award_rank_class": _named_prediction_rows(list(award_rank), award_names),
+        "carry_save_plants_value": _safe_float(aux_predictions[layout["carry_save_plants_value"].start]),
+        "carry_save_heat_value": _safe_float(aux_predictions[layout["carry_save_heat_value"].start]),
+        "next_turn_combo_value": _safe_float(aux_predictions[layout["next_turn_combo_value"].start]),
+        "next_generation_combo_value": _safe_float(aux_predictions[layout["next_generation_combo_value"].start]),
+        "top_milestone_predictions": _named_prediction_rows(list(milestone_claim), milestone_names),
+        "top_award_ev_predictions": _named_prediction_rows(list(award_ev), award_names),
+        "top_board_opportunity_predictions": opportunity_entries[:10],
+    }
+
+
+def _descriptor_lookup(action_descriptors: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    out: Dict[int, Dict[str, Any]] = {}
+    for descriptor in action_descriptors:
+        if not isinstance(descriptor, dict):
+            continue
+        idx = _safe_int(descriptor.get("action_index", -1), -1)
+        if idx < 0:
+            continue
+        out[idx] = {
+            "action_index": idx,
+            "action_position": _safe_int(descriptor.get("action_position", -1), -1),
+            "family": str(descriptor.get("family", "") or "").strip(),
+            "label": str(descriptor.get("label", "") or "").strip(),
+            "card_name": str(descriptor.get("card_name", "") or "").strip(),
+            "project_name": str(descriptor.get("project_name", "") or "").strip(),
+            "award_name": str(descriptor.get("award_name", "") or "").strip(),
+            "milestone_name": str(descriptor.get("milestone_name", "") or "").strip(),
+            "decoded_action": descriptor.get("decoded_action", {}),
+        }
+    return out
+
+
+def _merge_policy_rows_with_descriptors(rows: List[Dict[str, Any]], action_descriptors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    descriptor_by_index = _descriptor_lookup(action_descriptors)
+    merged: List[Dict[str, Any]] = []
+    for row in rows:
+        entry = dict(row or {})
+        descriptor = descriptor_by_index.get(_safe_int(entry.get("action_index", -1), -1), {})
+        if descriptor:
+            for key, value in descriptor.items():
+                if key == "action_index":
+                    continue
+                if entry.get(key) in (None, "", {}, []):
+                    entry[key] = value
+        merged.append(entry)
+    return merged
+
+
+def _fallback_chosen_descriptor(
+    chosen_action_index: int,
+    action_input: Optional[Dict[str, Any]],
+    action_meta: Dict[str, Any],
+) -> Dict[str, Any]:
+    label = str(action_meta.get("chosen_action_label", "") or "").strip()
+    family = ""
+    if "(" in label:
+        family = label.split("(", 1)[0].strip().lower()
+    if not family and isinstance(action_input, dict):
+        family = str(action_input.get("type", "") or "").strip().lower()
+    return {
+        "action_index": int(chosen_action_index),
+        "action_position": _safe_int(action_meta.get("chosen_action_position", -1), -1),
+        "family": family,
+        "label": label,
+        "decoded_action": action_input or {},
+    }
 
 
 def _summarize_prompt_candidates(waiting_for: Dict[str, Any]) -> Dict[str, Any]:
@@ -537,6 +690,13 @@ def build_decision_snapshot(
         prompt_candidates["cards"] = _attach_requirement_rankings(list(prompt_candidates.get("cards", []) or []), prompt_card_rankings)
     aux_predictions = list(action_meta.get("aux_predictions", []) or [])
     aux_targets = dict(action_meta.get("aux_targets", {}) or {})
+    action_descriptors = list(action_meta.get("action_descriptors", []) or [])
+    chosen_action_index = _safe_int(action_index, -1)
+    merged_policy_ranking = _merge_policy_rows_with_descriptors(list(action_meta.get("policy_ranking", []) or []), action_descriptors)
+    merged_top_actions = _merge_policy_rows_with_descriptors(list(action_meta.get("policy_top_actions", []) or []), action_descriptors)
+    chosen_descriptor = _descriptor_lookup(action_descriptors).get(chosen_action_index, {})
+    if not chosen_descriptor:
+        chosen_descriptor = _fallback_chosen_descriptor(chosen_action_index, action_input, action_meta)
     resolved_hand_count = _resolved_player_hand_count(player_state, this_player)
     hand_cards = _snapshot_hand_cards(player_state)
     if prompt_card_rankings:
@@ -583,28 +743,25 @@ def build_decision_snapshot(
             "milestones": [_milestone_summary(milestone, idx) for idx, milestone in enumerate(game.get("milestones", []) or [])],
             "prompt_candidates": prompt_candidates,
             "prompt_card_rankings": prompt_card_rankings,
+            "planner": dict(action_meta.get("bundle_summary", {}) or {}),
         },
         "policy": {
-            "chosen_action_index": _safe_int(action_index, -1),
+            "chosen_action_index": chosen_action_index,
             "chosen_action_label": str(action_meta.get("chosen_action_label", "") or "").strip(),
             "chosen_action_payload": action_input or {},
+            "chosen_action_descriptor": chosen_descriptor,
             "policy_temperature": _safe_float(action_meta.get("policy_temperature", 0.0)),
             "value_estimate": _safe_float(action_meta.get("value_old", 0.0)),
             "raw_available_actions": [int(item) for item in (action_meta.get("available_actions_raw", []) or [])],
             "filtered_available_actions": [int(item) for item in (action_meta.get("available_actions_filtered", []) or [])],
             "legal_actions": [int(item) for item in (action_meta.get("legal_actions", []) or [])],
-            "action_rankings": list(action_meta.get("policy_ranking", []) or []),
-            "top_actions": list(action_meta.get("policy_top_actions", []) or []),
+            "action_descriptors": action_descriptors,
+            "action_rankings": merged_policy_ranking,
+            "top_actions": merged_top_actions,
         },
         "aux": {
             "targets": aux_targets,
-            "predictions": {
-                "award_ev": _safe_float(aux_predictions[70] if len(aux_predictions) > 70 else 0.0),
-                "playable_cards": _safe_float(aux_predictions[71] if len(aux_predictions) > 71 else 0.0),
-                "steel_target": _safe_float(aux_predictions[72] if len(aux_predictions) > 72 else 0.0),
-                "titanium_target": _safe_float(aux_predictions[73] if len(aux_predictions) > 73 else 0.0),
-                "top_milestone_predictions": _top_aux_predictions(aux_predictions),
-            },
+            "predictions": _aux_prediction_summary(aux_predictions),
         },
         "diagnostics": {
             "transformer": dict(action_meta.get("transformer_stats", {}) or {}),

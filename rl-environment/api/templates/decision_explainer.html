@@ -373,6 +373,7 @@
       const aux = snapshot.aux || {};
       const player = state.this_player || {};
       const board = state.board || {};
+      const planner = state.planner || {};
 
       document.getElementById("decisionBadge").innerHTML =
         `<span class="pill ${prompt.send_outcome === "accepted" ? "good" : "warn"}">${esc(prompt.send_outcome || "captured")}</span>`;
@@ -396,6 +397,7 @@
         ["Policy temperature", fmt(policy.policy_temperature, 3)],
         ["Transformer enabled", transformer.enabled ? "yes" : "no"],
         ["Token count", esc(transformer.token_count ?? 0)],
+        ["Planner bundle", `${fmt(planner.world_token_count, 0)} world / ${fmt(planner.hand_token_count, 0)} hand / ${fmt(planner.action_token_count, 0)} actions`],
         ["Active token ratio", pct(transformer.active_token_ratio)],
         ["Fusion share", fmt(transformer.fusion_share, 3)],
         ["Attention norm", fmt(transformer.attention_context_norm, 3)],
@@ -404,18 +406,25 @@
         ["Rare draft / payment", `${fmt(rare.draft_keep_buy, 2)} / ${fmt(rare.high_cost_payment, 2)}`],
       ]);
 
+      const chosenDescriptor = policy.chosen_action_descriptor || {};
       document.getElementById("chosenAction").innerHTML = `
         <div><strong>${esc(policy.chosen_action_label || "unknown")}</strong></div>
+        <div class="subtle">${esc(chosenDescriptor.family || "untyped")} | pos ${esc(chosenDescriptor.action_position ?? "-")} | ${esc(chosenDescriptor.card_name || chosenDescriptor.project_name || chosenDescriptor.award_name || chosenDescriptor.milestone_name || "")}</div>
         <pre class="mono">${esc(JSON.stringify(policy.chosen_action_payload || {}, null, 2))}</pre>
       `;
 
       const auxPred = (aux.predictions || {});
+      const topMilestones = (auxPred.top_milestone_predictions || []).slice(0, 5).map((row) => `${row.name || `#${row.index}`}:${fmt(row.value, 3)}`).join(", ");
+      const topAwards = (auxPred.top_award_ev_predictions || []).slice(0, 5).map((row) => `${row.name || `#${row.index}`}:${fmt(row.value, 3)}`).join(", ");
+      const topOpportunities = (auxPred.top_board_opportunity_predictions || []).slice(0, 4).map((row) => `#${row.index}:${fmt(row.value, 3)} deny ${fmt(row.deny_risk, 3)}`).join(", ");
       renderKV(document.getElementById("auxSignals"), [
-        ["Award EV", fmt(auxPred.award_ev, 4)],
-        ["Playable cards", fmt(auxPred.playable_cards, 4)],
-        ["Steel target", fmt(auxPred.steel_target, 4)],
-        ["Titanium target", fmt(auxPred.titanium_target, 4)],
-        ["Top milestone preds", (auxPred.top_milestone_predictions || []).slice(0, 5).map((row) => `#${row.index}:${fmt(row.value, 3)}`).join(", ") || "none"],
+        ["Carry save plants", fmt(auxPred.carry_save_plants_value, 4)],
+        ["Carry save heat", fmt(auxPred.carry_save_heat_value, 4)],
+        ["Next-turn combo", fmt(auxPred.next_turn_combo_value, 4)],
+        ["Next-generation combo", fmt(auxPred.next_generation_combo_value, 4)],
+        ["Top milestone claim-now", topMilestones || "none"],
+        ["Top award EV", topAwards || fmt(auxPred.award_ev, 4)],
+        ["Top board opportunities", topOpportunities || "none"],
       ]);
 
       const ranking = Array.isArray(policy.action_rankings) ? policy.action_rankings : [];
@@ -436,7 +445,7 @@
             ${ranking.map((row, idx) => `
               <tr>
                 <td>${idx + 1}</td>
-                <td><span class="mono">${esc(row.label || "")}</span></td>
+                <td><span class="mono">${esc(row.label || "")}</span><div class="subtle">${esc(row.family || "untyped")} | pos ${esc(row.action_position ?? "-")}</div></td>
                 <td>${fmt(row.masked_probability, 4)}</td>
                 <td>${fmt(row.raw_probability, 4)}</td>
                 <td>${fmt(row.logit, 4)}</td>

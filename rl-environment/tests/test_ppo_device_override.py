@@ -147,3 +147,45 @@ def test_ppo_reports_grouped_planner_aux_metrics() -> None:
     assert "ppo/aux_mse_award_fund_now_ev" in metrics
     assert "ppo/aux_mse_board_opportunity_value" in metrics
     assert "ppo/aux_mae_deny_risk" in metrics
+
+
+def test_ppo_pads_planner_bundles_per_minibatch(monkeypatch) -> None:
+    network = _TinyNet()
+    optimizer = torch.optim.Adam(network.parameters(), lr=1e-3)
+    call_sizes: list[int] = []
+
+    from models import ppo as ppo_module
+    original_pad_bundle_batch = ppo_module.pad_bundle_batch
+
+    def _recording_pad_bundle_batch(raw_bundles, device):
+        call_sizes.append(len(raw_bundles))
+        return original_pad_bundle_batch(raw_bundles, device)
+
+    monkeypatch.setattr(ppo_module, "pad_bundle_batch", _recording_pad_bundle_batch)
+
+    steps = [
+        PPORolloutStep(
+            state_bundle=_planner_bundle(),
+            action=0,
+            logp_old=0.0,
+            value_old=0.0,
+            reward=0.0,
+            done=False,
+            legal_actions=[0, 1, 2],
+            phase_index=0,
+            aux_targets=torch.zeros(1, dtype=torch.float32).numpy(),
+        )
+        for _ in range(5)
+    ]
+    ppo = PPOHyperParameters(epochs=1, minibatch_size=2)
+
+    optimize_ppo_policy(
+        network=network,
+        optimizer=optimizer,
+        steps=steps,
+        ppo=ppo,
+        ppo_device_override=torch.device("cpu"),
+    )
+
+    assert call_sizes
+    assert max(call_sizes) <= 2

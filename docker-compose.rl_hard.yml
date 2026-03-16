@@ -208,7 +208,8 @@ services:
       - AGENT_INFERENCE_DEVICE=cpu
       - PPO_DEVICE=cuda
       - PPO_PARALLEL_AGENTS=1
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - PPO_CUDA_MIN_FREE_MB=1024
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128
       
       # Planner architecture (policy_mars.md)
       # Token-budget knobs for StateEncoder bundle construction.
@@ -218,10 +219,11 @@ services:
       - AGENT_HAND_TOKEN_COUNT=64
       - AGENT_OPPONENT_TOKEN_COUNT=6
       # Planner policy/value network.
-      - AGENT_HIDDEN_SIZE=1024
+      # Laptop RTX 3060-safe preset: smaller hidden width and PPO batches.
+      - AGENT_HIDDEN_SIZE=768
       - AGENT_RECURRENT_SIZE=128
       - AGENT_PHASE_HEAD_COUNT=6
-      - AGENT_TRANSFORMER_HEADS=16
+      - AGENT_TRANSFORMER_HEADS=12
       - AGENT_TRANSFORMER_LAYERS=4
       - AGENT_TRANSFORMER_DROPOUT=0.10
       - AGENT_PLANNER_AUX_OUTPUT_DIM=280
@@ -242,10 +244,10 @@ services:
       
       # PPO Core
       - PPO_ENABLE=true
-      - PPO_ROLLOUT_STEPS=65536
+      - PPO_ROLLOUT_STEPS=32768
       - PPO_MIN_STEPS_PER_AGENT=1024
-      - PPO_EPOCHS=10
-      - PPO_MINIBATCH_SIZE=2048
+      - PPO_EPOCHS=8
+      - PPO_MINIBATCH_SIZE=512
       - PPO_ENTROPY_COEF=0.015
       - PPO_VALUE_COEF=1.0
       - PPO_TARGET_KL=0.020
@@ -302,7 +304,7 @@ services:
       - TRAINING_POOL_GENERATION_WINDOW=10
       - TRAINING_POOL_GAMES_PER_AGENT=0
       
-      - FIXED_BENCHMARK_INTERVAL=1
+      - FIXED_BENCHMARK_INTERVAL=3
       
       # System
       - MIN_EVAL_COMPLETION_RATIO=0.80

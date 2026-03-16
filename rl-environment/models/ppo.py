@@ -266,6 +266,45 @@ def _slice_bundle_batch(batch: Dict[str, torch.Tensor], batch_idx: torch.Tensor)
     }
 
 
+def _move_bundle_batch_to_device(
+    batch: Dict[str, torch.Tensor],
+    device: torch.device,
+) -> Dict[str, torch.Tensor]:
+    return {
+        key: value.to(device)
+        for key, value in batch.items()
+    }
+
+
+def _predict_values_in_chunks(
+    network: torch.nn.Module,
+    steps: Sequence[PPORolloutStep],
+    phase_indices: torch.Tensor,
+    recurrent_states: Optional[torch.Tensor],
+    device: torch.device,
+    chunk_size: int,
+) -> torch.Tensor:
+    total_rows = int(phase_indices.shape[0])
+    if total_rows <= 0:
+        return torch.zeros((0,), dtype=torch.float32)
+
+    outputs: List[torch.Tensor] = []
+    for start in range(0, total_rows, max(1, int(chunk_size))):
+        stop = min(total_rows, start + max(1, int(chunk_size)))
+        batch_steps = steps[start:stop]
+        batch_states = pad_bundle_batch([step.state_bundle for step in batch_steps], device)
+        batch_phase_indices = phase_indices[start:stop].to(device)
+        batch_recurrent_states = recurrent_states[start:stop].to(device) if recurrent_states is not None else None
+        out = _forward_network(
+            network,
+            batch_states,
+            phase_indices=batch_phase_indices,
+            recurrent_state=batch_recurrent_states,
+        )
+        outputs.append(out["value"].squeeze(-1).detach().cpu())
+    return torch.cat(outputs, dim=0)
+
+
 def _build_rare_state_payload(steps: Sequence[PPORolloutStep]) -> Dict[str, torch.Tensor]:
     weights = torch.ones((len(steps),), dtype=torch.float32)
     tags = torch.zeros((len(steps), 4), dtype=torch.float32)
@@ -375,56 +414,53 @@ def optimize_ppo_policy(
                 if isinstance(v, torch.Tensor):
                     st[k] = v.to(dev)
 
-    def _prepare_data(dev: torch.device) -> tuple:
-        """Build all training tensors on *dev*. Returns (sample action_dim, data dict)."""
-        _states = pad_bundle_batch([step.state_bundle for step in steps], dev)
-        _action_dim = int(_states["action_tokens"].shape[1])
-        _actions = torch.tensor([int(step.action) for step in steps], dtype=torch.long).to(dev)
-        _old_log_probs = torch.tensor([float(step.logp_old) for step in steps], dtype=torch.float32).to(dev)
-        _old_values = torch.tensor([float(step.value_old) for step in steps], dtype=torch.float32).to(dev)
-        _rewards = torch.tensor([float(step.reward) for step in steps], dtype=torch.float32).to(dev)
-        _dones = torch.tensor([1.0 if bool(step.done) else 0.0 for step in steps], dtype=torch.float32).to(dev)
-        _phase_indices = torch.tensor([int(getattr(step, "phase_index", 0)) for step in steps], dtype=torch.long).to(dev)
+    def _prepare_data(dev: torch.device) -> Dict[str, Any]:
+        """Build scalar training tensors on *dev*; planner bundles stay as raw step payloads."""
+        _actions = torch.tensor([int(step.action) for step in steps], dtype=torch.long, device=dev)
+        _old_log_probs = torch.tensor([float(step.logp_old) for step in steps], dtype=torch.float32, device=dev)
+        _old_values = torch.tensor([float(step.value_old) for step in steps], dtype=torch.float32, device=dev)
+        _rewards = torch.tensor([float(step.reward) for step in steps], dtype=torch.float32, device=dev)
+        _dones = torch.tensor([1.0 if bool(step.done) else 0.0 for step in steps], dtype=torch.float32, device=dev)
+        _phase_indices = torch.tensor([int(getattr(step, "phase_index", 0)) for step in steps], dtype=torch.long, device=dev)
         _recurrent_states = _build_recurrent_state_batch(steps, default_dim=int(getattr(network, "recurrent_size", 0)))
         if _recurrent_states is not None:
             _recurrent_states = _recurrent_states.to(dev)
         _aux_targets = _build_aux_target_batch(steps).to(dev)
-        _legal_masks = _states["action_mask"].to(dev)
         _rare_payload = _build_rare_state_payload(steps)
         _rare_payload = {k: v.to(dev) if isinstance(v, torch.Tensor) else v for k, v in _rare_payload.items()}
-        return _action_dim, {
-            "states": _states, "actions": _actions, "old_log_probs": _old_log_probs,
-            "old_values": _old_values, "rewards": _rewards, "dones": _dones,
-            "phase_indices": _phase_indices, "recurrent_states": _recurrent_states,
-            "aux_targets": _aux_targets, "legal_masks": _legal_masks,
+        return {
+            "actions": _actions,
+            "old_log_probs": _old_log_probs,
+            "old_values": _old_values,
+            "rewards": _rewards,
+            "dones": _dones,
+            "phase_indices": _phase_indices,
+            "recurrent_states": _recurrent_states,
+            "aux_targets": _aux_targets,
             "rare_payload": _rare_payload,
         }
 
     if next(network.parameters()).device != device:
         _move_network_to(device)
 
-    if device.type != "cpu":
-        try:
-            _ppo_logger.info("PPO training on device=%s (%d steps)", device, len(steps))
-            action_dim, _d = _prepare_data(device)
-        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
-            _ppo_logger.warning(
-                "CUDA OOM during PPO data preparation (%s). Clearing cache and falling back to CPU.",
-                e,
+    storage_device = torch.device("cpu") if device.type != "cpu" else device
+    try:
+        if device.type != "cpu":
+            _ppo_logger.info(
+                "PPO training on device=%s with scalar rollout storage on %s and planner bundles minibatched lazily (%d steps)",
+                device,
+                storage_device,
+                len(steps),
             )
-            torch.cuda.empty_cache()
+        _d = _prepare_data(storage_device)
+    except Exception as e:
+        if device.type != "cpu":
+            _ppo_logger.warning("Failed to prepare PPO data on %s: %s. Falling back to CPU training.", storage_device, e)
             device = torch.device("cpu")
+            storage_device = device
             _move_network_to(device)
-            action_dim, _d = _prepare_data(device)
-        except Exception as e:
-            _ppo_logger.warning("Failed to move network/data to %s, falling back to CPU: %s", device, e)
-            device = torch.device("cpu")
-            _move_network_to(device)
-            action_dim, _d = _prepare_data(device)
-    else:
-        action_dim, _d = _prepare_data(device)
+        _d = _prepare_data(storage_device)
 
-    states = _d["states"]
     actions = _d["actions"]
     old_log_probs = _d["old_log_probs"]
     old_values = _d["old_values"]
@@ -433,7 +469,6 @@ def optimize_ppo_policy(
     phase_indices = _d["phase_indices"]
     recurrent_states = _d["recurrent_states"]
     aux_targets = _d["aux_targets"]
-    legal_masks = _d["legal_masks"]
     rare_payload = _d["rare_payload"]
     reward_components = _build_reward_component_batch(steps)
 
@@ -490,16 +525,17 @@ def optimize_ppo_policy(
             indices = torch.randperm(len(steps))
         for start in range(0, len(steps), minibatch_size):
             batch_idx = indices[start:start + minibatch_size]
-            batch_states = _slice_bundle_batch(states, batch_idx)
-            batch_actions = actions[batch_idx]
-            batch_old_log_probs = old_log_probs[batch_idx]
-            batch_old_values = old_values[batch_idx]
-            batch_advantages = advantages[batch_idx]
-            batch_returns = returns[batch_idx]
-            batch_legal_masks = legal_masks[batch_idx]
-            batch_phase_indices = phase_indices[batch_idx]
-            batch_recurrent_states = recurrent_states[batch_idx] if recurrent_states is not None else None
-            batch_aux_targets = aux_targets[batch_idx]
+            batch_steps = [steps[int(i)] for i in batch_idx.tolist()]
+            batch_states = pad_bundle_batch([step.state_bundle for step in batch_steps], device)
+            batch_actions = actions[batch_idx].to(device)
+            batch_old_log_probs = old_log_probs[batch_idx].to(device)
+            batch_old_values = old_values[batch_idx].to(device)
+            batch_advantages = advantages[batch_idx].to(device)
+            batch_returns = returns[batch_idx].to(device)
+            batch_legal_masks = batch_states["action_mask"]
+            batch_phase_indices = phase_indices[batch_idx].to(device)
+            batch_recurrent_states = recurrent_states[batch_idx].to(device) if recurrent_states is not None else None
+            batch_aux_targets = aux_targets[batch_idx].to(device)
             batch_rare_any = rare_payload["rare_any"][batch_idx]
             batch_rare_award = rare_payload["award_funding"][batch_idx]
             batch_rare_milestone = rare_payload["milestone_timing"][batch_idx]
@@ -595,14 +631,14 @@ def optimize_ppo_policy(
     network.eval()
 
     with torch.no_grad():
-        latest_out = _forward_network(
-            network,
-            states,
+        value_preds = _predict_values_in_chunks(
+            network=network,
+            steps=steps,
             phase_indices=phase_indices,
-            recurrent_state=recurrent_states,
+            recurrent_states=recurrent_states,
+            device=device,
+            chunk_size=minibatch_size,
         )
-        value_preds = latest_out["value"]
-        value_preds = value_preds.squeeze(-1)
         variance_returns = torch.var(returns)
         if float(variance_returns.item()) > 1e-8:
             explained_variance = 1.0 - (torch.var(returns - value_preds) / variance_returns)

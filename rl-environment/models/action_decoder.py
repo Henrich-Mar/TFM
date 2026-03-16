@@ -10,7 +10,7 @@ import json
 import itertools
 
 from .rust_backend import get_rust_module
-from .planner_common import PLANNER_TOKEN_DIM, token_from_features
+from .planner_common import PlannerConfig, token_from_features
 
 logger = logging.getLogger(__name__)
 
@@ -2513,7 +2513,8 @@ def _can_afford_card(player: Dict[str, Any], card: Dict[str, Any]) -> bool:
     return bool(_can_afford_cards_batch(player, [payload_card])[0])
 
 class ActionDecoder:
-    def __init__(self):
+    def __init__(self, planner_config: Optional[PlannerConfig] = None):
+        self.planner_config = planner_config or PlannerConfig()
         # Action space mapping
         self.action_types = {
             'PLAY_CARD': 0,
@@ -2806,7 +2807,7 @@ class ActionDecoder:
             1.0 if 'milestone' in label_l else 0.0,
             1.0 if 'pass' in label_l else 0.0,
         ])
-        return token_from_features(type_id=8, features=features, feature_dim=PLANNER_TOKEN_DIM)
+        return token_from_features(type_id=8, features=features, planner_config=self.planner_config)
 
     def _build_action_descriptor(
         self,

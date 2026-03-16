@@ -34,11 +34,7 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
 from models.agent import AgentConfig, TerraformingMarsNetwork  # noqa: E402
-from models.planner_common import (  # noqa: E402
-    PLANNER_GLOBAL_DIM,
-    PLANNER_TOKEN_DIM,
-    pad_bundle_batch,
-)
+from models.planner_common import PlannerConfig, pad_bundle_batch  # noqa: E402
 from models.ppo import (  # noqa: E402
     PPOHyperParameters,
     PPORolloutStep,
@@ -162,16 +158,16 @@ def build_agent_config() -> AgentConfig:
     """Build AgentConfig from environment variables, same as the coordinator."""
     return AgentConfig.from_env(
         AgentConfig(
-            state_size=3072,
             hidden_size=1024,
-            num_layers=8,
             recurrent_size=128,
             phase_head_count=6,
-            card_token_dim=20,
-            tableau_token_count=8,
-            hand_token_count=64,
-            opponent_token_count=6,
-            transformer_embed_dim=256,
+            planner_token_dim=64,
+            planner_global_dim=16,
+            planner_type_vocab_size=16,
+            planner_opportunity_limit=12,
+            planner_tableau_limit=24,
+            planner_hand_limit=24,
+            planner_opponent_limit=4,
             transformer_heads=16,
             transformer_layers=4,
         )
@@ -196,20 +192,24 @@ def _sync_cuda():
         torch.cuda.synchronize()
 
 
-def _synthetic_bundle(rng: np.random.RandomState, action_count: int = 12) -> Dict[str, np.ndarray]:
+def _synthetic_bundle(
+    rng: np.random.RandomState,
+    planner_config: PlannerConfig,
+    action_count: int = 12,
+) -> Dict[str, np.ndarray]:
     world_count = int(rng.randint(8, 20))
     hand_count = int(rng.randint(2, 8))
     return {
-        "world_tokens": rng.randn(world_count, PLANNER_TOKEN_DIM).astype(np.float32),
+        "world_tokens": rng.randn(world_count, planner_config.token_dim).astype(np.float32),
         "world_token_types": rng.randint(1, 9, size=(world_count,), dtype=np.int64),
         "world_mask": np.ones((world_count,), dtype=np.bool_),
-        "hand_tokens": rng.randn(hand_count, PLANNER_TOKEN_DIM).astype(np.float32),
+        "hand_tokens": rng.randn(hand_count, planner_config.token_dim).astype(np.float32),
         "hand_mask": np.ones((hand_count,), dtype=np.bool_),
-        "action_tokens": rng.randn(action_count, PLANNER_TOKEN_DIM).astype(np.float32),
+        "action_tokens": rng.randn(action_count, planner_config.token_dim).astype(np.float32),
         "action_mask": np.ones((action_count,), dtype=np.bool_),
         "action_indices": np.arange(action_count, dtype=np.int64),
         "action_positions": np.arange(action_count, dtype=np.int64),
-        "global_scalars": rng.randn(PLANNER_GLOBAL_DIM).astype(np.float32),
+        "global_scalars": rng.randn(planner_config.global_dim).astype(np.float32),
     }
 
 
@@ -222,12 +222,13 @@ def benchmark_inference(
 ) -> List[InferenceResult]:
     """Benchmark forward-pass latency at different batch sizes."""
     network = TerraformingMarsNetwork(config).to(device).eval()
+    planner_config = config.planner_config()
     results: List[InferenceResult] = []
     rng = np.random.RandomState(7)
 
     for bs in batch_sizes:
-        bundles = [_synthetic_bundle(rng) for _ in range(bs)]
-        states = pad_bundle_batch(bundles, device)
+        bundles = [_synthetic_bundle(rng, planner_config) for _ in range(bs)]
+        states = pad_bundle_batch(bundles, device, planner_config=planner_config)
         phase_idx = torch.randint(0, config.phase_head_count, (bs,), device=device)
         recurrent = torch.zeros(bs, config.recurrent_size, device=device)
 
@@ -308,6 +309,7 @@ class PPOTrainingResult:
 def _generate_synthetic_rollout(
     count: int,
     planner_aux_dim: int,
+    planner_config: PlannerConfig,
     action_dim: int = 16,
 ) -> List[PPORolloutStep]:
     """Create synthetic rollout data for benchmarking."""
@@ -317,7 +319,7 @@ def _generate_synthetic_rollout(
         num_legal = rng.randint(2, 20)
         num_legal = min(num_legal, action_dim)
         legal_positions = sorted(rng.choice(action_dim, size=num_legal, replace=False).tolist())
-        state_bundle = _synthetic_bundle(rng, action_count=action_dim)
+        state_bundle = _synthetic_bundle(rng, planner_config, action_count=action_dim)
         state_bundle["action_mask"][:] = False
         state_bundle["action_mask"][legal_positions] = True
         action_pos = int(rng.randint(0, num_legal))
@@ -348,7 +350,11 @@ def benchmark_ppo_training(
     results: List[PPOTrainingResult] = []
 
     print(f"\n  Generating {rollout_steps} synthetic rollout steps...")
-    synthetic_steps = _generate_synthetic_rollout(rollout_steps, int(config.planner_aux_output_dim))
+    synthetic_steps = _generate_synthetic_rollout(
+        rollout_steps,
+        int(config.planner_aux_output_dim),
+        config.planner_config(),
+    )
 
     for mbs in minibatch_sizes:
         print(f"  Benchmarking minibatch_size={mbs}...", end="", flush=True)
@@ -655,13 +661,11 @@ def main() -> int:
     # 2. Build model config
     config = build_agent_config()
     print(_header("MODEL CONFIG"))
-    print(_kv("state_size", config.state_size))
     print(_kv("hidden_size", config.hidden_size))
-    print(_kv("num_layers", config.num_layers))
-    print(_kv("transformer", f"{config.transformer_embed_dim}d, "
-              f"{config.transformer_heads}h, {config.transformer_layers}L"))
-    print(_kv("card tokens", f"{config.tableau_token_count}+{config.hand_token_count}"
-              f"+{config.opponent_token_count} × {config.card_token_dim}d"))
+    print(_kv("transformer", f"{config.transformer_heads}h, {config.transformer_layers}L"))
+    print(_kv("planner tokens", f"{config.planner_token_dim}d / globals {config.planner_global_dim}d"))
+    print(_kv("planner limits", f"tableau={config.planner_tableau_limit}, hand={config.planner_hand_limit}, "
+              f"opponents={config.planner_opponent_limit}, opportunities={config.planner_opportunity_limit}"))
 
     # Count parameters
     tmp_net = TerraformingMarsNetwork(config)

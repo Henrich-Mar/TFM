@@ -89,11 +89,13 @@ def _log_agent_metadata(agent: RLAgent):
     # Agent configuration
     print(f"\n[Agent Configuration]")
     print(f"  Agent ID: {agent.id[:8]}...")
-    print(f"  State size: {agent.config.state_size}")
     print(f"  Hidden size: {agent.config.hidden_size}")
-    print(f"  Number of layers: {agent.config.num_layers}")
     print(f"  Recurrent size: {agent.config.recurrent_size}")
     print(f"  Phase head count: {agent.config.phase_head_count}")
+    print(f"  Planner token dim: {agent.config.planner_token_dim}")
+    print(f"  Planner global dim: {agent.config.planner_global_dim}")
+    print(f"  Planner limits: tableau={agent.config.planner_tableau_limit}, hand={agent.config.planner_hand_limit}, "
+          f"opponents={agent.config.planner_opponent_limit}, opportunities={agent.config.planner_opportunity_limit}")
     print(f"  Learning rate: {agent.config.learning_rate}")
     print(f"  Temperature: {agent.config.temperature}")
     print(f"  Epsilon: {agent.config.epsilon}")

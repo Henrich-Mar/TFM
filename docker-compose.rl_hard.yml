@@ -212,12 +212,14 @@ services:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128
       
       # Planner architecture (policy_mars.md)
-      # Token-budget knobs for StateEncoder bundle construction.
-      - AGENT_STATE_SIZE=3072
-      - AGENT_CARD_TOKEN_DIM=20
-      - AGENT_TABLEAU_TOKEN_COUNT=8
-      - AGENT_HAND_TOKEN_COUNT=64
-      - AGENT_OPPONENT_TOKEN_COUNT=6
+      # Planner bundle construction.
+      - AGENT_PLANNER_TOKEN_DIM=64
+      - AGENT_PLANNER_GLOBAL_DIM=16
+      - AGENT_PLANNER_TYPE_VOCAB_SIZE=16
+      - AGENT_PLANNER_OPPORTUNITY_LIMIT=12
+      - AGENT_PLANNER_TABLEAU_LIMIT=24
+      - AGENT_PLANNER_HAND_LIMIT=24
+      - AGENT_PLANNER_OPPONENT_LIMIT=4
       # Planner policy/value network.
       # Laptop RTX 3060-safe preset: smaller hidden width and PPO batches.
       - AGENT_HIDDEN_SIZE=768
@@ -227,10 +229,6 @@ services:
       - AGENT_TRANSFORMER_LAYERS=4
       - AGENT_TRANSFORMER_DROPOUT=0.10
       - AGENT_PLANNER_AUX_OUTPUT_DIM=280
-      # Compatibility-only config fields still included in architecture matching.
-      - AGENT_TRANSFORMER_ENABLED=1
-      - AGENT_NUM_LAYERS=8
-      - AGENT_TRANSFORMER_EMBED_DIM=256
       
       # Scoring Mode
       - SCORING_MODE=HARD

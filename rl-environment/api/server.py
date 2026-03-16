@@ -305,7 +305,7 @@ def _aggregate_transformer_live_stats(population: List[Any]) -> Dict[str, Any]:
 
     for agent in population:
         cfg = getattr(agent, "config", None)
-        if bool(getattr(cfg, "transformer_enabled", False)):
+        if cfg is not None:
             config_enabled_agents += 1
 
         network = getattr(agent, "network", None)

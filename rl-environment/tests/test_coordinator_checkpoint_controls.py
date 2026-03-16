@@ -82,16 +82,16 @@ def test_filter_matching_architecture_checkpoints_excludes_mismatched_generation
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AGENT_STATE_SIZE", "3072")
     monkeypatch.setenv("AGENT_HIDDEN_SIZE", "1024")
-    monkeypatch.setenv("AGENT_NUM_LAYERS", "8")
     monkeypatch.setenv("AGENT_RECURRENT_SIZE", "128")
     monkeypatch.setenv("AGENT_PHASE_HEAD_COUNT", "6")
-    monkeypatch.setenv("AGENT_CARD_TOKEN_DIM", "20")
-    monkeypatch.setenv("AGENT_TABLEAU_TOKEN_COUNT", "8")
-    monkeypatch.setenv("AGENT_HAND_TOKEN_COUNT", "64")
-    monkeypatch.setenv("AGENT_OPPONENT_TOKEN_COUNT", "6")
-    monkeypatch.setenv("AGENT_TRANSFORMER_EMBED_DIM", "256")
+    monkeypatch.setenv("AGENT_PLANNER_TOKEN_DIM", "80")
+    monkeypatch.setenv("AGENT_PLANNER_GLOBAL_DIM", "24")
+    monkeypatch.setenv("AGENT_PLANNER_TYPE_VOCAB_SIZE", "24")
+    monkeypatch.setenv("AGENT_PLANNER_OPPORTUNITY_LIMIT", "10")
+    monkeypatch.setenv("AGENT_PLANNER_TABLEAU_LIMIT", "8")
+    monkeypatch.setenv("AGENT_PLANNER_HAND_LIMIT", "64")
+    monkeypatch.setenv("AGENT_PLANNER_OPPONENT_LIMIT", "6")
     monkeypatch.setenv("AGENT_TRANSFORMER_HEADS", "16")
     monkeypatch.setenv("AGENT_TRANSFORMER_LAYERS", "4")
 
@@ -99,7 +99,7 @@ def test_filter_matching_architecture_checkpoints_excludes_mismatched_generation
     mismatched = tmp_path / "generation_2" / "agent_0_fitness_90.00.pth"
     expected_config = coordinator_module.RLAgent.build_env_config().architecture_dict()
     mismatched_config = dict(expected_config)
-    mismatched_config["transformer_embed_dim"] = 64
+    mismatched_config["planner_token_dim"] = 64
     mismatched_config["transformer_heads"] = 4
     mismatched_config["transformer_layers"] = 2
     _write_generation_checkpoint(matching, expected_config)

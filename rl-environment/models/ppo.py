@@ -289,10 +289,15 @@ def _predict_values_in_chunks(
         return torch.zeros((0,), dtype=torch.float32)
 
     outputs: List[torch.Tensor] = []
+    planner_config = getattr(network, "planner_config", None)
     for start in range(0, total_rows, max(1, int(chunk_size))):
         stop = min(total_rows, start + max(1, int(chunk_size)))
         batch_steps = steps[start:stop]
-        batch_states = pad_bundle_batch([step.state_bundle for step in batch_steps], device)
+        batch_states = pad_bundle_batch(
+            [step.state_bundle for step in batch_steps],
+            device,
+            planner_config=planner_config,
+        )
         batch_phase_indices = phase_indices[start:stop].to(device)
         batch_recurrent_states = recurrent_states[start:stop].to(device) if recurrent_states is not None else None
         out = _forward_network(
@@ -518,6 +523,7 @@ def optimize_ppo_policy(
     early_stopped = False
 
     network.train()
+    planner_config = getattr(network, "planner_config", None)
     for _epoch in range(max(1, int(ppo.epochs))):
         if rare_priority_enabled and len(steps) > 1:
             indices = torch.multinomial(rare_sample_weights, num_samples=len(steps), replacement=True)
@@ -526,7 +532,11 @@ def optimize_ppo_policy(
         for start in range(0, len(steps), minibatch_size):
             batch_idx = indices[start:start + minibatch_size]
             batch_steps = [steps[int(i)] for i in batch_idx.tolist()]
-            batch_states = pad_bundle_batch([step.state_bundle for step in batch_steps], device)
+            batch_states = pad_bundle_batch(
+                [step.state_bundle for step in batch_steps],
+                device,
+                planner_config=planner_config,
+            )
             batch_actions = actions[batch_idx].to(device)
             batch_old_log_probs = old_log_probs[batch_idx].to(device)
             batch_old_values = old_values[batch_idx].to(device)

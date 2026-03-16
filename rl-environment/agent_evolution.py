@@ -69,9 +69,7 @@ class EvolutionManager:
         for i in range(population_size):
             # Create diverse initial configurations
             config = AgentConfig(
-                state_size=int(default_config.state_size),
                 hidden_size=int(default_config.hidden_size),
-                num_layers=int(default_config.num_layers),
                 recurrent_size=int(default_config.recurrent_size),
                 phase_head_count=int(default_config.phase_head_count),
                 learning_rate=random.uniform(1e-5, 1e-3),
@@ -84,12 +82,13 @@ class EvolutionManager:
                     max(self.temperature_init_min, self.temperature_init_max),
                 ),
                 max_thinking_time=random.uniform(1.0, 10.0),
-                transformer_enabled=bool(default_config.transformer_enabled),
-                card_token_dim=int(default_config.card_token_dim),
-                tableau_token_count=int(default_config.tableau_token_count),
-                hand_token_count=int(default_config.hand_token_count),
-                opponent_token_count=int(default_config.opponent_token_count),
-                transformer_embed_dim=int(default_config.transformer_embed_dim),
+                planner_token_dim=int(default_config.planner_token_dim),
+                planner_global_dim=int(default_config.planner_global_dim),
+                planner_type_vocab_size=int(default_config.planner_type_vocab_size),
+                planner_opportunity_limit=int(default_config.planner_opportunity_limit),
+                planner_tableau_limit=int(default_config.planner_tableau_limit),
+                planner_hand_limit=int(default_config.planner_hand_limit),
+                planner_opponent_limit=int(default_config.planner_opponent_limit),
                 transformer_heads=int(default_config.transformer_heads),
                 transformer_layers=int(default_config.transformer_layers),
                 transformer_dropout=float(default_config.transformer_dropout),
@@ -490,9 +489,19 @@ class EvolutionManager:
                 # Create new random agent
                 default_config = AgentConfig()
                 config = AgentConfig(
-                    state_size=self._safe_env_int("AGENT_STATE_SIZE", int(default_config.state_size)),
                     hidden_size=self._safe_env_int("AGENT_HIDDEN_SIZE", int(default_config.hidden_size)),
-                    num_layers=self._safe_env_int("AGENT_NUM_LAYERS", int(default_config.num_layers)),
+                    recurrent_size=self._safe_env_int("AGENT_RECURRENT_SIZE", int(default_config.recurrent_size)),
+                    phase_head_count=self._safe_env_int("AGENT_PHASE_HEAD_COUNT", int(default_config.phase_head_count)),
+                    planner_token_dim=self._safe_env_int("AGENT_PLANNER_TOKEN_DIM", int(default_config.planner_token_dim)),
+                    planner_global_dim=self._safe_env_int("AGENT_PLANNER_GLOBAL_DIM", int(default_config.planner_global_dim)),
+                    planner_type_vocab_size=self._safe_env_int("AGENT_PLANNER_TYPE_VOCAB_SIZE", int(default_config.planner_type_vocab_size)),
+                    planner_opportunity_limit=self._safe_env_int("AGENT_PLANNER_OPPORTUNITY_LIMIT", int(default_config.planner_opportunity_limit)),
+                    planner_tableau_limit=self._safe_env_int("AGENT_PLANNER_TABLEAU_LIMIT", int(default_config.planner_tableau_limit)),
+                    planner_hand_limit=self._safe_env_int("AGENT_PLANNER_HAND_LIMIT", int(default_config.planner_hand_limit)),
+                    planner_opponent_limit=self._safe_env_int("AGENT_PLANNER_OPPONENT_LIMIT", int(default_config.planner_opponent_limit)),
+                    transformer_heads=self._safe_env_int("AGENT_TRANSFORMER_HEADS", int(default_config.transformer_heads)),
+                    transformer_layers=self._safe_env_int("AGENT_TRANSFORMER_LAYERS", int(default_config.transformer_layers)),
+                    transformer_dropout=float(os.getenv("AGENT_TRANSFORMER_DROPOUT", str(default_config.transformer_dropout))),
                     learning_rate=random.uniform(1e-5, 1e-3),
                     epsilon=random.uniform(
                         min(self.epsilon_init_min, self.epsilon_init_max),

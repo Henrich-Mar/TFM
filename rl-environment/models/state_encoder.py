@@ -10,9 +10,7 @@ import logging
 from .rust_backend import get_rust_module
 from .requirement_planning import RequirementPlanner
 from .planner_common import (
-    PLANNER_GLOBAL_DIM,
-    PLANNER_OPPORTUNITY_LIMIT,
-    PLANNER_TOKEN_DIM,
+    PlannerConfig,
     PlannerStateBundle,
     empty_bool_vector,
     empty_int_vector,
@@ -64,12 +62,6 @@ class StateEncoder:
         'Urbanist', 'Venuphile', 'Visionary', 'Voyager', 'Warmonger',
         'Zoologist',
     ]
-
-    # Transformer card-token layout encoded inside the tail of the fixed-size state vector.
-    _DEFAULT_CARD_TOKEN_DIM = 20
-    _DEFAULT_TABLEAU_TOKEN_COUNT = 8
-    _DEFAULT_HAND_TOKEN_COUNT = 64
-    _DEFAULT_OPPONENT_TOKEN_COUNT = 6
     _RUST_BASE_FEATURE_COUNT = 32
     _GAME_PHASE_FEATURE_COUNT = 10
     _ACTION_CONTEXT_FEATURE_COUNT = 50
@@ -84,24 +76,16 @@ class StateEncoder:
 
     def __init__(
         self,
-        state_size: int = 1024,
-        card_token_dim: int = _DEFAULT_CARD_TOKEN_DIM,
-        tableau_token_count: int = _DEFAULT_TABLEAU_TOKEN_COUNT,
-        hand_token_count: int = _DEFAULT_HAND_TOKEN_COUNT,
-        opponent_token_count: int = _DEFAULT_OPPONENT_TOKEN_COUNT,
+        planner_config: Optional[PlannerConfig] = None,
     ):
-        self.state_size = state_size
-        self.card_token_dim = max(1, int(card_token_dim))
-        self.tableau_token_count = max(0, int(tableau_token_count))
-        self.hand_token_count = max(0, int(hand_token_count))
-        self.opponent_token_count = max(0, int(opponent_token_count))
-        self.card_token_count = self.tableau_token_count + self.hand_token_count + self.opponent_token_count
-        self.card_token_vector_size = self.card_token_count * self.card_token_dim
-        if self.card_token_vector_size > int(self.state_size):
-            raise ValueError(
-                f"Card token vector size {self.card_token_vector_size} exceeds state_size {self.state_size}"
-            )
-        
+        self.planner_config = planner_config or PlannerConfig()
+        self.token_dim = int(self.planner_config.token_dim)
+        self.global_dim = int(self.planner_config.global_dim)
+        self.opportunity_limit = int(self.planner_config.opportunity_limit)
+        self.tableau_limit = int(self.planner_config.tableau_limit)
+        self.hand_limit = int(self.planner_config.hand_limit)
+        self.opponent_limit = int(self.planner_config.opponent_limit)
+
         # Load authoritative card metadata first; derive common_cards from it when available
         self.card_metadata_by_name: Dict[str, Dict[str, Any]] = self._load_card_metadata()
         self.requirement_planner = RequirementPlanner(self.card_metadata_by_name)
@@ -293,147 +277,6 @@ class StateEncoder:
                 total += 0.9 * amount
         return min(total, 6.0)
 
-    def _space_feature_layout(self) -> Tuple[int, int, int, int]:
-        prefix_limit = self._prefix_limit_before_card_tokens()
-        awards_start, _ = self._awards_feature_bounds()
-        if awards_start > 0:
-            prefix_limit = min(prefix_limit, int(awards_start))
-        start = max(
-            0,
-            min(
-                max(int(self._SPACE_FEATURE_BASE), int(self._dense_context_prefix_end())),
-                int(prefix_limit),
-            ),
-        )
-        if prefix_limit <= start:
-            return start, 0, start, start
-
-        usable = max(0, prefix_limit - start)
-        if usable < self._SPACE_SUMMARY_FEATURE_COUNT:
-            return start, 0, start, start
-
-        slot_count = min(
-            int(self._SPACE_CANDIDATE_SLOT_COUNT),
-            max(0, (usable - int(self._SPACE_SUMMARY_FEATURE_COUNT)) // int(self._SPACE_FEATURE_PLANES)),
-        )
-        if slot_count <= 0:
-            return start, 0, start, start
-
-        summary_start = start + (slot_count * int(self._SPACE_FEATURE_PLANES))
-        end = min(prefix_limit, summary_start + int(self._SPACE_SUMMARY_FEATURE_COUNT))
-        return start, slot_count, summary_start, end
-
-    def _prefix_limit_before_card_tokens(self) -> int:
-        prefix_limit = int(self.state_size)
-        card_start, _ = self._card_token_segment_bounds()
-        if card_start > 0:
-            prefix_limit = min(prefix_limit, int(card_start))
-        return max(0, int(prefix_limit))
-
-    def _dense_context_prefix_end(self) -> int:
-        base = min(int(self._RUST_BASE_FEATURE_COUNT), self._prefix_limit_before_card_tokens())
-        return int(
-            min(
-                self._prefix_limit_before_card_tokens(),
-                base
-                + int(self._GAME_PHASE_FEATURE_COUNT)
-                + int(self._ACTION_CONTEXT_FEATURE_COUNT)
-                + int(self._BOARD_STATE_FEATURE_COUNT)
-                + int(self._OPPONENT_STATE_FEATURE_COUNT),
-            )
-        )
-
-    def _awards_feature_bounds(self) -> Tuple[int, int]:
-        prefix_limit = self._prefix_limit_before_card_tokens()
-        dense_end = self._dense_context_prefix_end()
-        if prefix_limit <= dense_end:
-            return (dense_end, dense_end)
-        max_award_budget = max(
-            0,
-            prefix_limit - dense_end - int(self._MIN_SPACE_FEATURE_BUDGET),
-        )
-        award_budget = min(int(self._AWARDS_MILESTONES_FEATURE_COUNT), int(max_award_budget))
-        if award_budget <= 0:
-            return (dense_end, dense_end)
-        start = max(dense_end, prefix_limit - award_budget)
-        end = min(prefix_limit, start + award_budget)
-        return (int(start), int(end))
-
-    def _write_feature_block(
-        self,
-        state_vector: np.ndarray,
-        start: int,
-        values: List[float],
-        limit: Optional[int] = None,
-    ) -> int:
-        if not isinstance(state_vector, np.ndarray) or state_vector.ndim != 1:
-            return int(start)
-        start_idx = max(0, int(start))
-        end_limit = int(state_vector.shape[0]) if limit is None else max(0, int(limit))
-        if start_idx >= end_limit or not values:
-            return start_idx
-        write_len = min(len(values), max(0, end_limit - start_idx))
-        if write_len <= 0:
-            return start_idx
-        state_vector[start_idx:start_idx + write_len] = np.asarray(values[:write_len], dtype=np.float32)
-        return int(start_idx + write_len)
-
-    def _inject_dense_context_features(
-        self,
-        state_vector: np.ndarray,
-        player_state: Dict[str, Any],
-        turn_action_count: int,
-    ) -> None:
-        if not isinstance(state_vector, np.ndarray) or state_vector.ndim != 1:
-            return
-
-        prefix_limit = self._prefix_limit_before_card_tokens()
-        dense_start = min(int(self._RUST_BASE_FEATURE_COUNT), prefix_limit)
-        dense_end = self._dense_context_prefix_end()
-        if dense_end <= dense_start:
-            return
-
-        state_vector[dense_start:dense_end] = 0.0
-        game_state = player_state.get('game', {}) or {}
-        current_player = player_state.get('thisPlayer', {}) or {}
-        players = player_state.get('players', []) or []
-
-        cursor = dense_start
-        cursor = self._write_feature_block(
-            state_vector,
-            cursor,
-            self._encode_game_phase(game_state, turn_action_count),
-            dense_end,
-        )
-        cursor = self._write_feature_block(
-            state_vector,
-            cursor,
-            self._encode_action_context(player_state),
-            dense_end,
-        )
-        cursor = self._write_feature_block(
-            state_vector,
-            cursor,
-            self._encode_board_state(game_state, current_player),
-            dense_end,
-        )
-        self._write_feature_block(
-            state_vector,
-            cursor,
-            self._encode_opponents_state(players, current_player),
-            dense_end,
-        )
-
-        awards_start, awards_end = self._awards_feature_bounds()
-        if awards_end > awards_start:
-            state_vector[awards_start:awards_end] = 0.0
-            self._write_feature_block(
-                state_vector,
-                awards_start,
-                self._encode_awards_milestones(game_state, current_player),
-                awards_end,
-            )
-
     def _space_prompt_candidate_scores(
         self,
         candidate: Dict[str, Any],
@@ -520,108 +363,6 @@ class StateEncoder:
 
         return total_score, self_score, deny_score, risk_score
 
-    def _inject_space_prompt_features(self, state_vector: np.ndarray, player_state: Dict[str, Any]) -> None:
-        if not isinstance(state_vector, np.ndarray) or state_vector.ndim != 1:
-            return
-
-        start, slot_count, summary_start, end = self._space_feature_layout()
-        if slot_count <= 0 or end <= start:
-            return
-
-        state_vector[start:end] = 0.0
-
-        waiting_for = player_state.get('waitingFor', {}) or {}
-        waiting_type = str(waiting_for.get('type', '') or '').strip().lower()
-        if waiting_type not in ('space', 'selectspace'):
-            return
-
-        raw_spaces = waiting_for.get('availableSpaces', waiting_for.get('spaces', [])) or []
-        if not isinstance(raw_spaces, list) or not raw_spaces:
-            return
-
-        game_state = player_state.get('game', {}) or {}
-        board_spaces = self._all_board_spaces(game_state)
-        board_by_id = {
-            self._space_id(space): space
-            for space in board_spaces
-            if isinstance(space, dict) and self._space_id(space)
-        }
-        adjacency, coord_to_id, middle_row = self._build_board_adjacency_index(board_spaces)
-        own_color = str((player_state.get('thisPlayer', {}) or {}).get('color', '') or '').strip().lower()
-        intent = self._infer_space_prompt_intent(waiting_for)
-
-        totals: List[float] = []
-        self_scores: List[float] = []
-        deny_scores: List[float] = []
-        risk_scores: List[float] = []
-
-        for raw_space in raw_spaces[:slot_count]:
-            if isinstance(raw_space, dict):
-                sid = self._space_id(raw_space)
-                resolved = dict(board_by_id.get(sid, {}))
-                resolved.update(raw_space)
-            else:
-                sid = str(raw_space or '').strip()
-                resolved = dict(board_by_id.get(sid, {}))
-                if sid and 'id' not in resolved:
-                    resolved['id'] = sid
-            total_score, self_score, deny_score, risk_score = self._space_prompt_candidate_scores(
-                resolved,
-                board_by_id,
-                adjacency,
-                coord_to_id,
-                middle_row,
-                own_color,
-                intent,
-            )
-            totals.append(float(total_score))
-            self_scores.append(float(self_score))
-            deny_scores.append(float(deny_score))
-            risk_scores.append(float(risk_score))
-
-        total_plane = start
-        self_plane = start + slot_count
-        deny_plane = start + (2 * slot_count)
-        risk_plane = start + (3 * slot_count)
-
-        for idx, value in enumerate(totals):
-            state_vector[total_plane + idx] = value
-        for idx, value in enumerate(self_scores):
-            state_vector[self_plane + idx] = value
-        for idx, value in enumerate(deny_scores):
-            state_vector[deny_plane + idx] = value
-        for idx, value in enumerate(risk_scores):
-            state_vector[risk_plane + idx] = value
-
-        summary = np.zeros((int(self._SPACE_SUMMARY_FEATURE_COUNT),), dtype=np.float32)
-        if totals:
-            sorted_totals = sorted(totals, reverse=True)
-            risk_threshold = 0.35 if intent == 'greenery' else 0.45
-            summary[0] = 1.0
-            summary[1] = 1.0 if intent == 'city' else 0.0
-            summary[2] = 1.0 if intent == 'greenery' else 0.0
-            summary[3] = 1.0 if intent == 'ocean' else 0.0
-            summary[4] = 1.0 if intent == 'special' else 0.0
-            summary[5] = 1.0 if intent == 'unknown' else 0.0
-            summary[6] = min(len(totals) / max(1.0, float(slot_count)), 1.0)
-            summary[7] = float(max(totals))
-            summary[8] = float(sum(totals) / len(totals))
-            summary[9] = float(max(self_scores))
-            summary[10] = float(max(deny_scores))
-            summary[11] = float(max(risk_scores))
-            summary[12] = float(np.argmax(np.asarray(totals, dtype=np.float32)) / max(1.0, float(len(totals) - 1)))
-            summary[13] = float(sum(1 for value in risk_scores if value >= risk_threshold) / len(risk_scores))
-            summary[14] = float(sum(deny_scores) / len(deny_scores))
-            summary[15] = (
-                float(max(0.0, sorted_totals[0] - sorted_totals[1]))
-                if len(sorted_totals) > 1
-                else float(sorted_totals[0])
-            )
-
-        write_len = min(len(summary), max(0, end - summary_start))
-        if write_len > 0:
-            state_vector[summary_start:summary_start + write_len] = summary[:write_len]
-    
     def _get_common_cards(
         self, card_metadata: Optional[Dict[str, Dict[str, Any]]] = None
     ) -> List[str]:
@@ -654,7 +395,7 @@ class StateEncoder:
         world_types: List[int] = []
 
         def add_world(type_id: int, features: List[float]) -> None:
-            world_tokens.append(token_from_features(type_id=type_id, features=features, feature_dim=PLANNER_TOKEN_DIM))
+            world_tokens.append(token_from_features(type_id=type_id, features=features, planner_config=self.planner_config))
             world_types.append(int(type_id))
 
         resources = self._encode_player_resources(current_player)
@@ -688,7 +429,7 @@ class StateEncoder:
             min(float(sum(1 for milestone in (game_state.get('milestones', []) or []) if isinstance(milestone, dict) and (milestone.get('playerName') or milestone.get('playerColor')))) / 3.0, 1.0),
         ])
 
-        for opponent in players[:4]:
+        for opponent in players[:self.opponent_limit]:
             if opponent.get('id') == current_player.get('id'):
                 continue
             opp_vp = ((opponent.get('victoryPointsBreakdown', {}) or {}).get('total', 0) or 0)
@@ -703,11 +444,11 @@ class StateEncoder:
             add_world(6, self._award_token_features(game_state, current_player, award_name))
 
         opportunity_rows = self._collect_board_opportunity_rows(player_state)
-        for row in opportunity_rows[:PLANNER_OPPORTUNITY_LIMIT]:
+        for row in opportunity_rows[:self.opportunity_limit]:
             add_world(7, list(row))
 
         tableau_tokens: List[np.ndarray] = []
-        for card in (current_player.get('tableau', []) or [])[:24]:
+        for card in (current_player.get('tableau', []) or [])[:self.tableau_limit]:
             if not isinstance(card, dict):
                 continue
             tableau_tokens.append(self._card_token_features(card, player_state, from_hand=False))
@@ -716,7 +457,7 @@ class StateEncoder:
             world_types.append(8)
 
         hand_tokens: List[np.ndarray] = []
-        for card in self._get_candidate_hand_cards(player_state)[:24]:
+        for card in self._get_candidate_hand_cards(player_state)[:self.hand_limit]:
             if not isinstance(card, dict):
                 continue
             hand_tokens.append(self._card_token_features(card, player_state, from_hand=True))
@@ -725,10 +466,10 @@ class StateEncoder:
         action_indices: List[int] = []
         action_positions: List[int] = []
         for pos, descriptor in enumerate(action_descriptors or []):
-            token = np.asarray(descriptor.get('token_features', np.zeros((PLANNER_TOKEN_DIM,), dtype=np.float32)), dtype=np.float32).reshape(-1)
-            if token.size != PLANNER_TOKEN_DIM:
-                fixed = np.zeros((PLANNER_TOKEN_DIM,), dtype=np.float32)
-                take = min(int(token.size), PLANNER_TOKEN_DIM)
+            token = np.asarray(descriptor.get('token_features', np.zeros((self.token_dim,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+            if token.size != self.token_dim:
+                fixed = np.zeros((self.token_dim,), dtype=np.float32)
+                take = min(int(token.size), self.token_dim)
                 if take > 0:
                     fixed[:take] = token[:take]
                 token = fixed
@@ -759,7 +500,7 @@ class StateEncoder:
     ) -> np.ndarray:
         player = player_state.get('thisPlayer', {}) or {}
         game = player_state.get('game', {}) or {}
-        out = np.zeros((PLANNER_GLOBAL_DIM,), dtype=np.float32)
+        out = np.zeros((self.global_dim,), dtype=np.float32)
         out[0:8] = np.asarray(self._encode_player_resources(player)[:8], dtype=np.float32)
         out[8] = min(float(player.get('plantProduction', 0) or 0) / 12.0, 1.0)
         out[9] = min(float(player.get('heatProduction', 0) or 0) / 12.0, 1.0)
@@ -800,7 +541,7 @@ class StateEncoder:
             1.0 if self._get_card_type(name, fallback=card.get('type')) == 'active' else 0.0,
             1.0 if self._get_card_type(name, fallback=card.get('type')) == 'event' else 0.0,
         ]
-        return token_from_features(type_id=9 if from_hand else 8, features=features, feature_dim=PLANNER_TOKEN_DIM)
+        return token_from_features(type_id=9 if from_hand else 8, features=features, planner_config=self.planner_config)
 
     def _simple_affordability_score(self, player: Dict[str, Any], card: Dict[str, Any], tags: Dict[str, int]) -> float:
         cost = max(float(self._get_card_cost(card)), 0.0)
@@ -1447,13 +1188,6 @@ class StateEncoder:
         logger.debug("Hand encoding: %s for player %s", encoding, player_state.get('id'))
         return encoding
 
-    def _card_token_segment_bounds(self) -> Tuple[int, int]:
-        if self.state_size <= 0 or self.card_token_vector_size <= 0 or self.card_token_dim <= 0:
-            return (0, 0)
-        start = max(0, int(self.state_size) - int(self.card_token_vector_size))
-        end = min(int(self.state_size), start + int(self.card_token_vector_size))
-        return (start, end)
-
     def _build_tag_profile_from_cards(self, cards: List[Dict[str, Any]]) -> Dict[str, int]:
         profile: Dict[str, int] = {}
         for card in cards:
@@ -1780,88 +1514,6 @@ class StateEncoder:
                 totals[key] = totals.get(key, 0.0) + float(value)
         return totals
 
-    def _build_card_token_features(
-        self,
-        card: Dict[str, Any],
-        player: Dict[str, Any],
-        own_tag_profile: Dict[str, int],
-        opponent_tag_profile: Dict[str, int],
-        card_group: str,
-        opponent_resource_totals: Optional[Dict[str, float]] = None,
-    ) -> List[float]:
-        name = str(card.get('name', '') or '')
-        tags = self._get_card_tags(name, fallback=card.get('tags', {}))
-        cost_norm = min(self._get_card_cost(card) / 50.0, 1.0)
-        vp_proxy = self._get_card_vp_proxy(card, tags)
-        affordability = self._estimate_affordability_for_card(player, card, tags)
-
-        key_tags = ['Science', 'Building', 'Space', 'Earth', 'Jovian']
-        key_tag_density = sum(1 for tag_name in key_tags if tags.get(tag_name, 0) > 0) / float(len(key_tags))
-        own_overlap = sum(float(own_tag_profile.get(tag_name, 0)) for tag_name, present in tags.items() if present)
-        opp_overlap = sum(float(opponent_tag_profile.get(tag_name, 0)) for tag_name, present in tags.items() if present)
-        own_overlap_norm = min(own_overlap / 8.0, 1.0)
-        opp_overlap_norm = min(opp_overlap / 8.0, 1.0)
-
-        # Keep token width fixed; opponent cards use hate-draft signal in the last slot.
-        final_slot = max(0.0, opp_overlap_norm - own_overlap_norm)
-        if card_group == 'tableau':
-            final_slot = own_overlap_norm
-        elif card_group == 'opponent':
-            affordability = 0.5
-            final_slot = opp_overlap_norm
-
-        base_features = [
-            float(cost_norm),
-            float(vp_proxy),
-            float(affordability),
-            float(key_tag_density),
-            1.0 if tags.get('Building', 0) > 0 else 0.0,
-            1.0 if tags.get('Space', 0) > 0 else 0.0,
-            1.0 if tags.get('Science', 0) > 0 else 0.0,
-            float(final_slot),
-        ]
-
-        resource_type = self._get_card_resource_type(card)
-        behavior = self._classify_card_resource_behavior(card)
-        resources = self._get_numeric_resource_count(card)
-        vp_per_resource = self._extract_vp_per_resource(card)
-        estimated_vp = self._estimate_final_vp_from_resources(card)
-        threshold = self._get_conversion_threshold(card)
-        readiness = (resources / threshold) if threshold > 0.0 else 0.0
-        opponent_totals = opponent_resource_totals or {}
-        opponent_pressure = 0.0
-        if resource_type:
-            opponent_pressure = min(float(opponent_totals.get(resource_type, 0.0)) / 12.0, 1.0)
-
-        resource_features = [
-            min(resources / 20.0, 1.0),                                 # [8] resource count on card
-            1.0 if resource_type else 0.0,                               # [9] has resource type
-            1.0 if resource_type == 'microbe' else 0.0,                  # [10] resource type microbe
-            1.0 if resource_type == 'animal' else 0.0,                   # [11] resource type animal
-            1.0 if resource_type == 'floater' else 0.0,                  # [12] resource type floater
-            1.0 if behavior == 'vp_accumulation' else 0.0,               # [13] VP accumulation behavior
-            1.0 if behavior == 'conversion' else 0.0,                    # [14] conversion behavior
-            1.0 if behavior == 'stealing' else 0.0,                      # [15] stealing behavior
-            1.0 if behavior == 'adding' else 0.0,                        # [16] adding behavior
-            min(vp_per_resource / 2.0, 1.0),                             # [17] VP ratio signal
-            min(estimated_vp / 15.0, 1.0),                               # [18] expected VP at game end
-            min(readiness / 3.0, 1.0),                                   # [19] conversion readiness
-        ]
-        if behavior == 'stealing':
-            # Local indices are [0..11] for resource_features; slot 11 is readiness/pressure.
-            resource_features[11] = max(resource_features[11], opponent_pressure)
-        elif behavior == 'adding':
-            resource_features[11] = max(resource_features[11], opponent_pressure)
-
-        all_features = base_features + resource_features
-        if len(all_features) >= self.card_token_dim:
-            return all_features[:self.card_token_dim]
-
-        padded = list(all_features)
-        while len(padded) < self.card_token_dim:
-            padded.append(0.0)
-        return padded
-
     def _select_top_cards(
         self,
         cards: List[Dict[str, Any]],
@@ -1957,139 +1609,6 @@ class StateEncoder:
 
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [item[1] for item in ranked[:count]]
-
-    def _inject_card_token_features(self, state_vector: np.ndarray, player_state: Dict[str, Any]) -> None:
-        if not isinstance(state_vector, np.ndarray) or state_vector.ndim != 1:
-            return
-        if self.card_token_count <= 0 or self.card_token_dim <= 0:
-            return
-
-        start, end = self._card_token_segment_bounds()
-        if end <= start:
-            return
-
-        usable_length = int(end - start)
-        token_slots = int(usable_length // self.card_token_dim)
-        if token_slots <= 0:
-            return
-
-        player = player_state.get('thisPlayer', {}) or {}
-        tableau_cards = [card for card in (player.get('tableau', []) or []) if isinstance(card, dict)]
-        owned_hand_cards = self._get_owned_hand_cards(player_state)
-        prompt_hand_cards = self._get_prompt_hand_cards(player_state)
-
-        players = player_state.get('players', []) or []
-        own_id = str(player.get('id', '') or '')
-        own_color = str(player.get('color', '') or '').strip().lower()
-        opponent_tableau_cards: List[Dict[str, Any]] = []
-        for rival in players:
-            if not isinstance(rival, dict):
-                continue
-            rival_id = str(rival.get('id', '') or '')
-            rival_color = str(rival.get('color', '') or '').strip().lower()
-            if own_id and rival_id == own_id:
-                continue
-            if own_color and rival_color and rival_color == own_color:
-                continue
-            opponent_tableau_cards.extend(
-                [card for card in (rival.get('tableau', []) or []) if isinstance(card, dict)]
-            )
-        opponent_resource_totals = self._aggregate_opponent_resource_totals(players, own_id, own_color)
-
-        own_tag_profile = self._merge_tag_profiles(
-            self._build_tag_profile_from_cards(tableau_cards),
-            self._build_tag_profile_from_cards(owned_hand_cards),
-        )
-        opponent_tag_profile = self._build_tag_profile_from_cards(opponent_tableau_cards)
-
-        selected_tableau = self._select_top_cards(
-            tableau_cards,
-            min(self.tableau_token_count, token_slots),
-            player,
-            player_state,
-            own_tag_profile,
-            opponent_tag_profile,
-            card_group='tableau',
-            opponent_resource_totals=opponent_resource_totals,
-        )
-        remaining_slots = max(0, token_slots - len(selected_tableau))
-        hand_slot_cap = min(self.hand_token_count, remaining_slots)
-        selected_hand: List[Dict[str, Any]] = []
-        if hand_slot_cap > 0 and prompt_hand_cards:
-            selected_prompt = self._select_top_cards(
-                prompt_hand_cards,
-                hand_slot_cap,
-                player,
-                player_state,
-                own_tag_profile,
-                opponent_tag_profile,
-                card_group='hand',
-                opponent_resource_totals=opponent_resource_totals,
-            )
-            selected_hand.extend(selected_prompt)
-            prompt_keys = {self._card_dedupe_key(card) for card in selected_prompt}
-            supplemental_hand = [
-                card for card in owned_hand_cards
-                if self._card_dedupe_key(card) not in prompt_keys
-            ]
-            remaining_hand_slots = max(0, hand_slot_cap - len(selected_hand))
-            if remaining_hand_slots > 0:
-                selected_hand.extend(
-                    self._select_top_cards(
-                        supplemental_hand,
-                        remaining_hand_slots,
-                        player,
-                        player_state,
-                        own_tag_profile,
-                        opponent_tag_profile,
-                        card_group='hand',
-                        opponent_resource_totals=opponent_resource_totals,
-                    )
-                )
-        else:
-            selected_hand = self._select_top_cards(
-                owned_hand_cards,
-                hand_slot_cap,
-                player,
-                player_state,
-                own_tag_profile,
-                opponent_tag_profile,
-                card_group='hand',
-                opponent_resource_totals=opponent_resource_totals,
-            )
-        remaining_slots = max(0, remaining_slots - len(selected_hand))
-        selected_opponent = self._select_top_cards(
-            opponent_tableau_cards,
-            min(self.opponent_token_count, remaining_slots),
-            player,
-            player_state,
-            own_tag_profile,
-            opponent_tag_profile,
-            card_group='opponent',
-            opponent_resource_totals=opponent_resource_totals,
-        )
-
-        token_cards: List[Tuple[Dict[str, Any], str]] = []
-        token_cards.extend((card, 'tableau') for card in selected_tableau)
-        token_cards.extend((card, 'hand') for card in selected_hand)
-        token_cards.extend((card, 'opponent') for card in selected_opponent)
-
-        flat_tokens = np.zeros((token_slots * self.card_token_dim,), dtype=np.float32)
-        for idx, (card, card_group) in enumerate(token_cards[:token_slots]):
-            token_values = self._build_card_token_features(
-                card=card,
-                player=player,
-                own_tag_profile=own_tag_profile,
-                opponent_tag_profile=opponent_tag_profile,
-                card_group=card_group,
-                opponent_resource_totals=opponent_resource_totals,
-            )
-            token_vec = np.asarray(token_values[:self.card_token_dim], dtype=np.float32)
-            base = idx * self.card_token_dim
-            flat_tokens[base:base + self.card_token_dim] = token_vec
-
-        write_len = min(usable_length, flat_tokens.size)
-        state_vector[start:start + write_len] = flat_tokens[:write_len]
 
     def build_prompt_card_rankings(
         self,

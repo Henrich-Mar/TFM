@@ -23,9 +23,7 @@ from game_interface import GameInstance, ServerTransportError
 from .state_encoder import StateEncoder
 from .action_decoder import ActionDecoder
 from .planner_common import (
-    PLANNER_GLOBAL_DIM,
-    PLANNER_OPPORTUNITY_LIMIT,
-    PLANNER_TOKEN_DIM,
+    PlannerConfig,
     bundle_to_torch,
     planner_aux_layout,
     planner_aux_dim,
@@ -56,17 +54,16 @@ from debug_decision_snapshot import (
 logger = logging.getLogger(__name__)
 
 _AGENT_ARCHITECTURE_FIELDS: Tuple[str, ...] = (
-    "state_size",
     "hidden_size",
-    "num_layers",
     "recurrent_size",
     "phase_head_count",
-    "transformer_enabled",
-    "card_token_dim",
-    "tableau_token_count",
-    "hand_token_count",
-    "opponent_token_count",
-    "transformer_embed_dim",
+    "planner_token_dim",
+    "planner_global_dim",
+    "planner_type_vocab_size",
+    "planner_opportunity_limit",
+    "planner_tableau_limit",
+    "planner_hand_limit",
+    "planner_opponent_limit",
     "transformer_heads",
     "transformer_layers",
     "transformer_dropout",
@@ -416,9 +413,7 @@ class InferenceBatcher:
 
 @dataclass
 class AgentConfig:
-    state_size: int = 3072
     hidden_size: int = 256
-    num_layers: int = 3
     recurrent_size: int = 128
     phase_head_count: int = 6
     learning_rate: float = 3e-4
@@ -431,12 +426,13 @@ class AgentConfig:
     entropy_coef: float = 0.005
     max_grad_norm: float = 1.0
     max_episode_steps: int = 512
-    transformer_enabled: bool = True
-    card_token_dim: int = 20
-    tableau_token_count: int = 8
-    hand_token_count: int = 64
-    opponent_token_count: int = 6
-    transformer_embed_dim: int = 64
+    planner_token_dim: int = 64
+    planner_global_dim: int = 16
+    planner_type_vocab_size: int = 16
+    planner_opportunity_limit: int = 12
+    planner_tableau_limit: int = 24
+    planner_hand_limit: int = 24
+    planner_opponent_limit: int = 4
     transformer_heads: int = 4
     transformer_layers: int = 2
     transformer_dropout: float = 0.1
@@ -447,23 +443,33 @@ class AgentConfig:
         seed = base or cls()
         payload = asdict(seed)
         payload.update({
-            "state_size": _safe_env_int("AGENT_STATE_SIZE", int(payload["state_size"])),
             "hidden_size": _safe_env_int("AGENT_HIDDEN_SIZE", int(payload["hidden_size"])),
-            "num_layers": _safe_env_int("AGENT_NUM_LAYERS", int(payload["num_layers"])),
             "recurrent_size": _safe_env_int("AGENT_RECURRENT_SIZE", int(payload["recurrent_size"])),
             "phase_head_count": _safe_env_int("AGENT_PHASE_HEAD_COUNT", int(payload["phase_head_count"])),
-            "transformer_enabled": _safe_env_bool("AGENT_TRANSFORMER_ENABLED", bool(payload["transformer_enabled"])),
-            "card_token_dim": _safe_env_int("AGENT_CARD_TOKEN_DIM", int(payload["card_token_dim"])),
-            "tableau_token_count": _safe_env_int("AGENT_TABLEAU_TOKEN_COUNT", int(payload["tableau_token_count"])),
-            "hand_token_count": _safe_env_int("AGENT_HAND_TOKEN_COUNT", int(payload["hand_token_count"])),
-            "opponent_token_count": _safe_env_int("AGENT_OPPONENT_TOKEN_COUNT", int(payload["opponent_token_count"])),
-            "transformer_embed_dim": _safe_env_int("AGENT_TRANSFORMER_EMBED_DIM", int(payload["transformer_embed_dim"])),
+            "planner_token_dim": _safe_env_int("AGENT_PLANNER_TOKEN_DIM", int(payload["planner_token_dim"])),
+            "planner_global_dim": _safe_env_int("AGENT_PLANNER_GLOBAL_DIM", int(payload["planner_global_dim"])),
+            "planner_type_vocab_size": _safe_env_int("AGENT_PLANNER_TYPE_VOCAB_SIZE", int(payload["planner_type_vocab_size"])),
+            "planner_opportunity_limit": _safe_env_int("AGENT_PLANNER_OPPORTUNITY_LIMIT", int(payload["planner_opportunity_limit"])),
+            "planner_tableau_limit": _safe_env_int("AGENT_PLANNER_TABLEAU_LIMIT", int(payload["planner_tableau_limit"])),
+            "planner_hand_limit": _safe_env_int("AGENT_PLANNER_HAND_LIMIT", int(payload["planner_hand_limit"])),
+            "planner_opponent_limit": _safe_env_int("AGENT_PLANNER_OPPONENT_LIMIT", int(payload["planner_opponent_limit"])),
             "transformer_heads": _safe_env_int("AGENT_TRANSFORMER_HEADS", int(payload["transformer_heads"])),
             "transformer_layers": _safe_env_int("AGENT_TRANSFORMER_LAYERS", int(payload["transformer_layers"])),
             "transformer_dropout": _safe_env_float("AGENT_TRANSFORMER_DROPOUT", float(payload["transformer_dropout"])),
             "planner_aux_output_dim": _safe_env_int("AGENT_PLANNER_AUX_OUTPUT_DIM", int(payload["planner_aux_output_dim"])),
         })
         return cls(**payload)
+
+    def planner_config(self) -> PlannerConfig:
+        return PlannerConfig(
+            token_dim=max(16, int(self.planner_token_dim)),
+            global_dim=max(16, int(self.planner_global_dim)),
+            type_vocab_size=max(10, int(self.planner_type_vocab_size)),
+            opportunity_limit=max(1, int(self.planner_opportunity_limit)),
+            tableau_limit=max(0, int(self.planner_tableau_limit)),
+            hand_limit=max(0, int(self.planner_hand_limit)),
+            opponent_limit=max(0, int(self.planner_opponent_limit)),
+        )
 
     def architecture_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -476,161 +482,25 @@ class AgentConfig:
     def architecture_signature(self) -> str:
         return json.dumps(self.architecture_dict(), sort_keys=True, separators=(",", ":"))
 
-
-class CardAttentionModule(nn.Module):
-    def __init__(
-        self,
-        card_token_dim: int = 20,
-        embed_dim: int = 64,
-        nhead: int = 4,
-        num_layers: int = 2,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.card_token_dim = max(1, int(card_token_dim))
-        self.embed_dim = max(16, int(embed_dim))
-        self.nhead = max(1, int(nhead))
-        self.num_layers = max(1, int(num_layers))
-        self.dropout = max(0.0, float(dropout))
-
-        self.card_projection = nn.Linear(self.card_token_dim, self.embed_dim)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.embed_dim,
-            nhead=self.nhead,
-            dim_feedforward=self.embed_dim * 4,
-            dropout=self.dropout,
-            batch_first=True,
-            activation='gelu',
-        )
-        try:
-            # Avoid prototype nested-tensor execution path warnings in current PyTorch.
-            self.tableau_encoder = nn.TransformerEncoder(
-                encoder_layer,
-                num_layers=self.num_layers,
-                enable_nested_tensor=False,
-            )
-        except TypeError:
-            # Backward compatibility for torch builds without enable_nested_tensor argument.
-            self.tableau_encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
-        self.cross_attention = nn.MultiheadAttention(
-            embed_dim=self.embed_dim,
-            num_heads=self.nhead,
-            dropout=self.dropout,
-            batch_first=True,
-        )
-        self.output = nn.Sequential(
-            nn.Linear(self.embed_dim * 3, self.embed_dim),
-            nn.GELU(),
-            nn.Linear(self.embed_dim, self.embed_dim),
-        )
-        self.norm = nn.LayerNorm(self.embed_dim)
-
-    @staticmethod
-    def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        if values.numel() == 0:
-            return torch.zeros((int(values.shape[0]), int(values.shape[-1])), dtype=values.dtype, device=values.device)
-        mask_f = mask.to(dtype=values.dtype).unsqueeze(-1)
-        denom = torch.clamp(mask_f.sum(dim=1), min=1.0)
-        return (values * mask_f).sum(dim=1) / denom
-
-    def _encode_group(self, group_tokens: torch.Tensor, group_mask: torch.Tensor) -> torch.Tensor:
-        if int(group_tokens.shape[1]) <= 0:
-            return torch.zeros((int(group_tokens.shape[0]), self.embed_dim), dtype=group_tokens.dtype, device=group_tokens.device)
-        safe_mask = group_mask.clone()
-        empty_rows = ~safe_mask.any(dim=1)
-        if bool(empty_rows.any()):
-            safe_mask[empty_rows, 0] = True
-        encoded = self.tableau_encoder(group_tokens, src_key_padding_mask=~safe_mask)
-        pooled = self._masked_mean(encoded, safe_mask)
-        if bool(empty_rows.any()):
-            pooled[empty_rows] = 0.0
-        return pooled
-
-    def _cross_attend(
-        self,
-        query_tokens: torch.Tensor,
-        query_mask: torch.Tensor,
-        key_tokens: torch.Tensor,
-        key_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        batch_size = int(query_tokens.shape[0])
-        if int(query_tokens.shape[1]) <= 0 or int(key_tokens.shape[1]) <= 0:
-            return torch.zeros((batch_size, self.embed_dim), dtype=query_tokens.dtype, device=query_tokens.device)
-        if not bool(query_mask.any()) or not bool(key_mask.any()):
-            return torch.zeros((batch_size, self.embed_dim), dtype=query_tokens.dtype, device=query_tokens.device)
-
-        safe_query_mask = query_mask.clone()
-        safe_key_mask = key_mask.clone()
-        query_empty_rows = ~safe_query_mask.any(dim=1)
-        key_empty_rows = ~safe_key_mask.any(dim=1)
-        if bool(query_empty_rows.any()):
-            safe_query_mask[query_empty_rows, 0] = True
-        if bool(key_empty_rows.any()):
-            safe_key_mask[key_empty_rows, 0] = True
-
-        attended, _ = self.cross_attention(
-            query=query_tokens,
-            key=key_tokens,
-            value=key_tokens,
-            key_padding_mask=~safe_key_mask,
-            need_weights=False,
-        )
-        pooled = self._masked_mean(attended, safe_query_mask)
-        zero_rows = query_empty_rows | key_empty_rows
-        if bool(zero_rows.any()):
-            pooled[zero_rows] = 0.0
-        return pooled
-
-    def forward(
-        self,
-        card_tokens: torch.Tensor,
-        tableau_token_count: int,
-        hand_token_count: int,
-        opponent_token_count: int,
-    ) -> torch.Tensor:
-        if card_tokens.dim() != 3:
-            raise ValueError("card_tokens must be 3D tensor [batch, tokens, features]")
-
-        projected = self.card_projection(card_tokens)
-        token_present = card_tokens.abs().sum(dim=-1) > 1e-8
-
-        tableau_end = max(0, min(int(tableau_token_count), int(projected.shape[1])))
-        hand_end = max(tableau_end, min(tableau_end + int(hand_token_count), int(projected.shape[1])))
-        opponent_end = max(hand_end, min(hand_end + int(opponent_token_count), int(projected.shape[1])))
-
-        tableau_tokens = projected[:, :tableau_end, :]
-        tableau_mask = token_present[:, :tableau_end]
-        hand_tokens = projected[:, tableau_end:hand_end, :]
-        hand_mask = token_present[:, tableau_end:hand_end]
-        opponent_tokens = projected[:, hand_end:opponent_end, :]
-        opponent_mask = token_present[:, hand_end:opponent_end]
-
-        tableau_summary = self._encode_group(tableau_tokens, tableau_mask)
-        hand_vs_tableau = self._cross_attend(hand_tokens, hand_mask, tableau_tokens, tableau_mask)
-        hand_vs_opponent = self._cross_attend(hand_tokens, hand_mask, opponent_tokens, opponent_mask)
-
-        combined = torch.cat([tableau_summary, hand_vs_tableau, hand_vs_opponent], dim=-1)
-        return self.norm(self.output(combined))
-
-
 class TerraformingMarsNetwork(nn.Module):
     def __init__(self, config: AgentConfig):
         super().__init__()
+        planner = config.planner_config()
+        self.planner_config = planner
         self.recurrent_size = max(16, int(config.recurrent_size))
         self.phase_head_count = max(2, int(config.phase_head_count))
         self.hidden_size = max(64, int(config.hidden_size))
-        self.transformer_embed_dim = max(32, int(getattr(config, "transformer_embed_dim", 64)))
         transformer_heads = max(1, int(getattr(config, "transformer_heads", 4)))
         transformer_layers = max(1, int(getattr(config, "transformer_layers", 2)))
         transformer_dropout = max(0.0, float(getattr(config, "transformer_dropout", 0.1)))
         self.planner_aux_output_dim = max(32, int(getattr(config, "planner_aux_output_dim", 280)))
         self.action_dim = 0
 
-        self.world_projection = nn.Linear(PLANNER_TOKEN_DIM, self.hidden_size)
-        self.hand_projection = nn.Linear(PLANNER_TOKEN_DIM, self.hidden_size)
-        self.action_projection = nn.Linear(PLANNER_TOKEN_DIM, self.hidden_size)
-        self.global_projection = nn.Linear(PLANNER_GLOBAL_DIM, self.hidden_size)
-        self.world_type_embedding = nn.Embedding(16, self.hidden_size)
+        self.world_projection = nn.Linear(int(planner.token_dim), self.hidden_size)
+        self.hand_projection = nn.Linear(int(planner.token_dim), self.hidden_size)
+        self.action_projection = nn.Linear(int(planner.token_dim), self.hidden_size)
+        self.global_projection = nn.Linear(int(planner.global_dim), self.hidden_size)
+        self.world_type_embedding = nn.Embedding(int(planner.type_vocab_size), self.hidden_size)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_size,
             nhead=transformer_heads,
@@ -680,7 +550,7 @@ class TerraformingMarsNetwork(nn.Module):
             "shared_pre_norm": 0.0,
             "shared_post_norm": 0.0,
             "token_count": 0,
-            "token_dim": int(PLANNER_TOKEN_DIM),
+            "token_dim": int(planner.token_dim),
             "timestamp": 0.0,
         }
         value_hidden_1 = max(64, int(self.hidden_size))
@@ -743,7 +613,9 @@ class TerraformingMarsNetwork(nn.Module):
         batch_size = int(world_tokens.shape[0])
         device = world_tokens.device
 
-        world_embed = self.world_projection(world_tokens) + self.world_type_embedding(torch.clamp(world_token_types, 0, 15))
+        world_embed = self.world_projection(world_tokens) + self.world_type_embedding(
+            torch.clamp(world_token_types, 0, int(self.planner_config.type_vocab_size) - 1)
+        )
         global_embed = self.global_projection(global_scalars).unsqueeze(1)
         world_embed = world_embed + global_embed
         safe_world_mask = world_mask.clone()
@@ -816,7 +688,7 @@ class TerraformingMarsNetwork(nn.Module):
                 "shared_pre_norm": float(world_summary.detach().norm(dim=-1).mean().item()) if world_summary.numel() > 0 else 0.0,
                 "shared_post_norm": float(fused_summary.detach().norm(dim=-1).mean().item()) if fused_summary.numel() > 0 else 0.0,
                 "token_count": int(world_tokens.shape[1]),
-                "token_dim": int(world_tokens.shape[2]) if world_tokens.dim() == 3 else int(PLANNER_TOKEN_DIM),
+                "token_dim": int(world_tokens.shape[2]) if world_tokens.dim() == 3 else int(self.planner_config.token_dim),
                 "timestamp": float(time.time()),
             }
 
@@ -896,14 +768,9 @@ class RLAgent:
         )
 
         # Game interaction components
-        self.state_encoder = StateEncoder(
-            state_size=self.config.state_size,
-            card_token_dim=self.config.card_token_dim,
-            tableau_token_count=self.config.tableau_token_count,
-            hand_token_count=self.config.hand_token_count,
-            opponent_token_count=self.config.opponent_token_count,
-        )
-        self.action_decoder = ActionDecoder()
+        planner_config = self.config.planner_config()
+        self.state_encoder = StateEncoder(planner_config=planner_config)
+        self.action_decoder = ActionDecoder(planner_config=planner_config)
         
         # Self-play learning configuration (env overrides)
         self.train_from_self_play = (
@@ -1085,6 +952,16 @@ class RLAgent:
         for key, value in config_payload.items():
             if key in defaults:
                 merged[key] = value
+        # Compatibility-only mapping for older checkpoint/config payloads.
+        legacy_config_map = {
+            "tableau_token_count": "planner_tableau_limit",
+            "hand_token_count": "planner_hand_limit",
+            "opponent_token_count": "planner_opponent_limit",
+            "card_token_dim": "planner_token_dim",
+        }
+        for legacy_key, new_key in legacy_config_map.items():
+            if legacy_key in config_payload and new_key in defaults:
+                merged[new_key] = config_payload[legacy_key]
         try:
             return AgentConfig(**merged)
         except Exception:
@@ -1482,12 +1359,12 @@ class RLAgent:
         layout = planner_aux_layout(
             num_milestones=num_milestones,
             num_awards=num_awards,
-            opportunity_limit=PLANNER_OPPORTUNITY_LIMIT,
+            opportunity_limit=int(self.config.planner_opportunity_limit),
         )
         total_size = planner_aux_dim(
             num_milestones=num_milestones,
             num_awards=num_awards,
-            opportunity_limit=PLANNER_OPPORTUNITY_LIMIT,
+            opportunity_limit=int(self.config.planner_opportunity_limit),
         )
         targets = {"planner_vector": np.zeros(total_size, dtype=np.float32)}
         if not isinstance(player_state, dict):
@@ -1528,7 +1405,7 @@ class RLAgent:
         vector[next_gen_slice.start] = max(0.0, min((generation - 6.0) / 8.0, 1.0))
 
         opportunities = self.state_encoder._collect_board_opportunity_rows(player_state)
-        for idx, row in enumerate(opportunities[:PLANNER_OPPORTUNITY_LIMIT]):
+        for idx, row in enumerate(opportunities[:int(self.config.planner_opportunity_limit)]):
             vector[opp_value_slice.start + idx] = float(row[6] if len(row) > 6 else 0.0)
             vector[deny_risk_slice.start + idx] = float(row[8] if len(row) > 8 else 0.0)
         return targets
@@ -3104,7 +2981,7 @@ class RLAgent:
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
         with self._model_device_lock:
             device = self._ensure_network_device_consistency(device)
-            state_tensor = bundle_to_torch(planner_state, device=device)
+            state_tensor = bundle_to_torch(planner_state, device=device, planner_config=self.config.planner_config())
             phase_tensor = torch.tensor(
                 [phase_index], dtype=torch.long, device=device,
             )
@@ -3329,10 +3206,12 @@ class RLAgent:
                 transformer_stats = dict(getattr(self.network, "last_transformer_stats", {}) or {})
                 transformer_stats.update(
                     {
-                        "hand_token_count": int(getattr(self.config, "hand_token_count", 0)),
-                        "tableau_token_count": int(getattr(self.config, "tableau_token_count", 0)),
-                        "opponent_token_count": int(getattr(self.config, "opponent_token_count", 0)),
-                        "card_token_dim": int(getattr(self.config, "card_token_dim", 0)),
+                        "planner_hand_limit": int(getattr(self.config, "planner_hand_limit", 0)),
+                        "planner_tableau_limit": int(getattr(self.config, "planner_tableau_limit", 0)),
+                        "planner_opponent_limit": int(getattr(self.config, "planner_opponent_limit", 0)),
+                        "planner_token_dim": int(getattr(self.config, "planner_token_dim", 0)),
+                        "planner_global_dim": int(getattr(self.config, "planner_global_dim", 0)),
+                        "planner_opportunity_limit": int(getattr(self.config, "planner_opportunity_limit", 0)),
                     }
                 )
                 ranking = self._build_policy_ranking(
@@ -3679,7 +3558,11 @@ class RLAgent:
         async with self.training_lock:
             steps = list(episode_steps)  # deque already capped at max_episode_steps
             device = next(self.network.parameters()).device
-            states = pad_bundle_batch([step.get("state_bundle", {}) for step in steps], device)
+            states = pad_bundle_batch(
+                [step.get("state_bundle", {}) for step in steps],
+                device,
+                planner_config=self.config.planner_config(),
+            )
             actions = torch.tensor(
                 [int(step.get("action_position", step.get("action", 0))) for step in steps],
                 dtype=torch.long,
@@ -4006,10 +3889,26 @@ class RLAgent:
             for key, value in config_payload.items():
                 if key in defaults:
                     merged_config[key] = value
+            # Compatibility-only mapping for older checkpoint/config payloads.
+            legacy_config_map = {
+                "tableau_token_count": "planner_tableau_limit",
+                "hand_token_count": "planner_hand_limit",
+                "opponent_token_count": "planner_opponent_limit",
+                "card_token_dim": "planner_token_dim",
+                "state_size": None,
+                "num_layers": None,
+                "transformer_enabled": None,
+                "transformer_embed_dim": None,
+            }
+            for legacy_key, new_key in legacy_config_map.items():
+                if legacy_key not in config_payload:
+                    continue
+                if new_key and new_key in defaults:
+                    merged_config[new_key] = config_payload[legacy_key]
             token_count_envs = {
-                "tableau_token_count": "AGENT_TABLEAU_TOKEN_COUNT",
-                "hand_token_count": "AGENT_HAND_TOKEN_COUNT",
-                "opponent_token_count": "AGENT_OPPONENT_TOKEN_COUNT",
+                "planner_tableau_limit": "AGENT_PLANNER_TABLEAU_LIMIT",
+                "planner_hand_limit": "AGENT_PLANNER_HAND_LIMIT",
+                "planner_opponent_limit": "AGENT_PLANNER_OPPONENT_LIMIT",
             }
             applied_token_overrides: Dict[str, int] = {}
             for key, env_name in token_count_envs.items():
@@ -4029,13 +3928,9 @@ class RLAgent:
         # Rebuild model/optimizer from restored config before loading state dicts.
         self.network = TerraformingMarsNetwork(self.config)
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
-        self.state_encoder = StateEncoder(
-            state_size=self.config.state_size,
-            card_token_dim=self.config.card_token_dim,
-            tableau_token_count=self.config.tableau_token_count,
-            hand_token_count=self.config.hand_token_count,
-            opponent_token_count=self.config.opponent_token_count,
-        )
+        planner_config = self.config.planner_config()
+        self.state_encoder = StateEncoder(planner_config=planner_config)
+        self.action_decoder = ActionDecoder(planner_config=planner_config)
 
         state_dict = checkpoint.get('network_state_dict', {}) or {}
         

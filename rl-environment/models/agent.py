@@ -30,6 +30,7 @@ from .planner_common import (
     pad_bundle_batch,
 )
 from .rust_backend import require_backend_info
+from .rollout_store import RolloutShardStore
 from scoring import calculate_terminal_reward, calculate_step_reward_decomposition
 import random
 import aiohttp
@@ -779,8 +780,18 @@ class RLAgent:
         self.self_play_reward_scale = float(os.getenv("SELF_PLAY_REWARD_SCALE", "1.0"))
         self.training_lock = asyncio.Lock()
         self.ppo_enable = str(os.getenv("PPO_ENABLE", "1")).strip().lower() not in ("0", "false", "no", "off")
-        self.ppo_rollout_steps = self._safe_env_int("PPO_ROLLOUT_STEPS", 8192)
-        self.ppo_buffer_max_steps = self._safe_env_int("PPO_BUFFER_MAX_STEPS", 65536)
+        self.ppo_rollout_steps = self._safe_env_int("PPO_ROLLOUT_STEPS", 2048)
+        self.ppo_disk_sharding_enable = _safe_env_bool("PPO_DISK_SHARDING_ENABLE", True)
+        self.ppo_disk_shard_max_steps = self._safe_env_int(
+            "PPO_DISK_SHARD_MAX_STEPS",
+            int(self.ppo_rollout_steps),
+        )
+        default_buffer_max_steps = (
+            max(1, int(self.ppo_rollout_steps))
+            if self.ppo_disk_sharding_enable
+            else 65536
+        )
+        self.ppo_buffer_max_steps = self._safe_env_int("PPO_BUFFER_MAX_STEPS", default_buffer_max_steps)
         self.state_schema_version = str(os.getenv("STATE_SCHEMA_VERSION", "v1")).strip() or "v1"
         self.strict_on_policy_sampling = str(os.getenv("PPO_STRICT_ON_POLICY", "1")).strip().lower() not in ("0", "false", "no", "off")
         self.exploration_decay_games = max(1, self._safe_env_int("EXPLORATION_DECAY_GAMES", 200))
@@ -832,6 +843,21 @@ class RLAgent:
         self.reward_debug_log_every = max(1, self._safe_env_int("PPO_REWARD_DEBUG_LOG_EVERY", 200))
         self._reward_debug_counter = 0
         self.rollout_buffer: deque[PPORolloutStep] = deque(maxlen=max(1, int(self.ppo_buffer_max_steps)))
+        self.rollout_shard_store: Optional[RolloutShardStore] = None
+        if self.ppo_enable and self.ppo_disk_sharding_enable:
+            try:
+                self.rollout_shard_store = RolloutShardStore(
+                    root_dir=self._resolve_rollout_shard_dir(),
+                    agent_id=self.id,
+                    shard_max_steps=max(1, int(self.ppo_disk_shard_max_steps)),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to initialize rollout shard store for agent %s: %s",
+                    self.id[:8],
+                    exc,
+                )
+                self.rollout_shard_store = None
         self.active_poll_interval_sec = max(
             0.0,
             self._safe_env_float(
@@ -1000,6 +1026,56 @@ class RLAgent:
                 )
                 self._inference_device = torch.device("cpu")
                 _move_network_and_optimizer_to(self.network, self.optimizer, self._inference_device)
+
+    def _resolve_rollout_shard_dir(self) -> str:
+        env_path = str(os.getenv("PPO_ROLLOUT_SHARD_DIR", "") or "").strip()
+        if env_path:
+            return os.path.abspath(env_path)
+
+        models_root = str(os.getenv("RL_MODELS_DIR", "") or "").strip()
+        if models_root:
+            return os.path.join(os.path.abspath(models_root), "ppo-rollouts")
+
+        base_dir = os.path.abspath(os.path.dirname(__file__))
+        rl_root = os.path.abspath(os.path.join(base_dir, ".."))
+        return os.path.join(rl_root, "rl-rollouts")
+
+    def _queued_rollout_step_count(self) -> int:
+        total = int(len(self.rollout_buffer))
+        if self.rollout_shard_store is not None:
+            total += int(self.rollout_shard_store.queued_step_count())
+        return int(total)
+
+    def _take_rollout_steps_locked(
+        self,
+        take: int,
+        expected_schema_version: str,
+    ) -> Tuple[List[PPORolloutStep], int]:
+        schema_filtered = 0
+        steps: List[PPORolloutStep] = []
+
+        while self.rollout_buffer and len(steps) < take:
+            candidate = self.rollout_buffer.popleft()
+            if str(getattr(candidate, "state_schema_version", "")) != expected_schema_version:
+                schema_filtered += 1
+                continue
+            steps.append(candidate)
+
+        while (
+            self.rollout_shard_store is not None
+            and self.rollout_shard_store.queued_step_count() > 0
+            and len(steps) < take
+        ):
+            fetched = self.rollout_shard_store.pop_steps(take - len(steps))
+            if not fetched:
+                break
+            for candidate in fetched:
+                if str(getattr(candidate, "state_schema_version", "")) != expected_schema_version:
+                    schema_filtered += 1
+                    continue
+                steps.append(candidate)
+
+        return steps, schema_filtered
 
     def _get_network_devices(self) -> List[torch.device]:
         devices: List[torch.device] = []
@@ -3440,15 +3516,19 @@ class RLAgent:
             return
 
         async with self.training_lock:
-            for step in rollout_steps:
-                self.rollout_buffer.append(step)
+            if self.rollout_shard_store is not None:
+                self.rollout_shard_store.append_steps(rollout_steps)
+            else:
+                for step in rollout_steps:
+                    self.rollout_buffer.append(step)
+            buffer_size = self._queued_rollout_step_count()
 
         logger.info(
             "Agent %s queued PPO rollout: steps=%d terminal_reward=%.3f buffer_size=%d",
             self.id[:8],
             len(rollout_steps),
             float(terminal_reward),
-            len(self.rollout_buffer),
+            int(buffer_size),
         )
 
     async def optimize_from_rollout_buffer(self, max_steps: Optional[int] = None) -> Dict[str, Any]:
@@ -3459,18 +3539,14 @@ class RLAgent:
         take = int(max_steps) if max_steps is not None else int(self.ppo_rollout_steps)
         take = max(1, take)
         expected_schema_version = str(self.state_schema_version or "v1")
-        schema_filtered = 0
-        steps: List[PPORolloutStep] = []
 
         async with self.training_lock:
-            if not self.rollout_buffer:
+            if self._queued_rollout_step_count() <= 0:
                 return {}
-            while self.rollout_buffer and len(steps) < take:
-                candidate = self.rollout_buffer.popleft()
-                if str(getattr(candidate, "state_schema_version", "")) != expected_schema_version:
-                    schema_filtered += 1
-                    continue
-                steps.append(candidate)
+            steps, schema_filtered = self._take_rollout_steps_locked(
+                take=take,
+                expected_schema_version=expected_schema_version,
+            )
 
         if not steps:
             return {"rollout/steps": 0, "rollout/schema_filtered": int(schema_filtered)}
@@ -3540,13 +3616,15 @@ class RLAgent:
         }
 
     def get_rollout_buffer_size(self) -> int:
-        return int(len(self.rollout_buffer))
+        return int(self._queued_rollout_step_count())
 
     async def clear_rollout_buffer(self) -> int:
         """Clear queued PPO rollout samples and return the number of discarded steps."""
         async with self.training_lock:
             cleared = int(len(self.rollout_buffer))
             self.rollout_buffer.clear()
+            if self.rollout_shard_store is not None:
+                cleared += int(self.rollout_shard_store.clear())
             return cleared
 
     async def _train_from_episode(self, episode_steps: List[Dict[str, Any]], terminal_reward: float):

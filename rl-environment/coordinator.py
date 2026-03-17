@@ -130,7 +130,7 @@ class RLCoordinator:
         self.gate_penalty_points = self._safe_env_float("GATE_PENALTY_POINTS", 8.0)
         self.gate_global_payment_penalty_points = self._safe_env_float("GATE_GLOBAL_PAYMENT_PENALTY_POINTS", 6.0)
         self.ppo_enable = str(os.getenv("PPO_ENABLE", "1")).strip().lower() not in ("0", "false", "no", "off")
-        self.ppo_rollout_steps = self._safe_env_int("PPO_ROLLOUT_STEPS", 8192)
+        self.ppo_rollout_steps = self._safe_env_int("PPO_ROLLOUT_STEPS", 2048)
         self.min_eval_completion_ratio = min(1.0, max(0.0, self._safe_env_float("MIN_EVAL_COMPLETION_RATIO", 0.80)))
         self.min_frozen_pool_completion_rate = min(1.0, max(0.0, self._safe_env_float("MIN_FROZEN_POOL_COMPLETION_RATE", 0.90)))
         self.invalid_generation_backoff_sec = max(0.0, self._safe_env_float("INVALID_GENERATION_BACKOFF_SEC", 5.0))

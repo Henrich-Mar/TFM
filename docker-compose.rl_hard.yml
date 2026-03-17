@@ -242,7 +242,10 @@ services:
       
       # PPO Core
       - PPO_ENABLE=true
-      - PPO_ROLLOUT_STEPS=32768
+      - PPO_ROLLOUT_STEPS=12288
+      - PPO_DISK_SHARDING_ENABLE=1
+      - PPO_DISK_SHARD_MAX_STEPS=2048
+      - PPO_ROLLOUT_SHARD_DIR=/app/rl-models/ppo-rollouts
       - PPO_MIN_STEPS_PER_AGENT=1024
       - PPO_EPOCHS=8
       - PPO_MINIBATCH_SIZE=512
@@ -250,7 +253,7 @@ services:
       - PPO_VALUE_COEF=1.0
       - PPO_TARGET_KL=0.020
       - PPO_CLIP_EPS=0.15
-      - PPO_BUFFER_MAX_STEPS=600000
+      - PPO_BUFFER_MAX_STEPS=2048
       - PPO_LEARNING_RATE=0.00014
       - PPO_LR_MIN=0.00003
       - PPO_LR_MAX=0.00035

@@ -1325,11 +1325,12 @@ class GameServerCluster:
         # Prepare game creation request with a preset + runtime overrides.
         base_options = self.base_game_options or self._default_game_options()
         create_request = self._merge_options(base_options, game_options or {})
+        players_beginner = bool(create_request.pop('_players_beginner', False))
         create_request['players'] = [
             {
                 'name': name,
                 'color': ['red', 'blue', 'green', 'yellow'][i % 4],
-                'beginner': False,
+                'beginner': players_beginner,
                 'handicap': 0,
                 'first': False
             }

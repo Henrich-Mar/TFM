@@ -152,6 +152,11 @@ class PPORolloutStep:
     reward_other_component: float = 0.0
     reward_shaping_coef: float = 0.0
     state_schema_version: str = "v1"
+    episode_id: str = ""
+    step_index: int = 0
+    policy_version: int = 0
+    terminal: bool = False
+    bootstrap_value: float = 0.0
 
 
 @dataclass
@@ -293,11 +298,21 @@ def _predict_values_in_chunks(
     for start in range(0, total_rows, max(1, int(chunk_size))):
         stop = min(total_rows, start + max(1, int(chunk_size)))
         batch_steps = steps[start:stop]
-        batch_states = pad_bundle_batch(
-            [step.state_bundle for step in batch_steps],
-            device,
-            planner_config=planner_config,
-        )
+        try:
+            batch_states = pad_bundle_batch(
+                [step.state_bundle for step in batch_steps],
+                device,
+                planner_config=planner_config,
+            )
+        except TypeError as exc:
+            # Preserve compatibility with instrumentation/tests that wrap the
+            # historical two-argument helper.
+            if "planner_config" not in str(exc):
+                raise
+            batch_states = pad_bundle_batch(
+                [step.state_bundle for step in batch_steps],
+                device,
+            )
         batch_phase_indices = phase_indices[start:stop].to(device)
         batch_recurrent_states = recurrent_states[start:stop].to(device) if recurrent_states is not None else None
         out = _forward_network(
@@ -376,16 +391,32 @@ def _compute_gae_returns(
     values: torch.Tensor,
     gamma: float,
     gae_lambda: float,
+    episode_ids: Optional[Sequence[str]] = None,
+    bootstrap_values: Optional[torch.Tensor] = None,
 ) -> Dict[str, torch.Tensor]:
-    # Bootstrap with old values from the next observed state.
+    """Compute GAE without allowing value/advantage flow across episodes."""
     next_values = torch.zeros_like(values)
-    if values.numel() > 1:
-        next_values[:-1] = values[1:]
+    if bootstrap_values is None:
+        bootstrap_values = torch.zeros_like(values)
+    if episode_ids is None:
+        episode_ids = [""] * int(values.numel())
+    normalized_episode_ids = [str(item or "") for item in episode_ids]
+    for idx in range(int(values.numel())):
+        same_next_episode = (
+            idx + 1 < int(values.numel())
+            and normalized_episode_ids[idx] == normalized_episode_ids[idx + 1]
+        )
+        if same_next_episode:
+            next_values[idx] = values[idx + 1]
+        elif float(dones[idx].item()) < 0.5:
+            next_values[idx] = bootstrap_values[idx]
 
     deltas = rewards + (gamma * next_values * (1.0 - dones)) - values
     advantages = torch.zeros_like(rewards)
     gae = torch.tensor(0.0, dtype=torch.float32, device=rewards.device)
     for idx in reversed(range(rewards.numel())):
+        if idx + 1 < rewards.numel() and normalized_episode_ids[idx] != normalized_episode_ids[idx + 1]:
+            gae = torch.tensor(0.0, dtype=torch.float32, device=rewards.device)
         mask = 1.0 - dones[idx]
         gae = deltas[idx] + (gamma * gae_lambda * mask * gae)
         advantages[idx] = gae
@@ -498,6 +529,12 @@ def optimize_ppo_policy(
         values=old_values,
         gamma=float(ppo.gamma),
         gae_lambda=float(ppo.gae_lambda),
+        episode_ids=[str(getattr(step, "episode_id", "") or "") for step in steps],
+        bootstrap_values=torch.tensor(
+            [float(getattr(step, "bootstrap_value", 0.0) or 0.0) for step in steps],
+            dtype=torch.float32,
+            device=rewards.device,
+        ),
     )
     advantages = gae_payload["advantages"]
     returns = gae_payload["returns"]
@@ -532,11 +569,21 @@ def optimize_ppo_policy(
         for start in range(0, len(steps), minibatch_size):
             batch_idx = indices[start:start + minibatch_size]
             batch_steps = [steps[int(i)] for i in batch_idx.tolist()]
-            batch_states = pad_bundle_batch(
-                [step.state_bundle for step in batch_steps],
-                device,
-                planner_config=planner_config,
-            )
+            try:
+                batch_states = pad_bundle_batch(
+                    [step.state_bundle for step in batch_steps],
+                    device,
+                    planner_config=planner_config,
+                )
+            except TypeError as exc:
+                # Preserve compatibility with instrumentation/tests that wrap the
+                # historical two-argument helper.
+                if "planner_config" not in str(exc):
+                    raise
+                batch_states = pad_bundle_batch(
+                    [step.state_bundle for step in batch_steps],
+                    device,
+                )
             batch_actions = actions[batch_idx].to(device)
             batch_old_log_probs = old_log_probs[batch_idx].to(device)
             batch_old_values = old_values[batch_idx].to(device)

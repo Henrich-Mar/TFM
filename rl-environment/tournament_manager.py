@@ -289,7 +289,13 @@ class TournamentManager:
                     return await self._run_single_game(agents, tournament_id)
             return await self._run_single_game(agents, tournament_id)
     
-    async def _run_single_game(self, agents: List[RLAgent], tournament_id: str) -> GameResult:
+    async def _run_single_game(
+        self,
+        agents: List[RLAgent],
+        tournament_id: str,
+        game_seed: Optional[int] = None,
+        players_beginner: Optional[bool] = None,
+    ) -> GameResult:
         """Run a single 4-player game"""
         provisional_id = str(uuid.uuid4())
         actual_game_id = provisional_id
@@ -301,19 +307,25 @@ class TournamentManager:
             fast_mode_env = str(os.getenv('TM_FAST_MODE_OPTION', '1')).strip().lower()
             fast_mode_option = fast_mode_env in ('1', 'true', 'yes', 'on')
             # Get available game server
+            runtime_options: Dict[str, Any] = {
+                'soloMode': False,
+                'randomMA': 'No randomization',
+                'showTimers': False,
+                'fastModeOption': fast_mode_option,
+                'removeNegativeGlobalEventsOption': True,
+                'undoOption': False,
+            }
+            if game_seed is not None:
+                runtime_options['seed'] = int(game_seed)
+            if players_beginner is not None:
+                runtime_options['_players_beginner'] = bool(players_beginner)
             game_instance = await self.game_cluster.create_game(
                 game_id=provisional_id,
                 player_names=seat_player_names,
-                game_options={
-                    'soloMode': False,
-                    'randomMA': 'No randomization',
-                    'showTimers': False,
-                    'fastModeOption': fast_mode_option,
-                    'removeNegativeGlobalEventsOption': True,
-                    'undoOption': False
-                }
+                game_options=runtime_options,
             )
             actual_game_id = game_instance.game_id
+            setattr(game_instance, "rl_seed", game_seed)
             logger.info("Game %s created with fastModeOption=%s", actual_game_id, fast_mode_option)
             # Record game URL for dashboard using canonical public URL resolver.
             try:

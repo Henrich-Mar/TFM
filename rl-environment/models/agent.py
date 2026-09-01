@@ -31,7 +31,8 @@ from .planner_common import (
 )
 from .rust_backend import require_backend_info
 from .rollout_store import RolloutShardStore
-from scoring import calculate_terminal_reward, calculate_step_reward_decomposition
+from .decision_policy import DecisionPolicy
+from scoring import calculate_terminal_reward, calculate_v2_terminal_reward, calculate_step_reward_decomposition
 import random
 import aiohttp
 
@@ -53,6 +54,28 @@ from debug_decision_snapshot import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _DeferredAsyncLock:
+    """An asyncio lock that binds to the loop on first use, not construction."""
+
+    def __init__(self) -> None:
+        self._lock: Optional[asyncio.Lock] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    async def __aenter__(self):
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._loop is not loop:
+            if self._lock is not None and self._lock.locked():
+                raise RuntimeError("training lock cannot move between event loops while held")
+            self._lock = asyncio.Lock()
+            self._loop = loop
+        await self._lock.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        assert self._lock is not None
+        self._lock.release()
 
 _AGENT_ARCHITECTURE_FIELDS: Tuple[str, ...] = (
     "hidden_size",
@@ -426,7 +449,7 @@ class AgentConfig:
     value_loss_coef: float = 0.5
     entropy_coef: float = 0.005
     max_grad_norm: float = 1.0
-    max_episode_steps: int = 512
+    max_episode_steps: int = 10000
     planner_token_dim: int = 64
     planner_global_dim: int = 16
     planner_type_vocab_size: int = 16
@@ -458,6 +481,7 @@ class AgentConfig:
             "transformer_layers": _safe_env_int("AGENT_TRANSFORMER_LAYERS", int(payload["transformer_layers"])),
             "transformer_dropout": _safe_env_float("AGENT_TRANSFORMER_DROPOUT", float(payload["transformer_dropout"])),
             "planner_aux_output_dim": _safe_env_int("AGENT_PLANNER_AUX_OUTPUT_DIM", int(payload["planner_aux_output_dim"])),
+            "max_episode_steps": _safe_env_int("AGENT_MAX_EPISODE_STEPS", int(payload["max_episode_steps"])),
         })
         return cls(**payload)
 
@@ -731,8 +755,17 @@ def _normalize_network_output(raw_output: Any) -> Dict[str, Optional[torch.Tenso
 # Removed conflicting Agent class - using RLAgent instead
         
 class RLAgent:
-    def __init__(self, config: AgentConfig = None, agent_id: str = None):
+    def __init__(
+        self,
+        config: AgentConfig = None,
+        agent_id: str = None,
+        decision_policy: Optional[DecisionPolicy] = None,
+        decision_recorder: Optional[Any] = None,
+    ):
         self.id = agent_id or str(uuid.uuid4())
+        self.decision_policy = decision_policy
+        self.decision_recorder = decision_recorder
+        self.deterministic_actions = False
         if config is None:
             config = self.build_env_config()
         self.config = config
@@ -778,7 +811,7 @@ class RLAgent:
             self.config.train_from_self_play and os.getenv("SELF_PLAY_LEARNING", "1") != "0"
         )
         self.self_play_reward_scale = float(os.getenv("SELF_PLAY_REWARD_SCALE", "1.0"))
-        self.training_lock = asyncio.Lock()
+        self.training_lock = _DeferredAsyncLock()
         self.ppo_enable = str(os.getenv("PPO_ENABLE", "1")).strip().lower() not in ("0", "false", "no", "off")
         self.ppo_rollout_steps = self._safe_env_int("PPO_ROLLOUT_STEPS", 2048)
         self.ppo_disk_sharding_enable = _safe_env_bool("PPO_DISK_SHARDING_ENABLE", True)
@@ -794,6 +827,7 @@ class RLAgent:
         self.ppo_buffer_max_steps = self._safe_env_int("PPO_BUFFER_MAX_STEPS", default_buffer_max_steps)
         self.state_schema_version = str(os.getenv("STATE_SCHEMA_VERSION", "v1")).strip() or "v1"
         self.strict_on_policy_sampling = str(os.getenv("PPO_STRICT_ON_POLICY", "1")).strip().lower() not in ("0", "false", "no", "off")
+        self.policy_version = 0
         self.exploration_decay_games = max(1, self._safe_env_int("EXPLORATION_DECAY_GAMES", 200))
         self.policy_epsilon_cap = max(0.0, self._safe_env_float("POLICY_EPSILON_CAP", 0.02))
         self.policy_epsilon_floor = max(0.0, self._safe_env_float("POLICY_EPSILON_FLOOR", 0.001))
@@ -842,7 +876,7 @@ class RLAgent:
         self.reward_debug_threshold = max(0.0, self._safe_env_float("PPO_REWARD_DEBUG_THRESHOLD", 0.001))
         self.reward_debug_log_every = max(1, self._safe_env_int("PPO_REWARD_DEBUG_LOG_EVERY", 200))
         self._reward_debug_counter = 0
-        self.rollout_buffer: deque[PPORolloutStep] = deque(maxlen=max(1, int(self.ppo_buffer_max_steps)))
+        self.rollout_buffer: deque[PPORolloutStep] = deque()
         self.rollout_shard_store: Optional[RolloutShardStore] = None
         if self.ppo_enable and self.ppo_disk_sharding_enable:
             try:
@@ -1054,26 +1088,39 @@ class RLAgent:
         schema_filtered = 0
         steps: List[PPORolloutStep] = []
 
-        while self.rollout_buffer and len(steps) < take:
-            candidate = self.rollout_buffer.popleft()
+        def _accept(candidate: PPORolloutStep) -> None:
+            nonlocal schema_filtered
             if str(getattr(candidate, "state_schema_version", "")) != expected_schema_version:
                 schema_filtered += 1
-                continue
+                return
+            if self.strict_on_policy_sampling and int(getattr(candidate, "policy_version", 0)) != int(self.policy_version):
+                schema_filtered += 1
+                return
             steps.append(candidate)
+
+        while self.rollout_buffer and (not steps or len(steps) < take):
+            first = self.rollout_buffer[0]
+            episode_id = str(getattr(first, "episode_id", "") or "")
+            while self.rollout_buffer:
+                candidate = self.rollout_buffer[0]
+                candidate_episode = str(getattr(candidate, "episode_id", "") or "")
+                if episode_id and candidate_episode != episode_id:
+                    break
+                candidate = self.rollout_buffer.popleft()
+                _accept(candidate)
+                if not episode_id and bool(getattr(candidate, "done", False)):
+                    break
 
         while (
             self.rollout_shard_store is not None
             and self.rollout_shard_store.queued_step_count() > 0
             and len(steps) < take
         ):
-            fetched = self.rollout_shard_store.pop_steps(take - len(steps))
+            fetched = self.rollout_shard_store.pop_complete_episodes(take - len(steps))
             if not fetched:
                 break
             for candidate in fetched:
-                if str(getattr(candidate, "state_schema_version", "")) != expected_schema_version:
-                    schema_filtered += 1
-                    continue
-                steps.append(candidate)
+                _accept(candidate)
 
         return steps, schema_filtered
 
@@ -1731,7 +1778,9 @@ class RLAgent:
 
     async def play_game(self, game_instance: GameInstance, player_name: str) -> Dict[str, Any]:
         """Play a complete game"""
-        episode_steps: deque = deque(maxlen=self.config.max_episode_steps)
+        episode_steps: List[Dict[str, Any]] = []
+        episode_oversized = False
+        recorder_finalized = False
         counter_snapshot_before = self._snapshot_hate_draft_counters()
         game_outcome: Dict[str, Any] = {"completed": False, "rank": 4, "vp": 0}
         max_transport_retries = max(1, self._safe_env_int("AGENT_TRANSPORT_RETRY_LIMIT", 6))
@@ -1813,6 +1862,19 @@ class RLAgent:
                     # After a successful action, repoll immediately so chained prompts
                     # don't pay an extra AGENT_POLL_INTERVAL_SEC delay.
                     if submitted_action:
+                        if len(episode_steps) > max(1, int(self.config.max_episode_steps)):
+                            if not episode_oversized:
+                                logger.error(
+                                    "Dropping oversized live episode for agent %s after %d steps",
+                                    self.id[:8],
+                                    len(episode_steps),
+                                )
+                                self._bump_decision_stat("oversized_episodes_dropped")
+                            episode_oversized = True
+                            episode_steps.clear()
+                        elif episode_oversized:
+                            # Do not retain a tail fragment after the beginning was dropped.
+                            episode_steps.clear()
                         continue
                 
                 # Wait before polling again to avoid busy-waiting
@@ -1822,13 +1884,18 @@ class RLAgent:
             self.games_played += 1
             final_state = await game_instance.get_final_state()
             game_outcome = await self._record_game_result(final_state, player_name, game_instance)
+            if self.decision_recorder is not None:
+                recorder_outcome = game_outcome if not episode_oversized else {**game_outcome, "completed": False}
+                self.decision_recorder.finish_episode(game_instance.game_id, self.id, recorder_outcome)
+                recorder_finalized = True
 
             # Queue PPO trajectory for coordinator-driven optimization.
-            if self.train_from_self_play and game_outcome.get("completed", False):
+            if self.train_from_self_play and game_outcome.get("completed", False) and not episode_oversized:
                 reward = self._compute_terminal_reward(
                     game_outcome.get("rank", 4),
                     game_outcome.get("vp", 0),
                     game_outcome.get("completed", False),
+                    game_outcome.get("vp_mean", game_outcome.get("vp", 0)),
                 )
                 reward *= self.self_play_reward_scale
                 if self.ppo_enable:
@@ -1869,6 +1936,15 @@ class RLAgent:
             logger.error(f"Agent {self.id[:8]} failed during game: {e}")
             raise
         finally:
+            if self.decision_recorder is not None and not recorder_finalized:
+                try:
+                    self.decision_recorder.finish_episode(
+                        game_instance.game_id,
+                        self.id,
+                        {"completed": False},
+                    )
+                except Exception:
+                    logger.debug("Failed to discard incomplete recorded episode", exc_info=True)
             try:
                 self._clear_recurrent_state_for_player(locals().get("player_id"))
             except Exception:
@@ -2105,6 +2181,14 @@ class RLAgent:
                             player_id,
                             action_meta.get("recurrent_state_out"),
                         )
+                        if self.decision_recorder is not None:
+                            self.decision_recorder.record_decision(
+                                game_instance.game_id,
+                                self.id,
+                                planner_state,
+                                action_meta,
+                                seed=getattr(game_instance, "rl_seed", None),
+                            )
                     logger.debug(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
                     if sampled_from_policy and policy_action_idx is not None:
                         if action_meta is not None:
@@ -2122,9 +2206,8 @@ class RLAgent:
                                 self._bump_decision_stat('rare_draft_keep_buy')
                             if rare_high_cost > 0.0:
                                 self._bump_decision_stat('rare_high_cost_payment')
-                        # Always record steps; the deque(maxlen=max_episode_steps)
-                        # automatically evicts the oldest entries so we keep the
-                        # last N steps (including the true terminal step).
+                        # Record the full episode. play_game invalidates the whole
+                        # trajectory if the 10k safety limit is exceeded.
                         step_reward = 0.0
                         reward_tr_component = 0.0
                         reward_cards_vp_component = 0.0
@@ -2871,6 +2954,7 @@ class RLAgent:
             return
 
         try:
+            action_meta.setdefault("game_seed", getattr(game_instance, "rl_seed", None))
             try:
                 game_url = game_instance.get_public_game_url()
             except Exception:
@@ -3116,6 +3200,65 @@ class RLAgent:
         force_random: bool = False,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool, Optional[Dict[str, Any]]]:
         """Get action from neural network"""
+        if self.decision_policy is not None:
+            try:
+                decision = self.decision_policy.score_actions(player_state, action_descriptors)
+                chosen_index = int(decision.chosen_action_index)
+                chosen_list_position = next(
+                    idx
+                    for idx, row in enumerate(action_descriptors)
+                    if int(row.get("action_index", -1)) == chosen_index
+                )
+                decoded = self.action_decoder.decode_action(chosen_index, player_state)
+                chosen_probability = max(
+                    1e-8,
+                    next(
+                        float(row.probability)
+                        for row in decision.actions
+                        if int(row.action_index) == chosen_index
+                    ),
+                )
+                meta = {
+                    "phase_index": int(self._extract_phase_index(player_state)),
+                    "recurrent_state": self._get_recurrent_state_for_player(player_id).detach().cpu().reshape(-1).tolist(),
+                    "recurrent_state_out": self._get_recurrent_state_for_player(player_id).detach().cpu().reshape(-1).tolist(),
+                    "aux_targets": self._compute_aux_targets(player_state),
+                    "aux_predictions": [],
+                    "rare_state_weight": 1.0,
+                    "available_actions_raw": [int(a) for a in raw_available_actions],
+                    "available_actions_filtered": [int(row.get("action_index", -1)) for row in action_descriptors],
+                    "action_descriptors": list(action_descriptors),
+                    "chosen_action_position": int(chosen_list_position),
+                    "chosen_action_label": self._describe_action(chosen_index, player_state),
+                    "sampled_from_policy": True,
+                    "value_old": 0.0,
+                    "legal_actions": [int(row.get("action_index", -1)) for row in action_descriptors],
+                    "logp_old": float(np.log(chosen_probability)),
+                    "policy_temperature": 1.0,
+                    "external_policy": {
+                        "version": str(decision.policy_version),
+                        "confidence": float(decision.confidence),
+                        "used_fallback": bool(decision.used_fallback),
+                        "scores": [asdict(row) for row in decision.actions],
+                    },
+                    "review_priority": {
+                        "teacher_confidence": float(decision.confidence),
+                        "teacher_student_disagreement": None,
+                        "priority_score": float(1.0 - decision.confidence),
+                    },
+                    "bundle_summary": {
+                        "world_token_count": int(planner_state["world_tokens"].shape[0]),
+                        "hand_token_count": int(planner_state["hand_tokens"].shape[0]),
+                        "action_token_count": int(planner_state["action_tokens"].shape[0]),
+                        "legal_action_count": int(len(action_descriptors)),
+                    },
+                }
+                if has_pending_capture_request(agent_id=self.id):
+                    meta["planner_bundle"] = planner_state
+                return decoded, chosen_index, True, meta
+            except Exception as exc:
+                logger.exception("External decision policy failed for agent %s: %s", self.id[:8], exc)
+                return None, None, False, None
         try:
             phase_index = int(self._extract_phase_index(player_state))
             recurrent_state_in = self._get_recurrent_state_for_player(player_id)
@@ -3302,6 +3445,32 @@ class RLAgent:
                 action_meta["policy_ranking"] = ranking
                 action_meta["policy_top_actions"] = ranking[:12]
                 action_meta["prompt_card_rankings"] = self.state_encoder.build_prompt_card_rankings(player_state)
+                action_meta["planner_bundle"] = planner_state
+                try:
+                    from .decision_policy import HeuristicTeacherPolicy
+
+                    teacher_decision = HeuristicTeacherPolicy(sample=False).score_actions(
+                        player_state,
+                        action_descriptors,
+                    )
+                    teacher_probs = {
+                        int(row.action_index): float(row.probability)
+                        for row in teacher_decision.actions
+                    }
+                    student_probs = sampled_distribution.detach().cpu().reshape(-1).tolist()
+                    disagreement = 0.5 * sum(
+                        abs(float(student_probs[pos]) - teacher_probs.get(int(action_idx), 0.0))
+                        for pos, action_idx in enumerate(available_actions[:len(student_probs)])
+                    )
+                    action_meta["review_priority"] = {
+                        "teacher_confidence": float(teacher_decision.confidence),
+                        "teacher_student_disagreement": float(disagreement),
+                        "priority_score": float(max(1.0 - teacher_decision.confidence, disagreement)),
+                        "teacher_action_index": int(teacher_decision.chosen_action_index),
+                        "student_action_index": int(action_index),
+                    }
+                except Exception as exc:
+                    logger.debug("Could not calculate snapshot review priority: %s", exc)
             if sampled_distribution is not None:
                 action_meta["value_old"] = float(value.squeeze().item())
                 action_meta["legal_actions"] = [int(a) for a in available_actions]
@@ -3378,6 +3547,9 @@ class RLAgent:
         masked_probs = masked_probs / total_prob
 
         effective_epsilon = self._effective_policy_epsilon(force_random=force_random)
+        if self.deterministic_actions:
+            chosen_pos = int(torch.argmax(masked_probs).item())
+            return chosen_pos, int(available_actions[chosen_pos]), True, masked_probs
         if np.random.random() < float(effective_epsilon):
             random_pos = int(np.random.choice(valid_positions))
             return random_pos, int(available_actions[random_pos]), False, masked_probs
@@ -3407,6 +3579,7 @@ class RLAgent:
             
             vp = 0
             rank = 4
+            table_vps: List[float] = []
 
             # Prefer authoritative data from the JSON player view to avoid parsing dynamic HTML
             try:
@@ -3425,6 +3598,7 @@ class RLAgent:
                             def mc_val(p: Dict[str, Any]) -> int:
                                 return int(p.get('megaCredits', 0) or 0)
                             sorted_players = sorted(players_view, key=lambda p: (vp_total(p), mc_val(p)), reverse=True)
+                            table_vps = [float(vp_total(p)) for p in sorted_players]
                             for idx, p in enumerate(sorted_players, start=1):
                                 if p.get('name') == player_name:
                                     vp = vp_total(p)
@@ -3442,20 +3616,40 @@ class RLAgent:
                 vp = int(((our_player.get('victoryPointsBreakdown', {}) or {}).get('total', 0) or 0))
                 # Rank may not be present; keep previous value if missing
                 rank = int(our_player.get('rank', rank) or rank)
+            if not table_vps:
+                table_vps = [
+                    float(((p.get('victoryPointsBreakdown', {}) or {}).get('total', 0) or 0))
+                    for p in (final_state.get('players', []) or [])
+                    if isinstance(p, dict)
+                ]
 
             # Update aggregates
             self.total_victory_points += int(vp)
             if int(rank) == 1:
                 self.wins += 1
             logger.info(f"Agent {self.id[:8]} finished rank {rank} with {vp} VP")
-            return {"completed": True, "rank": int(rank), "vp": int(vp)}
+            vp_mean = (sum(table_vps) / len(table_vps)) if table_vps else float(vp)
+            return {"completed": True, "rank": int(rank), "vp": int(vp), "vp_mean": float(vp_mean)}
         
         except Exception as e:
             logger.error(f"Error recording game result: {e}")
             return {"completed": False, "rank": 4, "vp": 0}
 
-    def _compute_terminal_reward(self, rank: int, vp: int, completed: bool = True) -> float:
+    def _compute_terminal_reward(
+        self,
+        rank: int,
+        vp: int,
+        completed: bool = True,
+        vp_mean: Optional[float] = None,
+    ) -> float:
         """Convert game outcome into a bounded terminal reward for policy updates."""
+        if _safe_env_bool("TFM_RL_V2", False):
+            return calculate_v2_terminal_reward(
+                rank=rank,
+                victory_points=vp,
+                table_vp_mean=vp if vp_mean is None else vp_mean,
+                completed=completed,
+            )
         return calculate_terminal_reward(rank=rank, victory_points=vp, completed=completed)
 
     async def _queue_episode_rollout(self, episode_steps: List[Dict[str, Any]], terminal_reward: float):
@@ -3463,13 +3657,24 @@ class RLAgent:
         if not episode_steps:
             return
 
-        steps = list(episode_steps)  # deque already capped at max_episode_steps
+        steps = list(episode_steps)
+        max_episode_steps = max(1, int(self.config.max_episode_steps))
+        if len(steps) > max_episode_steps:
+            logger.error(
+                "Dropping oversized episode for agent %s: steps=%d limit=%d",
+                self.id[:8], len(steps), max_episode_steps,
+            )
+            self._bump_decision_stat("oversized_episodes_dropped")
+            return
+        episode_id = uuid.uuid4().hex
         rollout_steps: List[PPORolloutStep] = []
         for idx, step in enumerate(steps):
             try:
                 state_bundle = step.get("state_bundle")
                 if not isinstance(state_bundle, dict):
-                    continue
+                    logger.error("Dropping episode with an invalid state bundle for agent %s", self.id[:8])
+                    self._bump_decision_stat("invalid_episodes_dropped")
+                    return
                 reward = float(step.get("reward", 0.0))
                 if idx == len(steps) - 1:
                     reward += float(terminal_reward)
@@ -3507,17 +3712,24 @@ class RLAgent:
                         reward_other_component=float(step.get("reward_other_component", 0.0) or 0.0),
                         reward_shaping_coef=float(step.get("reward_shaping_coef", 0.0) or 0.0),
                         state_schema_version=self.state_schema_version,
+                        episode_id=episode_id,
+                        step_index=int(idx),
+                        policy_version=int(self.policy_version),
+                        terminal=(idx == len(steps) - 1),
+                        bootstrap_value=0.0,
                     )
                 )
-            except Exception:
-                continue
+            except Exception as exc:
+                logger.error("Dropping malformed episode for agent %s: %s", self.id[:8], exc)
+                self._bump_decision_stat("invalid_episodes_dropped")
+                return
 
         if not rollout_steps:
             return
 
         async with self.training_lock:
             if self.rollout_shard_store is not None:
-                self.rollout_shard_store.append_steps(rollout_steps)
+                self.rollout_shard_store.append_episode(rollout_steps)
             else:
                 for step in rollout_steps:
                     self.rollout_buffer.append(step)
@@ -3566,6 +3778,7 @@ class RLAgent:
 
         metrics["rollout/schema_filtered"] = int(schema_filtered)
         if metrics:
+            self.policy_version += 1
             logger.info(
                 "Agent %s PPO update: steps=%d policy_loss=%.4f value_loss=%.4f approx_kl=%.4f entropy_coef=%.4f",
                 self.id[:8],
@@ -3634,7 +3847,10 @@ class RLAgent:
 
         # Protect optimizer/network updates when the same agent appears in concurrent games.
         async with self.training_lock:
-            steps = list(episode_steps)  # deque already capped at max_episode_steps
+            steps = list(episode_steps)
+            if len(steps) > max(1, int(self.config.max_episode_steps)):
+                self._bump_decision_stat("oversized_episodes_dropped")
+                return
             device = next(self.network.parameters()).device
             states = pad_bundle_batch(
                 [step.get("state_bundle", {}) for step in steps],
@@ -3939,12 +4155,14 @@ class RLAgent:
     def save_model(self, path: str):
         """Save model to disk"""
         torch.save({
+            'experiment_version': 'tfm-rl-v2' if _safe_env_bool('TFM_RL_V2', False) else 'legacy',
             'network_state_dict': self.network.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'config': asdict(self.config),
             'games_played': self.games_played,
             'total_victory_points': self.total_victory_points,
-            'wins': self.wins
+            'wins': self.wins,
+            'policy_version': int(self.policy_version),
         }, path)
     
     def load_model(self, path: str):
@@ -3957,6 +4175,9 @@ class RLAgent:
         except TypeError:
             # Backward compatibility for torch versions without weights_only argument.
             checkpoint = torch.load(path, map_location='cpu')
+        if _safe_env_bool('TFM_RL_V2', False) and checkpoint.get('experiment_version') != 'tfm-rl-v2':
+            raise RuntimeError(f"TFM RL v2 refuses a checkpoint without the v2 marker: {path}")
+        self.policy_version = int(checkpoint.get('policy_version', 0) or 0)
 
         # Restore saved AgentConfig so policy behavior and training hyperparameters
         # remain consistent after resume/load.

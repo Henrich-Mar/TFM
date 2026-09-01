@@ -1,5 +1,6 @@
 /terraforming-mars
 /rl-models
+/rl-v2
 __pycache__
 *.log
 /docker-compose.rl_cloud.generated.yml

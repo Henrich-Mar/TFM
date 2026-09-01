@@ -52,6 +52,54 @@ class RolloutShardStore:
         self._queued_steps += int(written)
         return int(written)
 
+    def append_episode(self, steps: Sequence[Any]) -> int:
+        """Persist one complete episode as one atomic shard."""
+        items = list(steps or [])
+        if not items:
+            return 0
+        episode_ids = {str(getattr(step, "episode_id", "") or "") for step in items}
+        if len(episode_ids) != 1 or "" in episode_ids:
+            raise ValueError("episode shard must contain exactly one non-empty episode_id")
+        step_indices = [int(getattr(step, "step_index", -1)) for step in items]
+        if step_indices != list(range(len(items))):
+            raise ValueError("episode shard step_index values must be contiguous from zero")
+        if not bool(getattr(items[-1], "terminal", getattr(items[-1], "done", False))):
+            raise ValueError("episode shard must end with a terminal step")
+        path = self._new_shard_path(len(items))
+        self._write_payload(path, items)
+        self._queued_steps += len(items)
+        return len(items)
+
+    def pop_complete_episodes(self, target_steps: int) -> List[Any]:
+        """Pop whole episode shards until the target is met or the queue is empty."""
+        target = max(1, int(target_steps))
+        out: List[Any] = []
+        for path, meta in self._iter_shards():
+            if out and len(out) >= target:
+                break
+            parsed_count = int(meta[2]) if meta is not None else 0
+            try:
+                payload = list(self._read_payload(path) or [])
+            except Exception as exc:
+                logger.warning("Dropping unreadable rollout episode %s: %s", path, exc)
+                self._drop_path(path, parsed_count=parsed_count)
+                continue
+            actual_count = len(payload)
+            if actual_count != parsed_count:
+                self._queued_steps = max(0, self._queued_steps + actual_count - parsed_count)
+            if not payload:
+                self._drop_path(path, parsed_count=0)
+                continue
+            episode_ids = {str(getattr(step, "episode_id", "") or "") for step in payload}
+            if len(episode_ids) > 1:
+                logger.warning("Dropping mixed-episode rollout shard %s", path)
+                self._drop_path(path, parsed_count=actual_count)
+                continue
+            out.extend(payload)
+            self._queued_steps = max(0, self._queued_steps - actual_count)
+            self._drop_path(path, parsed_count=0)
+        return out
+
     def pop_steps(self, max_steps: int) -> List[Any]:
         take = max(0, int(max_steps))
         if take <= 0 or self._queued_steps <= 0:

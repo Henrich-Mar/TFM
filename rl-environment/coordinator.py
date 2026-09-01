@@ -44,6 +44,7 @@ from training.generation_quality import (
     annotate_generation_validity,
     expected_games_evaluated_per_generation,
 )
+from v2_runtime import initialize_v2_runtime
 
 # Configure logging with rotation (env toggles)
 LOG_DIR = os.getenv('RL_LOG_DIR', '/app/rl-logs')
@@ -2099,6 +2100,12 @@ class RLCoordinator:
 
 async def main():
     """Main entry point"""
+    initialize_v2_runtime()
+    if str(os.getenv("TFM_RL_V2", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        raise RuntimeError(
+            "Legacy population/evolution coordinator is disabled in TFM RL v2. "
+            "Use training.v2_collect_teacher, training.v2_pretrain, or training.v2_self_play."
+        )
     # Parse environment variables
     game_servers = os.getenv('GAME_SERVERS', 'localhost:8080').split(',')
     

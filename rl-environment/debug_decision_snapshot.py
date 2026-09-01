@@ -97,6 +97,13 @@ def get_snapshot_root() -> str:
     return str(root)
 
 
+def get_annotation_root() -> str:
+    env_path = str(os.getenv("V2_TEACHER_ANNOTATION_DIR", "") or "").strip()
+    root = Path(env_path) if env_path else Path(get_snapshot_root()) / "annotations"
+    root.mkdir(parents=True, exist_ok=True)
+    return str(root)
+
+
 def create_capture_request(
     agent_id: Optional[str] = None,
     game_id: Optional[str] = None,
@@ -715,6 +722,7 @@ def build_decision_snapshot(
         },
         "prompt": {
             "game_id": str(game_id or "").strip(),
+            "seed": action_meta.get("game_seed"),
             "game_url": str(game_url or "").strip(),
             "player_id": str(player_id or "").strip(),
             "player_name": str(this_player.get("name", "") or "").strip(),
@@ -744,6 +752,7 @@ def build_decision_snapshot(
             "prompt_candidates": prompt_candidates,
             "prompt_card_rankings": prompt_card_rankings,
             "planner": dict(action_meta.get("bundle_summary", {}) or {}),
+            "planner_bundle": action_meta.get("planner_bundle", {}),
         },
         "policy": {
             "chosen_action_index": chosen_action_index,
@@ -765,6 +774,8 @@ def build_decision_snapshot(
         },
         "diagnostics": {
             "transformer": dict(action_meta.get("transformer_stats", {}) or {}),
+            "review_priority": dict(action_meta.get("review_priority", {}) or {}),
+            "external_policy": dict(action_meta.get("external_policy", {}) or {}),
             "rare_state": {
                 "weight": _safe_float(action_meta.get("rare_state_weight", 1.0)),
                 "award_funding": _safe_float(action_meta.get("rare_award_funding", 0.0)),
@@ -823,6 +834,7 @@ def list_saved_snapshots() -> List[Dict[str, Any]]:
             continue
         prompt = dict(payload.get("prompt", {}) or {})
         agent = dict(payload.get("agent", {}) or {})
+        review = dict((payload.get("diagnostics", {}) or {}).get("review_priority", {}) or {})
         items.append(
             {
                 "snapshot_id": str(payload.get("snapshot_id", path.stem)),
@@ -834,9 +846,11 @@ def list_saved_snapshots() -> List[Dict[str, Any]]:
                 "phase": str(prompt.get("phase", "") or ""),
                 "prompt_type": str(prompt.get("prompt_type", "") or ""),
                 "send_outcome": str(prompt.get("send_outcome", "") or ""),
+                "review_priority": _safe_float(review.get("priority_score", 0.0)),
                 "path": str(path),
             }
         )
+    items.sort(key=lambda item: (float(item.get("review_priority", 0.0)), str(item.get("captured_at", ""))), reverse=True)
     return items
 
 
@@ -848,4 +862,43 @@ def load_snapshot(snapshot_id: str) -> Dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid snapshot payload: {snapshot_id}")
+    return payload
+
+
+def save_snapshot_annotation(
+    snapshot_id: str,
+    accepted_action_indices: List[int],
+    note: str = "",
+    skip: bool = False,
+) -> Dict[str, Any]:
+    snapshot = load_snapshot(snapshot_id)
+    legal = {int(item) for item in ((snapshot.get("policy", {}) or {}).get("legal_actions", []) or [])}
+    accepted = sorted({int(item) for item in (accepted_action_indices or [])})
+    if not skip and not accepted:
+        raise ValueError("select at least one acceptable action or mark the snapshot skipped")
+    invalid = [item for item in accepted if item not in legal]
+    if invalid:
+        raise ValueError(f"annotation contains non-legal actions: {invalid}")
+    payload = {
+        "schema_version": "teacher_annotation.v1",
+        "snapshot_id": str(snapshot.get("snapshot_id", snapshot_id)),
+        "annotated_at": _utc_now_iso(),
+        "accepted_action_indices": accepted,
+        "note": str(note or "").strip(),
+        "skip": bool(skip),
+    }
+    path = Path(get_annotation_root()) / f"{_sanitize_id(snapshot_id)}.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return payload
+
+
+def load_snapshot_annotation(snapshot_id: str) -> Dict[str, Any]:
+    path = Path(get_annotation_root()) / f"{_sanitize_id(snapshot_id)}.json"
+    if not path.is_file():
+        raise FileNotFoundError(snapshot_id)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("invalid teacher annotation")
     return payload

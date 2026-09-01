@@ -85,6 +85,28 @@ def calculate_terminal_reward(rank: Any, victory_points: Any, completed: Any) ->
     return max(-2.0, min(2.0, float(normalized)))
 
 
+def calculate_v2_terminal_reward(
+    rank: Any,
+    victory_points: Any,
+    table_vp_mean: Any,
+    completed: Any,
+) -> float:
+    """Bounded relative terminal objective for the clean v2 experiment."""
+    if not bool(completed):
+        return -1.0
+    try:
+        rank_int = int(rank)
+    except Exception:
+        rank_int = 4
+    try:
+        vp_margin = float(victory_points) - float(table_vp_mean)
+    except Exception:
+        vp_margin = 0.0
+    rank_reward = {1: 1.0, 2: 0.25, 3: -0.25, 4: -1.0}.get(rank_int, -1.0)
+    margin_bonus = max(-0.1, min(0.1, 0.05 * (vp_margin / 20.0)))
+    return float(rank_reward + margin_bonus)
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         # Apply Hard Mode scaling

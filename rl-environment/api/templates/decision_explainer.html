@@ -225,6 +225,19 @@
       <div id="ranking" class="empty">No ranking available.</div>
     </section>
 
+    <section class="panel strong">
+      <div class="section-head">
+        <h2>Human Teacher Annotation</h2>
+      </div>
+      <label for="acceptedActions">Acceptable actions (Ctrl/Cmd for multiple)</label>
+      <select id="acceptedActions" multiple size="8"></select>
+      <label for="annotationNote">Why is this strategically acceptable?</label>
+      <textarea id="annotationNote" placeholder="Short strategic reason"></textarea>
+      <label><input id="annotationSkip" type="checkbox" style="width:auto; margin-right:8px;">Skip this position</label>
+      <button id="saveAnnotation" type="button">Save Teacher Annotation</button>
+      <div id="annotationStatus" class="status subtle"></div>
+    </section>
+
     <section class="grid two">
       <div class="panel">
         <div class="section-head">
@@ -301,6 +314,7 @@
 
   <script>
     const initialSnapshotId = {{ snapshot_id|tojson }};
+    let currentSnapshot = null;
 
     const esc = (value) => {
       const div = document.createElement("div");
@@ -360,12 +374,13 @@
       const select = document.getElementById("snapshotSelect");
       const snapshots = Array.isArray(payload.snapshots) ? payload.snapshots : [];
       select.innerHTML = snapshots.length
-        ? snapshots.map((item) => `<option value="${esc(item.snapshot_id)}">${esc(item.snapshot_id)} | ${esc(item.prompt_type)} | ${esc(item.player_name || item.player_id || item.agent_id)}</option>`).join("")
+        ? snapshots.map((item) => `<option value="${esc(item.snapshot_id)}">priority ${fmt(item.review_priority, 3)} | ${esc(item.prompt_type)} | ${esc(item.player_name || item.player_id || item.agent_id)}</option>`).join("")
         : `<option value="">No snapshots yet</option>`;
       return payload;
     }
 
     function renderSnapshot(snapshot) {
+      currentSnapshot = snapshot;
       const prompt = snapshot.prompt || {};
       const state = snapshot.state || {};
       const policy = snapshot.policy || {};
@@ -392,9 +407,13 @@
 
       const transformer = diagnostics.transformer || {};
       const rare = diagnostics.rare_state || {};
+      const review = diagnostics.review_priority || {};
       renderKV(document.getElementById("diagnostics"), [
         ["Value estimate", fmt(policy.value_estimate, 4)],
         ["Policy temperature", fmt(policy.policy_temperature, 3)],
+        ["Review priority", fmt(review.priority_score, 3)],
+        ["Teacher confidence", fmt(review.teacher_confidence, 3)],
+        ["Teacher/student disagreement", fmt(review.teacher_student_disagreement, 3)],
         ["Transformer enabled", transformer.enabled ? "yes" : "no"],
         ["Token count", esc(transformer.token_count ?? 0)],
         ["Planner bundle", `${fmt(planner.world_token_count, 0)} world / ${fmt(planner.hand_token_count, 0)} hand / ${fmt(planner.action_token_count, 0)} actions`],
@@ -456,6 +475,13 @@
           </tbody>
         </table>
       ` : `<div class="empty">No ranking available.</div>`;
+      const descriptors = Array.isArray(policy.action_descriptors) ? policy.action_descriptors : [];
+      document.getElementById("acceptedActions").innerHTML = descriptors.map((row) =>
+        `<option value="${esc(row.action_index)}">${esc(row.label || row.family || row.action_index)} | ${esc(row.family || "other")}</option>`
+      ).join("");
+      document.getElementById("annotationNote").value = "";
+      document.getElementById("annotationSkip").checked = false;
+      document.getElementById("annotationStatus").textContent = "";
 
       renderKV(document.getElementById("playerState"), [
         ["Name", esc(player.name || "")],
@@ -596,6 +622,26 @@
       await loadSnapshotList();
     }
 
+    async function saveAnnotation() {
+      if (!currentSnapshot || !currentSnapshot.snapshot_id) throw new Error("No snapshot selected");
+      const accepted = Array.from(document.getElementById("acceptedActions").selectedOptions).map((option) => Number(option.value));
+      const payload = {
+        accepted_action_indices: accepted,
+        note: document.getElementById("annotationNote").value || "",
+        skip: document.getElementById("annotationSkip").checked,
+      };
+      const resp = await fetch(`/debug/decision-snapshots/${encodeURIComponent(currentSnapshot.snapshot_id)}/annotation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        const error = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${error}`);
+      }
+      document.getElementById("annotationStatus").textContent = "Annotation saved.";
+    }
+
     async function init() {
       try {
         const payload = await loadSnapshotList();
@@ -634,6 +680,14 @@
         await armCapture();
       } catch (err) {
         setStatus(`Capture request failed: ${err}`, "bad");
+      }
+    });
+
+    document.getElementById("saveAnnotation").addEventListener("click", async () => {
+      try {
+        await saveAnnotation();
+      } catch (err) {
+        document.getElementById("annotationStatus").textContent = `Save failed: ${err}`;
       }
     });
 

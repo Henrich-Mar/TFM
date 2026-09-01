@@ -14,13 +14,15 @@ import aiohttp
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 from debug_decision_snapshot import (
     create_capture_request,
     list_capture_requests,
     list_saved_snapshots,
     load_snapshot,
+    load_snapshot_annotation,
+    save_snapshot_annotation,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,12 @@ class DecisionSnapshotCaptureRequest(BaseModel):
     player_id: Optional[str] = None
     note: str = ""
     include_state_vector: bool = False
+
+
+class DecisionSnapshotAnnotationRequest(BaseModel):
+    accepted_action_indices: List[int] = Field(default_factory=list)
+    note: str = ""
+    skip: bool = False
 
 
 def _utc_now_iso() -> str:
@@ -826,6 +834,29 @@ async def get_decision_snapshot(snapshot_id: str):
         raise HTTPException(status_code=404, detail=f"Snapshot not found: {snapshot_id}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/debug/decision-snapshots/{snapshot_id}/annotation")
+async def annotate_decision_snapshot(snapshot_id: str, request: DecisionSnapshotAnnotationRequest):
+    try:
+        return save_snapshot_annotation(
+            snapshot_id,
+            accepted_action_indices=request.accepted_action_indices,
+            note=request.note,
+            skip=request.skip,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Snapshot not found: {snapshot_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/debug/decision-snapshots/{snapshot_id}/annotation")
+async def get_decision_snapshot_annotation(snapshot_id: str):
+    try:
+        return load_snapshot_annotation(snapshot_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Annotation not found: {snapshot_id}")
 
 
 @app.post("/play/human-vs-generation")

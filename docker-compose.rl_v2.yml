@@ -1,0 +1,53 @@
+services:
+  tfm-server-1:
+    environment:
+      - RL_ALLOW_FIXED_SEED=1
+  tfm-server-2:
+    environment:
+      - RL_ALLOW_FIXED_SEED=1
+  tfm-server-3:
+    environment:
+      - RL_ALLOW_FIXED_SEED=1
+  tfm-server-4:
+    environment:
+      - RL_ALLOW_FIXED_SEED=1
+  postgres:
+    environment:
+      - POSTGRES_DB=tfm_rl_v2
+    volumes:
+      - postgres_data_v2:/var/lib/postgresql/data
+  rl-coordinator:
+    restart: "no"
+    command: ["python", "-m", "training.v2_entrypoint"]
+    volumes:
+      - ./rl-environment:/app
+      - ./rl-v2:/app/v2
+      - ./card_metadata.json:/app/card_metadata.json:ro
+    environment:
+      - TFM_RL_V2=1
+      - TFM_RL_V2_ROOT=/app/v2
+      - V2_ALLOW_RESUME=0
+      - RESUME_TRAINING=0
+      - BOOTSTRAP_CHECKPOINT_PATH=
+      - RL_MODELS_DIR=/app/v2/models
+      - RL_CHECKPOINT_DIR=/app/v2/checkpoints
+      - PPO_ROLLOUT_SHARD_DIR=/app/v2/rollouts
+      - V2_TEACHER_DATASET_DIR=/app/v2/teacher-dataset
+      - V2_BENCHMARK_DIR=/app/v2/benchmarks
+      - V2_METRICS_DIR=/app/v2/metrics
+      - RL_LOG_DIR=/app/v2/logs
+      - POSTGRES_URL=postgresql://tfm:tfm_password@postgres:5432/tfm_rl_v2
+      - GAME_OPTIONS_FILE=/app/game_options.v2_stage0.json
+      - STATE_SCHEMA_VERSION=v2
+      - PPO_GAMMA=1.0
+      - PPO_GAE_LAMBDA=1.0
+      - PPO_SHAPING_INITIAL_COEF=0.0
+      - PPO_SHAPING_FINAL_COEF=0.0
+      - AGENT_MAX_EPISODE_STEPS=10000
+      - PPO_STRICT_ON_POLICY=1
+      - LEAGUE_ENABLE=0
+      - EVOLUTION_IMMIGRANT_RATIO=0.0
+      - FIXED_BENCHMARK_ENABLED=0
+
+volumes:
+  postgres_data_v2:

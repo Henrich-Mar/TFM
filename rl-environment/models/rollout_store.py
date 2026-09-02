@@ -91,8 +91,15 @@ class RolloutShardStore:
                 self._drop_path(path, parsed_count=0)
                 continue
             episode_ids = {str(getattr(step, "episode_id", "") or "") for step in payload}
-            if len(episode_ids) > 1:
-                logger.warning("Dropping mixed-episode rollout shard %s", path)
+            step_indices = [int(getattr(step, "step_index", -1)) for step in payload]
+            terminal = bool(getattr(payload[-1], "terminal", getattr(payload[-1], "done", False)))
+            if (
+                len(episode_ids) != 1
+                or "" in episode_ids
+                or step_indices != list(range(len(payload)))
+                or not terminal
+            ):
+                logger.warning("Dropping invalid complete-episode rollout shard %s", path)
                 self._drop_path(path, parsed_count=actual_count)
                 continue
             out.extend(payload)

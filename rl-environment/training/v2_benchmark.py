@@ -7,7 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
-from statistics import mean
+from statistics import mean, stdev
 from typing import Any, Dict, List, Optional
 
 from game_interface import GameServerCluster
@@ -29,6 +29,16 @@ def wilson_interval(successes: int, trials: int, z: float = 1.959963984540054) -
 
 def wilson_lower(successes: int, trials: int, z: float = 1.959963984540054) -> float:
     return wilson_interval(successes, trials, z)[0]
+
+
+def mean_interval(values: List[float], z: float = 1.959963984540054) -> tuple[float, float]:
+    if not values:
+        return 0.0, 0.0
+    center = mean(values)
+    if len(values) < 2:
+        return float(center), float(center)
+    half_width = float(z) * (stdev(values) / math.sqrt(len(values)))
+    return float(center - half_width), float(center + half_width)
 
 
 def _load_seeds(path: Optional[str] = None) -> List[int]:
@@ -96,6 +106,12 @@ async def benchmark(
     try:
         for seed in seeds:
             for candidate_seat in range(4):
+                # Keep stochastic RandomLegal baselines reproducible across complete
+                # benchmark reruns instead of depending on prior games in this process.
+                for opponent_index, opponent in enumerate(opponents):
+                    policy = getattr(opponent, "decision_policy", None)
+                    if isinstance(policy, RandomLegalPolicy):
+                        policy.rng.seed((int(seed) * 1009) + (candidate_seat * 17) + opponent_index)
                 lineup: List[RLAgent] = list(opponents)
                 lineup.insert(candidate_seat, candidate)
                 result = await manager._run_single_game(
@@ -128,6 +144,8 @@ async def benchmark(
         int(agent.get_behavior_stats().get("policy_rejections", 0)) for agent in all_agents
     ) - rejection_count_before
     wilson_low, wilson_high = wilson_interval(wins, completed)
+    rank_low, rank_high = mean_interval([float(item) for item in ranks])
+    vp_low, vp_high = mean_interval(vp_margins)
     if baseline == "random" and int(stage) == 0:
         gate_passed = completed >= math.ceil(0.99 * total) and rejection_count == 0 and first_place_rate >= 0.55
     elif baseline == "teacher" and int(stage) == 1:
@@ -147,7 +165,11 @@ async def benchmark(
         "first_place_wilson_lower_95": wilson_low,
         "first_place_wilson_upper_95": wilson_high,
         "mean_rank": mean(ranks) if ranks else 4.0,
+        "mean_rank_lower_95": rank_low,
+        "mean_rank_upper_95": rank_high,
         "mean_relative_vp_margin": mean(vp_margins) if vp_margins else 0.0,
+        "mean_relative_vp_margin_lower_95": vp_low,
+        "mean_relative_vp_margin_upper_95": vp_high,
         "pairwise_score": pairwise_points / max(1, pairwise_trials),
         "gate_passed": bool(gate_passed),
         "seeds": seeds,
@@ -155,7 +177,8 @@ async def benchmark(
     }
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
-    target = output / f"benchmark_stage{stage}_{baseline}.json"
+    checkpoint_token = Path(checkpoint).stem.replace(" ", "_")
+    target = output / f"benchmark_{checkpoint_token}_stage{stage}_{baseline}.json"
     target.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
 

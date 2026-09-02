@@ -1,0 +1,25 @@
+{
+  "schema_version": "teacher_annotation.v1",
+  "snapshot_id": "20260901T201309Z_teacher-v1-s_card_gb96f039df38_25f3aece-e6b",
+  "annotated_at": "2026-09-02T04:22:35Z",
+  "accepted_action_indices": [
+    520,
+    521,
+    522,
+    523,
+    524,
+    525,
+    526,
+    527,
+    528,
+    529,
+    530,
+    531,
+    532,
+    533,
+    534,
+    535
+  ],
+  "note": "",
+  "skip": false
+}

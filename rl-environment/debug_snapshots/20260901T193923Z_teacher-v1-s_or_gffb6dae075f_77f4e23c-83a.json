@@ -1,0 +1,1383 @@
+{
+  "schema_version": "decision_snapshot.v1",
+  "captured_at": "2026-09-01T19:39:23Z",
+  "request": {
+    "request_id": "77f4e23c-83a2-4157-a57a-de304678ccad",
+    "note": "",
+    "include_state_vector": false
+  },
+  "agent": {
+    "id": "teacher-v1-seat-1"
+  },
+  "prompt": {
+    "game_id": "gffb6dae075f9",
+    "seed": 30020,
+    "game_url": "http://localhost:8081/game?id=gffb6dae075f9",
+    "player_id": "pd7172de2c0ae",
+    "player_name": "A2_teacherv",
+    "phase": "action",
+    "phase_index": 2,
+    "generation": 5,
+    "prompt_type": "or",
+    "prompt_title": "Take your first action",
+    "turn_action_count": 5,
+    "sampled_from_policy": true,
+    "send_outcome": "accepted"
+  },
+  "state": {
+    "this_player": {
+      "id": "",
+      "name": "A2_teacherv",
+      "color": "blue",
+      "terraform_rating": 27.0,
+      "resources": {
+        "mc": 0.0,
+        "steel": 6.0,
+        "titanium": 0.0,
+        "plants": 0.0,
+        "energy": 3.0,
+        "heat": 5.0
+      },
+      "production": {
+        "mc": 2.0,
+        "steel": 1.0,
+        "titanium": 2.0,
+        "plants": 2.0,
+        "energy": 2.0,
+        "heat": 3.0
+      },
+      "hand_count": 14,
+      "tableau_count": 10,
+      "cities_count": 0,
+      "greeneries_count": 0
+    },
+    "hand": [
+      {
+        "name": "Lake Marineris",
+        "cost": 18.0,
+        "calculated_cost": 18.0,
+        "base_cost": 18.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Lake Marineris"
+      },
+      {
+        "name": "Arctic Algae",
+        "cost": 12.0,
+        "calculated_cost": 12.0,
+        "base_cost": 12.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Arctic Algae"
+      },
+      {
+        "name": "Underground City",
+        "cost": 18.0,
+        "calculated_cost": 18.0,
+        "base_cost": 18.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Underground City"
+      },
+      {
+        "name": "Herbivores",
+        "cost": 12.0,
+        "calculated_cost": 12.0,
+        "base_cost": 12.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Herbivores"
+      },
+      {
+        "name": "Grass",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Grass"
+      },
+      {
+        "name": "Advanced Ecosystems",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Advanced Ecosystems"
+      },
+      {
+        "name": "Kelp Farming",
+        "cost": 17.0,
+        "calculated_cost": 17.0,
+        "base_cost": 17.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Kelp Farming"
+      },
+      {
+        "name": "Moss",
+        "cost": 4.0,
+        "calculated_cost": 4.0,
+        "base_cost": 4.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Moss"
+      },
+      {
+        "name": "Wave Power",
+        "cost": 8.0,
+        "calculated_cost": 8.0,
+        "base_cost": 8.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Wave Power"
+      },
+      {
+        "name": "Windmills",
+        "cost": 6.0,
+        "calculated_cost": 6.0,
+        "base_cost": 6.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Windmills"
+      },
+      {
+        "name": "Comet",
+        "cost": 21.0,
+        "calculated_cost": 21.0,
+        "base_cost": 21.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Comet"
+      },
+      {
+        "name": "Nitrogen-Rich Asteroid",
+        "cost": 31.0,
+        "calculated_cost": 31.0,
+        "base_cost": 31.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Nitrogen-Rich Asteroid"
+      },
+      {
+        "name": "Giant Space Mirror",
+        "cost": 17.0,
+        "calculated_cost": 17.0,
+        "base_cost": 17.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Giant Space Mirror"
+      },
+      {
+        "name": "Trees",
+        "cost": 13.0,
+        "calculated_cost": 13.0,
+        "base_cost": 13.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Trees"
+      }
+    ],
+    "tableau": [
+      {
+        "name": "Beginner Corporation",
+        "cost": 0.0,
+        "calculated_cost": 0.0,
+        "base_cost": 0.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Beginner Corporation"
+      },
+      {
+        "name": "Mining Rights",
+        "cost": 9.0,
+        "calculated_cost": 9.0,
+        "base_cost": 9.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Mining Rights"
+      },
+      {
+        "name": "Domed Crater",
+        "cost": 24.0,
+        "calculated_cost": 24.0,
+        "base_cost": 24.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Domed Crater"
+      },
+      {
+        "name": "Geothermal Power",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Geothermal Power"
+      },
+      {
+        "name": "Equatorial Magnetizer",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Equatorial Magnetizer"
+      },
+      {
+        "name": "Lunar Beam",
+        "cost": 13.0,
+        "calculated_cost": 13.0,
+        "base_cost": 13.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Lunar Beam"
+      },
+      {
+        "name": "Adapted Lichen",
+        "cost": 9.0,
+        "calculated_cost": 9.0,
+        "base_cost": 9.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Adapted Lichen"
+      },
+      {
+        "name": "Solar Wind Power",
+        "cost": 11.0,
+        "calculated_cost": 11.0,
+        "base_cost": 11.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Solar Wind Power"
+      },
+      {
+        "name": "Deimos Down",
+        "cost": 31.0,
+        "calculated_cost": 31.0,
+        "base_cost": 31.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Deimos Down"
+      },
+      {
+        "name": "Pets",
+        "cost": 10.0,
+        "calculated_cost": 10.0,
+        "base_cost": 10.0,
+        "tags": [],
+        "victory_points": 0.0,
+        "type": "",
+        "has_action": false,
+        "disabled": false,
+        "label": "Pets"
+      }
+    ],
+    "opponents": [
+      {
+        "id": "",
+        "name": "A1_teacherv",
+        "color": "red",
+        "terraform_rating": 26.0,
+        "resources": {
+          "mc": 0.0,
+          "steel": 0.0,
+          "titanium": 0.0,
+          "plants": 4.0,
+          "energy": 2.0,
+          "heat": 2.0
+        },
+        "production": {
+          "mc": 1.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 2.0,
+          "heat": 8.0
+        },
+        "hand_count": 0,
+        "tableau_count": 11,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A2_teacherv",
+        "color": "blue",
+        "terraform_rating": 27.0,
+        "resources": {
+          "mc": 0.0,
+          "steel": 6.0,
+          "titanium": 0.0,
+          "plants": 0.0,
+          "energy": 3.0,
+          "heat": 5.0
+        },
+        "production": {
+          "mc": 2.0,
+          "steel": 1.0,
+          "titanium": 2.0,
+          "plants": 2.0,
+          "energy": 2.0,
+          "heat": 3.0
+        },
+        "hand_count": 0,
+        "tableau_count": 10,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A3_teacherv",
+        "color": "green",
+        "terraform_rating": 23.0,
+        "resources": {
+          "mc": 4.0,
+          "steel": 0.0,
+          "titanium": 4.0,
+          "plants": 3.0,
+          "energy": 1.0,
+          "heat": 4.0
+        },
+        "production": {
+          "mc": 5.0,
+          "steel": 1.0,
+          "titanium": 1.0,
+          "plants": 1.0,
+          "energy": 0.0,
+          "heat": 7.0
+        },
+        "hand_count": 0,
+        "tableau_count": 10,
+        "cities_count": 0,
+        "greeneries_count": 0
+      },
+      {
+        "id": "",
+        "name": "A4_teacherv",
+        "color": "yellow",
+        "terraform_rating": 23.0,
+        "resources": {
+          "mc": 7.0,
+          "steel": 0.0,
+          "titanium": 4.0,
+          "plants": 7.0,
+          "energy": 3.0,
+          "heat": 6.0
+        },
+        "production": {
+          "mc": 2.0,
+          "steel": 2.0,
+          "titanium": 1.0,
+          "plants": 4.0,
+          "energy": 1.0,
+          "heat": 5.0
+        },
+        "hand_count": 0,
+        "tableau_count": 14,
+        "cities_count": 0,
+        "greeneries_count": 0
+      }
+    ],
+    "board": {
+      "temperature": -8.0,
+      "oxygen": 2.0,
+      "oceans": 2.0,
+      "venus": 0.0,
+      "map_name": ""
+    },
+    "awards": [
+      {
+        "index": 0,
+        "name": "Landlord",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 3.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Scientist",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Banker",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 5.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 2.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Thermalist",
+        "funded_by": "",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 12.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 11.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 12.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 14.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Miner",
+        "funded_by": "A2_teacherv",
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 9.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 6.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 7.0
+          }
+        ]
+      }
+    ],
+    "milestones": [
+      {
+        "index": 0,
+        "name": "Terraformer",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 26.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 27.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 23.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 23.0
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "name": "Mayor",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 1.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "name": "Gardener",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 0.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 1.0
+          }
+        ]
+      },
+      {
+        "index": 3,
+        "name": "Builder",
+        "claimed_by": "",
+        "minimum": 0.0,
+        "scores": [
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 2.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 4.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 6.0
+          },
+          {
+            "player_name": "",
+            "player_color": "",
+            "score": 7.0
+          }
+        ]
+      },
+      {
+        "index": 4,
+        "name": "Planner",
+        "claimed_by": "A3_teacherv",
+        "minimum": 0.0,
+        "scores": []
+      }
+    ],
+    "prompt_candidates": {
+      "cards": [],
+      "options": [
+        {
+          "index": 0,
+          "type": "card",
+          "title": "Standard projects",
+          "label": "Standard projects",
+          "cards_count": 5,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Power Plant:SP",
+              "cost": 11.0,
+              "calculated_cost": 11.0,
+              "base_cost": 11.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Power Plant:SP"
+            },
+            {
+              "name": "Asteroid:SP",
+              "cost": 14.0,
+              "calculated_cost": 14.0,
+              "base_cost": 14.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Asteroid:SP"
+            },
+            {
+              "name": "Aquifer",
+              "cost": 18.0,
+              "calculated_cost": 18.0,
+              "base_cost": 18.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Aquifer"
+            },
+            {
+              "name": "Greenery",
+              "cost": 23.0,
+              "calculated_cost": 23.0,
+              "base_cost": 23.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "Greenery"
+            },
+            {
+              "name": "City",
+              "cost": 25.0,
+              "calculated_cost": 25.0,
+              "base_cost": 25.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": true,
+              "label": "City"
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "type": "option",
+          "title": "Pass for this generation",
+          "label": "Pass for this generation",
+          "cards_count": 0,
+          "options_count": 0
+        },
+        {
+          "index": 2,
+          "type": "card",
+          "title": "Sell patents",
+          "label": "Sell patents",
+          "cards_count": 14,
+          "options_count": 0,
+          "cards_preview": [
+            {
+              "name": "Lake Marineris",
+              "cost": 18.0,
+              "calculated_cost": 18.0,
+              "base_cost": 18.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Lake Marineris"
+            },
+            {
+              "name": "Arctic Algae",
+              "cost": 12.0,
+              "calculated_cost": 12.0,
+              "base_cost": 12.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Arctic Algae"
+            },
+            {
+              "name": "Underground City",
+              "cost": 18.0,
+              "calculated_cost": 18.0,
+              "base_cost": 18.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Underground City"
+            },
+            {
+              "name": "Herbivores",
+              "cost": 12.0,
+              "calculated_cost": 12.0,
+              "base_cost": 12.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Herbivores"
+            },
+            {
+              "name": "Grass",
+              "cost": 11.0,
+              "calculated_cost": 11.0,
+              "base_cost": 11.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Grass"
+            },
+            {
+              "name": "Advanced Ecosystems",
+              "cost": 11.0,
+              "calculated_cost": 11.0,
+              "base_cost": 11.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Advanced Ecosystems"
+            },
+            {
+              "name": "Kelp Farming",
+              "cost": 17.0,
+              "calculated_cost": 17.0,
+              "base_cost": 17.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Kelp Farming"
+            },
+            {
+              "name": "Moss",
+              "cost": 4.0,
+              "calculated_cost": 4.0,
+              "base_cost": 4.0,
+              "tags": [],
+              "victory_points": 0.0,
+              "type": "",
+              "has_action": false,
+              "disabled": false,
+              "label": "Moss"
+            }
+          ]
+        }
+      ],
+      "map_candidates": [],
+      "moon_candidates": [],
+      "players": [],
+      "colonies": [],
+      "parties": [],
+      "global_events": [],
+      "tokens": [],
+      "policies": [],
+      "resource_types": [],
+      "payment_context": {
+        "amount": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "title": "Take your first action"
+      }
+    },
+    "prompt_card_rankings": [],
+    "planner": {
+      "world_token_count": 158,
+      "hand_token_count": 14,
+      "action_token_count": 1,
+      "legal_action_count": 1
+    },
+    "planner_bundle": {}
+  },
+  "policy": {
+    "chosen_action_index": 201,
+    "chosen_action_label": "SELECT_OPTION(Pass for this generation)",
+    "chosen_action_payload": {
+      "type": "or",
+      "index": 1,
+      "response": {
+        "type": "option"
+      }
+    },
+    "chosen_action_descriptor": {
+      "action_index": 201,
+      "action_position": 0,
+      "family": "select_option",
+      "label": "Pass for this generation",
+      "card_name": "",
+      "project_name": "",
+      "award_name": "",
+      "milestone_name": "",
+      "decoded_action": {
+        "type": "or",
+        "index": 1,
+        "response": {
+          "type": "option"
+        }
+      }
+    },
+    "policy_temperature": 1.0,
+    "value_estimate": 0.0,
+    "raw_available_actions": [
+      201
+    ],
+    "filtered_available_actions": [
+      201
+    ],
+    "legal_actions": [
+      201
+    ],
+    "action_descriptors": [
+      {
+        "action_index": 201,
+        "action_position": 0,
+        "family": "select_option",
+        "label": "Pass for this generation",
+        "decoded_action": {
+          "type": "or",
+          "index": 1,
+          "response": {
+            "type": "option"
+          }
+        },
+        "card_name": "",
+        "project_name": "",
+        "award_name": "",
+        "milestone_name": "",
+        "token_features": [
+          0.5,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3571428656578064,
+          0.0,
+          0.0,
+          0.3125,
+          0.25,
+          0.375,
+          0.550000011920929,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "action_rankings": [],
+    "top_actions": []
+  },
+  "aux": {
+    "targets": {
+      "planner_vector": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.03333333507180214,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.03333333507180214,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.03333333507180214,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.03333333507180214,
+        0.0,
+        0.0,
+        0.0,
+        0.03333333507180214,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.3333333432674408,
+        0.0,
+        0.0,
+        0.5699999928474426,
+        0.5516666769981384,
+        0.5266666412353516,
+        0.5049999952316284,
+        0.4350000023841858,
+        0.41999998688697815,
+        0.4183333218097687,
+        0.4166666567325592,
+        0.37833333015441895,
+        0.3700000047683716,
+        0.3700000047683716,
+        0.3700000047683716,
+        0.0,
+        0.23333333432674408,
+        0.6666666865348816,
+        0.0,
+        0.0,
+        0.0,
+        0.3333333432674408,
+        0.23333333432674408,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "predictions": {
+      "award_ev": 0.0,
+      "playable_cards": 0.0,
+      "steel_target": 0.0,
+      "titanium_target": 0.0,
+      "top_milestone_predictions": []
+    }
+  },
+  "diagnostics": {
+    "transformer": {},
+    "review_priority": {
+      "teacher_confidence": 0.9816843611112658,
+      "teacher_student_disagreement": null,
+      "priority_score": 0.01831563888873422
+    },
+    "external_policy": {
+      "version": "heuristic-teacher.v1",
+      "confidence": 0.9816843611112658,
+      "used_fallback": false,
+      "scores": [
+        {
+          "action_position": 0,
+          "action_index": 201,
+          "score": 0.0,
+          "probability": 1.0,
+          "reasons": [
+            "generic prompt semantics"
+          ]
+        }
+      ]
+    },
+    "rare_state": {
+      "weight": 1.0,
+      "award_funding": 0.0,
+      "milestone_timing": 0.0,
+      "draft_keep_buy": 0.0,
+      "high_cost_payment": 0.0,
+      "payment_value_estimate": 0.0
+    }
+  },
+  "snapshot_id": "20260901T193923Z_teacher-v1-s_or_gffb6dae075f_77f4e23c-83a",
+  "snapshot_path": "/app/debug_snapshots/20260901T193923Z_teacher-v1-s_or_gffb6dae075f_77f4e23c-83a.json"
+}

@@ -4,7 +4,7 @@
 
 - V2 začne s náhodne inicializovaným modelom, novým datasetom, novými checkpointmi a čistými metrikami.
 - Nebude načítavať, porovnávať ani automaticky objavovať Gen 332 či akékoľvek staré checkpointy.
-- Zachová sa použiteľná herná integrácia, legal masking, encoder a action-conditioned transformer.
+- Zachová s@a použiteľná herná integrácia, legal masking, encoder a action-conditioned transformer.
 - Postup bude: oprava tréningového základu → heuristický teacher → imitation learning → jeden self-play learner.
 - Prvý experiment bude obsahovať iba základnú hru. Expanzie, draft, MCTS a evolúcia zostanú vypnuté.
 

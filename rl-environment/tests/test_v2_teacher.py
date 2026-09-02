@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from models.decision_policy import HeuristicTeacherPolicy, RandomLegalPolicy
+from models.action_decoder import ActionDecoder
 
 
 def _descriptor(index: int, family: str, label: str = "") -> dict:
@@ -70,3 +71,17 @@ def test_unsupported_teacher_prompt_uses_deterministic_fallback_metric() -> None
     assert result.used_fallback
     assert teacher.decisions == 1
     assert teacher.fallbacks == 1
+
+
+def test_real_award_action_range_is_not_misclassified_as_card_subset() -> None:
+    decoder = ActionDecoder()
+    waiting_for = {
+        "type": "or",
+        "title": "Take one action",
+        "options": [{
+            "type": "or",
+            "title": "Fund an award",
+            "options": [{"type": "option", "title": "Landlord"}],
+        }],
+    }
+    assert decoder._semantic_family(600, waiting_for, {"type": "option"}) == "fund_award"

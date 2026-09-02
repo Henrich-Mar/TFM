@@ -44,10 +44,22 @@ services:
       - PPO_SHAPING_INITIAL_COEF=0.0
       - PPO_SHAPING_FINAL_COEF=0.0
       - AGENT_MAX_EPISODE_STEPS=10000
+      - AGENT_STARTUP_AUTOSUBMIT=0
+      - AGENT_STARTUP_PLAN_SELECTION=best
       - PPO_STRICT_ON_POLICY=1
+      # Complete each self-play batch before PPO changes the learner policy.
+      # Start at 2 on the laptop RTX 3060; increase only after verifying capacity.
+      - SELFPLAY_CONCURRENCY=4
+      - MAX_ACTIVE_GAMES_PER_SERVER=1
       - LEAGUE_ENABLE=0
       - EVOLUTION_IMMIGRANT_RATIO=0.0
       - FIXED_BENCHMARK_ENABLED=0
+      # v2 pretraining must fit the 6 GB laptop RTX 3060. These override the
+      # larger legacy hard-mode network settings from docker-compose.rl_hard.yml.
+      - AGENT_HIDDEN_SIZE=256
+      - AGENT_RECURRENT_SIZE=128
+      - AGENT_TRANSFORMER_HEADS=4
+      - AGENT_TRANSFORMER_LAYERS=2
 
 volumes:
   postgres_data_v2:

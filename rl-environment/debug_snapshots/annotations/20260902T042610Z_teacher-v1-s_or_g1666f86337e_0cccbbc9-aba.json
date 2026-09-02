@@ -1,0 +1,10 @@
+{
+  "schema_version": "teacher_annotation.v1",
+  "snapshot_id": "20260902T042610Z_teacher-v1-s_or_g1666f86337e_0cccbbc9-aba",
+  "annotated_at": "2026-09-02T04:26:59Z",
+  "accepted_action_indices": [
+    200
+  ],
+  "note": "",
+  "skip": false
+}

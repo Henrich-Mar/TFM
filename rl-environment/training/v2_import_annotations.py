@@ -47,6 +47,7 @@ def import_annotations(snapshot_dir: str, annotation_dir: str, dataset_dir: str)
             "action_indices": [int(row.get("action_index", -1)) for row in descriptors],
             "teacher_probabilities": probabilities,
             "chosen_action_position": int(positions[0]),
+            "phase_index": int(prompt.get("phase_index", 0) or 0),
             "confidence": 1.0,
             "source": "human.annotation.v1",
             "sample_weight": source_weight("human.annotation.v1", 1.0),

@@ -7,8 +7,10 @@ import json
 import os
 import random
 import shutil
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from game_interface import GameServerCluster
 from models.agent import RLAgent
@@ -49,6 +51,14 @@ def _load_stage_options(stage: int) -> Dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+@dataclass(frozen=True)
+class _SelfPlayGame:
+    number: int
+    seed: int
+    stage: int
+    lineup: List[RLAgent]
+
+
 class V2SelfPlayRunner:
     def __init__(self, bc_checkpoint: str, root: str, benchmark_interval: int = 25_000, seed: int = 100_000) -> None:
         self.paths = initialize_v2_runtime()
@@ -68,6 +78,10 @@ class V2SelfPlayRunner:
         self.state_path = self.metrics / "selfplay_state.json"
         self.latest_learner_path = self.checkpoints / "latest_learner.pth"
         resume_state: Dict = {}
+        if self.state_path.is_file() != self.latest_learner_path.is_file():
+            raise RuntimeError(
+                "incomplete v2 resume state: selfplay_state.json and latest_learner.pth must both exist"
+            )
         if self.state_path.is_file() and self.latest_learner_path.is_file():
             resume_state = json.loads(self.state_path.read_text(encoding="utf-8"))
         learner_source = str(self.latest_learner_path) if resume_state else bc_checkpoint
@@ -84,9 +98,15 @@ class V2SelfPlayRunner:
         )
         self.reserved_benchmark_seeds = {int(item) for item in benchmark_seed_payload.get("seeds", [])}
         self.benchmark_interval = max(1, int(benchmark_interval))
+        try:
+            self.selfplay_concurrency = max(1, int(os.getenv("SELFPLAY_CONCURRENCY", "1")))
+        except (TypeError, ValueError):
+            self.selfplay_concurrency = 1
         resumed_decisions = int(resume_state.get("decisions", 0) or 0)
         self.decision_offset = resumed_decisions
         self.next_benchmark_decision = ((resumed_decisions // self.benchmark_interval) + 1) * self.benchmark_interval
+        self.progress_path = self.metrics / "selfplay_progress.json"
+        self.game_count = 0
         self.champion_path = self.checkpoints / "champion.pth"
         if not self.champion_path.is_file():
             shutil.copy2(bc_checkpoint, self.champion_path)
@@ -103,6 +123,12 @@ class V2SelfPlayRunner:
         self.manager = TournamentManager(self.cluster)
         if self.stage >= 1:
             self._refresh_frozen_pools()
+        self._write_progress("started")
+        print(
+            f"[selfplay] started stage={self.stage} decisions={self._total_decisions()} "
+            f"next_benchmark={self.next_benchmark_decision} concurrency={self.selfplay_concurrency}",
+            flush=True,
+        )
 
     def _refresh_frozen_pools(self) -> None:
         self.champion_pool = [
@@ -120,6 +146,31 @@ class V2SelfPlayRunner:
     def _total_decisions(self) -> int:
         current_run = int(self.learner.get_behavior_stats().get("total_decisions", 0))
         return int(self.decision_offset + current_run)
+
+    def _write_progress(
+        self,
+        status: str,
+        game_seed: Optional[int] = None,
+        game_elapsed: Optional[float] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        payload = {
+            "schema_version": "tfm_rl_v2.selfplay_progress.v1",
+            "status": str(status),
+            "stage": int(self.stage),
+            "games": int(self.game_count),
+            "decisions": int(self._total_decisions()),
+            "next_benchmark_decision": int(self.next_benchmark_decision),
+            "seed_cursor": int(self.seed_cursor),
+            "rollout_buffer": int(self.learner.get_rollout_buffer_size()),
+            "game_seed": game_seed,
+            "game_elapsed_sec": game_elapsed,
+            "error": error,
+            "updated_at": time.time(),
+        }
+        temporary = self.progress_path.with_name(self.progress_path.name + ".tmp")
+        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(temporary, self.progress_path)
 
     def _opponents(self, game_seed: int) -> List[RLAgent]:
         opponents: List[RLAgent] = []
@@ -140,11 +191,61 @@ class V2SelfPlayRunner:
                 opponents.append(self.historical_pool[seat % len(self.historical_pool)])
         return opponents
 
+    def _reserve_selfplay_game(self) -> _SelfPlayGame:
+        """Reserve one game using the current, unmodified learner policy."""
+        self.game_count += 1
+        seed = self.seed_cursor
+        self.seed_cursor += 1
+        while seed in self.reserved_benchmark_seeds:
+            seed = self.seed_cursor
+            self.seed_cursor += 1
+        stage = self.stage
+        lineup: List[RLAgent] = list(self._opponents(seed))
+        lineup.insert(seed % 4, self.learner)
+        return _SelfPlayGame(number=self.game_count, seed=seed, stage=stage, lineup=lineup)
+
+    async def _run_selfplay_game(self, game: _SelfPlayGame) -> Tuple[_SelfPlayGame, float]:
+        """Run one pre-reserved game; PPO updates happen only after its batch completes."""
+        started_at = time.monotonic()
+        await self.manager._run_single_game(
+            game.lineup,
+            tournament_id=f"v2_selfplay_stage{game.stage}_{game.seed}",
+            game_seed=game.seed,
+            players_beginner=(game.stage == 0),
+        )
+        return game, time.monotonic() - started_at
+
+    async def _run_selfplay_batch(self) -> List[Tuple[_SelfPlayGame, float]]:
+        """Run a bounded set of games against one frozen learner-policy version."""
+        games = [self._reserve_selfplay_game() for _ in range(self.selfplay_concurrency)]
+        for game in games:
+            print(
+                f"[selfplay] starting game={game.number} seed={game.seed} "
+                f"stage={game.stage} decisions={self._total_decisions()}",
+                flush=True,
+            )
+        results = await asyncio.gather(
+            *[
+                asyncio.create_task(
+                    self._run_selfplay_game(game),
+                    name=f"v2-selfplay:{game.number}:{game.seed}",
+                )
+                for game in games
+            ],
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return list(results)
+
     async def _evaluate_and_promote(self, decisions: int) -> Dict:
         candidate_path = self.checkpoints / f"candidate_{decisions:09d}.pth"
         self.learner.save_model(str(candidate_path))
         shutil.copy2(candidate_path, self.latest_learner_path)
-        random_report = await benchmark(str(candidate_path), "random", 0, str(self.benchmarks))
+        random_report: Optional[Dict] = None
+        if self.stage == 0:
+            random_report = await benchmark(str(candidate_path), "random", 0, str(self.benchmarks))
         teacher_report: Optional[Dict] = None
         regression_report: Optional[Dict] = await benchmark(
             str(candidate_path), "champion", self.stage, str(self.benchmarks), champion=str(self.champion_path)
@@ -152,7 +253,7 @@ class V2SelfPlayRunner:
         promoted = False
         if (
             self.stage == 0
-            and bool(random_report.get("gate_passed", False))
+            and bool((random_report or {}).get("gate_passed", False))
             and bool(regression_report.get("gate_passed", False))
         ):
             self.stage = 1
@@ -184,28 +285,49 @@ class V2SelfPlayRunner:
         }
 
     async def run(self, max_decisions: int) -> None:
+        max_decisions = int(max_decisions)
         reports: List[Dict] = list(self.previous_reports)
+        print(
+            f"[selfplay] target_decisions={max_decisions} current={self._total_decisions()} "
+            f"stage={self.stage}",
+            flush=True,
+        )
         try:
-            while self._total_decisions() < int(max_decisions):
-                seed = self.seed_cursor
-                self.seed_cursor += 1
-                while seed in self.reserved_benchmark_seeds:
-                    seed = self.seed_cursor
-                    self.seed_cursor += 1
-                opponents = self._opponents(seed)
-                candidate_seat = seed % 4
-                lineup: List[RLAgent] = list(opponents)
-                lineup.insert(candidate_seat, self.learner)
-                await self.manager._run_single_game(
-                    lineup,
-                    tournament_id=f"v2_selfplay_stage{self.stage}_{seed}",
-                    game_seed=seed,
-                    players_beginner=(self.stage == 0),
-                )
-                if self.learner.get_rollout_buffer_size() >= int(self.learner.ppo_rollout_steps):
-                    await self.learner.optimize_from_rollout_buffer(self.learner.ppo_rollout_steps)
+            while self._total_decisions() < max_decisions:
+                self._write_progress("batch_running")
+                results = await self._run_selfplay_batch()
                 decisions = self._total_decisions()
+                rollout_size = self.learner.get_rollout_buffer_size()
+                last_game, last_game_elapsed = results[-1]
+                for game, game_elapsed in results:
+                    print(
+                        f"[selfplay] completed game={game.number} seed={game.seed} "
+                        f"decisions={decisions} rollout={rollout_size} elapsed={game_elapsed:.1f}s",
+                        flush=True,
+                    )
+                    self._write_progress("game_completed", game_seed=game.seed, game_elapsed=game_elapsed)
+                if rollout_size >= int(self.learner.ppo_rollout_steps):
+                    optimize_started_at = time.monotonic()
+                    print(
+                        f"[selfplay] optimizing rollout steps={rollout_size} decisions={decisions}",
+                        flush=True,
+                    )
+                    await self.learner.optimize_from_rollout_buffer(self.learner.ppo_rollout_steps)
+                    print(
+                        f"[selfplay] optimization complete elapsed={time.monotonic() - optimize_started_at:.1f}s "
+                        f"policy_version={self.learner.policy_version}",
+                        flush=True,
+                    )
+                    self._write_progress(
+                        "optimized",
+                        game_seed=last_game.seed,
+                        game_elapsed=last_game_elapsed,
+                    )
                 if decisions >= self.next_benchmark_decision:
+                    print(
+                        f"[selfplay] benchmark starting decisions={decisions} stage={self.stage}",
+                        flush=True,
+                    )
                     report = await self._evaluate_and_promote(decisions)
                     reports.append(report)
                     self.next_benchmark_decision += self.benchmark_interval
@@ -220,6 +342,22 @@ class V2SelfPlayRunner:
                         "reports": reports,
                     }
                     self.state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+                    self._write_progress(
+                        "benchmark_completed",
+                        game_seed=last_game.seed,
+                        game_elapsed=last_game_elapsed,
+                    )
+                    print(
+                        f"[selfplay] benchmark complete decisions={decisions} stage={self.stage} "
+                        f"promoted={report['promoted']}",
+                        flush=True,
+                    )
+            self._write_progress("completed")
+            print(f"[selfplay] completed target decisions={self._total_decisions()}", flush=True)
+        except Exception as exc:
+            self._write_progress("failed", error=f"{type(exc).__name__}: {exc}")
+            print(f"[selfplay] failed: {type(exc).__name__}: {exc}", flush=True)
+            raise
         finally:
             await self.cluster.close()
 

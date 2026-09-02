@@ -904,9 +904,9 @@ async def play_human_vs_best(request: HumanVsBestRequest):
 @app.get("/decision-explainer", response_class=HTMLResponse)
 async def decision_explainer(request: Request):
     return templates.TemplateResponse(
+        request,
         "decision_explainer.html",
         {
-            "request": request,
             "snapshot_id": str(request.query_params.get("snapshot_id", "") or "").strip(),
         },
     )
@@ -922,9 +922,9 @@ async def dashboard(request: Request):
     use_global = _global_dashboard_enabled() and str(request.query_params.get("view", "") or "").strip().lower() != "local"
     template_name = "dashboard_global.html" if use_global else "dashboard.html"
     return templates.TemplateResponse(
+        request,
         template_name,
         {
-            "request": request,
             "auto_refresh_ms": auto_refresh_ms,
             "global_dashboard_enabled": bool(_global_dashboard_enabled()),
         },
@@ -939,9 +939,9 @@ async def dashboard_local(request: Request):
     except Exception:
         auto_refresh_ms = 10000
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
         {
-            "request": request,
             "auto_refresh_ms": auto_refresh_ms,
             "global_dashboard_enabled": bool(_global_dashboard_enabled()),
         },
@@ -956,9 +956,9 @@ async def dashboard_global(request: Request):
     except Exception:
         auto_refresh_ms = 10000
     return templates.TemplateResponse(
+        request,
         "dashboard_global.html",
         {
-            "request": request,
             "auto_refresh_ms": auto_refresh_ms,
             "global_dashboard_enabled": bool(_global_dashboard_enabled()),
         },

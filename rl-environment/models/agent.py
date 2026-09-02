@@ -1088,28 +1088,52 @@ class RLAgent:
         schema_filtered = 0
         steps: List[PPORolloutStep] = []
 
-        def _accept(candidate: PPORolloutStep) -> None:
+        def _accept_episode(candidates: List[PPORolloutStep]) -> None:
             nonlocal schema_filtered
-            if str(getattr(candidate, "state_schema_version", "")) != expected_schema_version:
-                schema_filtered += 1
+            if not candidates:
                 return
-            if self.strict_on_policy_sampling and int(getattr(candidate, "policy_version", 0)) != int(self.policy_version):
-                schema_filtered += 1
+            episode_id = str(getattr(candidates[0], "episode_id", "") or "")
+            if episode_id:
+                episode_ids = {str(getattr(candidate, "episode_id", "") or "") for candidate in candidates}
+                step_indices = [int(getattr(candidate, "step_index", -1)) for candidate in candidates]
+                terminal = bool(
+                    getattr(candidates[-1], "terminal", getattr(candidates[-1], "done", False))
+                )
+                if (
+                    episode_ids != {episode_id}
+                    or step_indices != list(range(len(candidates)))
+                    or not terminal
+                ):
+                    schema_filtered += len(candidates)
+                    return
+            if any(
+                str(getattr(candidate, "state_schema_version", "")) != expected_schema_version
+                for candidate in candidates
+            ):
+                schema_filtered += len(candidates)
                 return
-            steps.append(candidate)
+            if self.strict_on_policy_sampling and any(
+                int(getattr(candidate, "policy_version", 0)) != int(self.policy_version)
+                for candidate in candidates
+            ):
+                schema_filtered += len(candidates)
+                return
+            steps.extend(candidates)
 
         while self.rollout_buffer and (not steps or len(steps) < take):
             first = self.rollout_buffer[0]
             episode_id = str(getattr(first, "episode_id", "") or "")
+            episode_steps: List[PPORolloutStep] = []
             while self.rollout_buffer:
                 candidate = self.rollout_buffer[0]
                 candidate_episode = str(getattr(candidate, "episode_id", "") or "")
                 if episode_id and candidate_episode != episode_id:
                     break
                 candidate = self.rollout_buffer.popleft()
-                _accept(candidate)
+                episode_steps.append(candidate)
                 if not episode_id and bool(getattr(candidate, "done", False)):
                     break
+            _accept_episode(episode_steps)
 
         while (
             self.rollout_shard_store is not None
@@ -1119,8 +1143,16 @@ class RLAgent:
             fetched = self.rollout_shard_store.pop_complete_episodes(take - len(steps))
             if not fetched:
                 break
+            current_episode: List[PPORolloutStep] = []
+            current_episode_id = ""
             for candidate in fetched:
-                _accept(candidate)
+                candidate_episode_id = str(getattr(candidate, "episode_id", "") or "")
+                if current_episode and candidate_episode_id != current_episode_id:
+                    _accept_episode(current_episode)
+                    current_episode = []
+                current_episode_id = candidate_episode_id
+                current_episode.append(candidate)
+            _accept_episode(current_episode)
 
         return steps, schema_filtered
 

@@ -25,6 +25,7 @@ def test_v2_runtime_isolated_and_refuses_nonempty_checkpoint(monkeypatch, tmp_pa
     monkeypatch.setenv("RESUME_TRAINING", "0")
     paths = initialize_v2_runtime()
     assert Path(paths["models"]).is_dir()
+    assert Path(paths["logs"]).is_dir()
     (root / "checkpoints" / "old.pth").write_text("x", encoding="utf-8")
     with pytest.raises(RuntimeError, match="non-empty checkpoint"):
         initialize_v2_runtime()

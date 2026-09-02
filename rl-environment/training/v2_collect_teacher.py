@@ -5,20 +5,18 @@ import argparse
 import asyncio
 import json
 import os
-from pathlib import Path
+import time
 
 from game_interface import GameServerCluster
 from models.agent import RLAgent
 from models.decision_policy import HeuristicTeacherPolicy
 from tournament_manager import TournamentManager
-from training.teacher_dataset import TeacherDatasetRecorder, TeacherDatasetStore
+from training.teacher_dataset import (
+    TeacherDatasetRecorder,
+    TeacherDatasetStore,
+    load_reserved_benchmark_seeds,
+)
 from v2_runtime import initialize_v2_runtime
-
-
-def _reserved_benchmark_seeds() -> set[int]:
-    path = Path(__file__).resolve().parents[1] / "benchmark_seeds.v1.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return {int(item) for item in payload.get("seeds", [])}
 
 
 async def collect(
@@ -31,7 +29,7 @@ async def collect(
     api_port: int = 5000,
 ) -> dict:
     initialize_v2_runtime()
-    reserved = _reserved_benchmark_seeds()
+    reserved = load_reserved_benchmark_seeds()
     seeds = [int(seed_start) + idx for idx in range(max(1, int(games)))]
     overlap = reserved.intersection(seeds)
     if overlap:
@@ -70,6 +68,12 @@ async def collect(
     failed = 0
     try:
         for idx, seed in enumerate(seeds):
+            game_number = idx + 1
+            game_started_at = time.monotonic()
+            print(
+                f"[teacher] starting game {game_number}/{len(seeds)} (seed={seed})",
+                flush=True,
+            )
             result = await manager._run_single_game(
                 agents,
                 tournament_id=f"v2_teacher_stage{stage}_{idx}",
@@ -78,8 +82,21 @@ async def collect(
             )
             if bool(result.completed):
                 completed += 1
+                outcome = "completed"
             else:
                 failed += 1
+                outcome = f"failed: {result.error_message or 'unknown error'}"
+            total_decisions_so_far = sum(
+                int(getattr(agent.decision_policy, "decisions", 0)) for agent in agents
+            )
+            print(
+                f"[teacher] {game_number}/{len(seeds)} {outcome} "
+                f"game_id={result.game_id} "
+                f"elapsed={time.monotonic() - game_started_at:.1f}s "
+                f"completed={completed} failed={failed} "
+                f"decisions={total_decisions_so_far}",
+                flush=True,
+            )
     finally:
         await cluster.close()
         if api_server is not None and api_task is not None:
@@ -140,7 +157,8 @@ def main() -> None:
                 )
             ),
             indent=2,
-        )
+        ),
+        flush=True,
     )
 
 

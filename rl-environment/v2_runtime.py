@@ -27,6 +27,7 @@ def initialize_v2_runtime() -> Dict[str, str]:
         "teacher": Path(os.getenv("V2_TEACHER_DATASET_DIR", root / "teacher-dataset")).expanduser().resolve(),
         "benchmarks": Path(os.getenv("V2_BENCHMARK_DIR", root / "benchmarks")).expanduser().resolve(),
         "metrics": Path(os.getenv("V2_METRICS_DIR", root / "metrics")).expanduser().resolve(),
+        "logs": Path(os.getenv("RL_LOG_DIR", root / "logs")).expanduser().resolve(),
     }
     for name, path in paths.items():
         if name == "root":

@@ -221,7 +221,8 @@ services:
       - AGENT_PLANNER_HAND_LIMIT=24
       - AGENT_PLANNER_OPPONENT_LIMIT=4
       # Planner policy/value network.
-      # Laptop RTX 3060-safe preset: smaller hidden width and PPO batches.
+      # Legacy hard-mode network preset. The v2 override supplies its own
+      # smaller architecture for laptop-GPU pretraining.
       - AGENT_HIDDEN_SIZE=768
       - AGENT_RECURRENT_SIZE=128
       - AGENT_PHASE_HEAD_COUNT=6

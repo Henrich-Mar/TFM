@@ -4,8 +4,10 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import os
 import pickle
 import random
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
@@ -16,6 +18,7 @@ import torch.nn.functional as F
 from models.agent import AgentConfig, TerraformingMarsNetwork
 from models.planner_common import pad_bundle_batch
 from training.teacher_dataset import TeacherDatasetStore, validate_sample
+from v2_runtime import initialize_v2_runtime
 
 
 def _iter_shard_batches(root: Path, split: str, batch_size: int, shuffle: bool) -> Iterable[List[Dict[str, Any]]]:
@@ -70,8 +73,11 @@ def _run_epoch(
     count = 0
     human_count = 0
     teacher_count = 0
+    batch_index = 0
+    started_at = time.monotonic()
     planner_config = network.planner_config
     for samples in _iter_shard_batches(dataset_root, split, batch_size, shuffle=train):
+        batch_index += 1
         bundles = pad_bundle_batch([item["planner_bundle"] for item in samples], device=device, planner_config=planner_config)
         phase_indices = torch.tensor([int(item.get("phase_index", 0)) for item in samples], dtype=torch.long, device=device)
         output = network(bundles, phase_indices=phase_indices)
@@ -115,6 +121,12 @@ def _run_epoch(
                 totals["teacher_top3"] += float(top3[idx].item())
                 teacher_count += 1
         count += batch_count
+        if batch_index == 1 or batch_index % 250 == 0:
+            print(
+                f"[pretrain] {split} batch={batch_index} samples={count} "
+                f"elapsed={time.monotonic() - started_at:.1f}s",
+                flush=True,
+            )
     if count == 0:
         raise RuntimeError(f"empty teacher dataset split: {split}")
     return {
@@ -136,20 +148,43 @@ def pretrain(
     dataset_dir: str,
     output_dir: str,
     epochs: int = 12,
-    batch_size: int = 128,
+    batch_size: int = 16,
     learning_rate: float = 3e-4,
     allow_small_dataset: bool = False,
+    random_seed: int = 20260901,
 ) -> Dict[str, Any]:
+    runtime_paths = initialize_v2_runtime()
+    output = Path(output_dir).expanduser().resolve()
+    if runtime_paths:
+        runtime_root = Path(runtime_paths["root"]).resolve()
+        try:
+            output.relative_to(runtime_root)
+        except ValueError as exc:
+            raise RuntimeError(f"v2 pretraining output must stay inside {runtime_root}: {output}") from exc
+    if output.exists() and not output.is_dir():
+        raise RuntimeError(f"v2 pretraining output is not a directory: {output}")
+    if output.exists() and any(output.iterdir()) and str(os.getenv("V2_ALLOW_PRETRAIN_OVERWRITE", "0")).lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        raise RuntimeError(
+            f"refusing to overwrite non-empty v2 pretraining output: {output}; "
+            "set V2_ALLOW_PRETRAIN_OVERWRITE=1 for an intentional restart"
+        )
+    random.seed(int(random_seed))
+    torch.manual_seed(int(random_seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(random_seed))
     store = TeacherDatasetStore(dataset_dir)
-    counts = store.counts()
-    human_total = 0
-    teacher_total = 0
-    for split in ("train", "validation", "test"):
-        for item in store.iter_samples(split):
-            if str(item.get("source", "")).startswith("human"):
-                human_total += 1
-            else:
-                teacher_total += 1
+    dataset_audit = store.audit()
+    if not bool(dataset_audit.get("valid", False)):
+        raise RuntimeError("invalid v2 teacher dataset: " + "; ".join(dataset_audit.get("errors", [])))
+    # audit() already traverses every shard and now returns both split and
+    # source counts. Reusing them avoids three extra full gzip/pickle passes
+    # before the first training epoch.
+    counts = dict(dataset_audit["split_counts"])
+    source_counts = dict(dataset_audit.get("source_counts", {}))
+    human_total = int(source_counts.get("human", 0))
+    teacher_total = int(source_counts.get("teacher", 0))
     if not allow_small_dataset and teacher_total < 100_000:
         raise RuntimeError(f"v2 pretraining requires at least 100000 teacher samples; found {teacher_total}")
     if not allow_small_dataset and human_total < 100:
@@ -159,12 +194,17 @@ def pretrain(
     network = TerraformingMarsNetwork(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     network.to(device)
+    print(
+        f"[pretrain] starting: teacher_samples={teacher_total} human_samples={human_total} device={device}",
+        flush=True,
+    )
     optimizer = torch.optim.AdamW(network.parameters(), lr=float(learning_rate))
     history: List[Dict[str, Any]] = []
     best_score = -1.0
-    output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     for epoch in range(1, max(1, int(epochs)) + 1):
+        epoch_started_at = time.monotonic()
+        print(f"[pretrain] starting epoch {epoch}/{max(1, int(epochs))}", flush=True)
         train_metrics = _run_epoch(network, optimizer, store.root, "train", batch_size, device, train=True)
         with torch.no_grad():
             validation_metrics = _run_epoch(network, optimizer, store.root, "validation", batch_size, device, train=False)
@@ -185,6 +225,14 @@ def pretrain(
                 },
                 output / "bc_best.pth",
             )
+        print(
+            f"[pretrain] epoch {epoch}/{max(1, int(epochs))} "
+            f"loss={train_metrics['loss']:.4f} "
+            f"validation_top1={validation_metrics['top1']:.4f} "
+            f"validation_top3={validation_metrics['top3']:.4f} "
+            f"elapsed={time.monotonic() - epoch_started_at:.1f}s",
+            flush=True,
+        )
     best_checkpoint = torch.load(output / "bc_best.pth", map_location=device, weights_only=False)
     network.load_state_dict(best_checkpoint["network_state_dict"])
     with torch.no_grad():
@@ -207,8 +255,10 @@ def pretrain(
     report = {
         "schema_version": "tfm_rl_v2.pretrain_report.v1",
         "counts": counts,
+        "dataset_audit": dataset_audit,
         "teacher_samples": teacher_total,
         "human_samples": human_total,
+        "random_seed": int(random_seed),
         "history": history,
         "test": test_metrics,
         "human_evaluation": {"samples": human_eval_count, "top3": human_top3_all},
@@ -223,12 +273,21 @@ def main() -> None:
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--epochs", type=int, default=12)
-    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--seed", type=int, default=20260901)
     parser.add_argument("--allow-small-dataset", action="store_true", help="Testing only; bypass 100k/100-label gates")
     args = parser.parse_args()
-    report = pretrain(args.dataset, args.output, args.epochs, args.batch_size, args.learning_rate, args.allow_small_dataset)
-    print(json.dumps(report["test"], indent=2))
+    report = pretrain(
+        args.dataset,
+        args.output,
+        args.epochs,
+        args.batch_size,
+        args.learning_rate,
+        args.allow_small_dataset,
+        args.seed,
+    )
+    print(json.dumps(report["test"], indent=2), flush=True)
 
 
 if __name__ == "__main__":

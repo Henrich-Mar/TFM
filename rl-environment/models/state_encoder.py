@@ -429,9 +429,11 @@ class StateEncoder:
             min(float(sum(1 for milestone in (game_state.get('milestones', []) or []) if isinstance(milestone, dict) and (milestone.get('playerName') or milestone.get('playerColor')))) / 3.0, 1.0),
         ])
 
-        for opponent in players[:self.opponent_limit]:
-            if opponent.get('id') == current_player.get('id'):
-                continue
+        opponents = [
+            opponent for opponent in players
+            if opponent.get('id') != current_player.get('id')
+        ]
+        for opponent in opponents[:self.opponent_limit]:
             opp_vp = ((opponent.get('victoryPointsBreakdown', {}) or {}).get('total', 0) or 0)
             add_world(4, self._encode_player_resources(opponent) + self._encode_player_production(opponent) + [
                 min(len(opponent.get('tableau', []) or []) / 20.0, 1.0),

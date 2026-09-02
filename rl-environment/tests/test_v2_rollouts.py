@@ -44,6 +44,13 @@ def test_episode_store_rejects_tail_fragments(tmp_path: Path) -> None:
     assert store.queued_step_count() == 0
 
 
+def test_complete_episode_reader_drops_legacy_fragments(tmp_path: Path) -> None:
+    store = RolloutShardStore(str(tmp_path), "v2")
+    store.append_steps([_step("fragment", 4, False), _step("fragment", 5, True)])
+    assert store.pop_complete_episodes(1) == []
+    assert store.queued_step_count() == 0
+
+
 def test_gae_does_not_cross_episode_boundary() -> None:
     payload = _compute_gae_returns(
         rewards=torch.tensor([0.0, 1.0, 0.0, -1.0]),
@@ -85,4 +92,20 @@ def test_old_policy_versions_are_discarded_as_complete_episodes() -> None:
     assert filtered == 2
     assert len(steps) == 3
     assert {step.episode_id for step in steps} == {"current"}
+    assert not agent.rollout_buffer
+
+
+def test_mixed_policy_version_episode_is_discarded_whole() -> None:
+    agent = RLAgent.__new__(RLAgent)
+    mixed = [_step("mixed", index, index == 2) for index in range(3)]
+    mixed[1].policy_version = 1
+    agent.rollout_buffer = deque(mixed)
+    agent.rollout_shard_store = None
+    agent.strict_on_policy_sampling = True
+    agent.policy_version = 0
+
+    steps, filtered = agent._take_rollout_steps_locked(1, "v1")
+
+    assert steps == []
+    assert filtered == 3
     assert not agent.rollout_buffer

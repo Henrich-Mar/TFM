@@ -2584,11 +2584,22 @@ class ActionDecoder:
         title_l = _title_text(waiting_for.get('title', '')).lower()
         button_l = str(waiting_for.get('buttonLabel', '') or '').lower()
         combined = f"{title_l} {button_l}".strip()
-        if int(action_index) == 700:
+        option_payload = self._option_payload_for_action(action_index, waiting_for)
+        option_title_l = _title_text(option_payload.get('title', '')).lower()
+        nested_option_titles = [
+            _title_text(option.get('title', '')).lower()
+            for option in (waiting_for.get('options', []) or [])
+            if isinstance(option, dict)
+        ]
+        has_award_branch = any('fund an award' in title for title in nested_option_titles)
+        has_convert_plants_branch = any('convert plants' in title for title in nested_option_titles)
+        has_convert_heat_branch = any('convert heat' in title for title in nested_option_titles)
+        has_sell_patents_branch = any('sell patents' in title for title in nested_option_titles)
+        if int(action_index) == 700 and ('convert plants' in combined or has_convert_plants_branch):
             return 'convert_plants'
-        if int(action_index) == 701:
+        if int(action_index) == 701 and ('convert heat' in combined or has_convert_heat_branch):
             return 'convert_heat'
-        if int(action_index) == 702:
+        if int(action_index) == 702 and ('sell patents' in combined or has_sell_patents_branch):
             return 'sell_patents'
         if int(action_index) >= int(self.action_types['PASS']):
             return 'pass'
@@ -2602,14 +2613,22 @@ class ActionDecoder:
             return 'select_payment'
         if int(self.action_types['SELECT_AMOUNT']) <= int(action_index) < int(_CARD_SELECTION_MASK_BASE):
             return 'select_amount'
-        if int(_CARD_SELECTION_MASK_BASE) <= int(action_index) < int(_STARTUP_PLAN_BASE):
-            return 'card_subset'
-        if int(_STARTUP_PLAN_BASE) <= int(action_index) < int(self.action_types['PASS']):
-            return 'startup_plan'
-        if 'award' in combined and ('fund' in combined or 'award' in input_type):
+        # Award actions use the 600+ range, which overlaps the generic card-mask
+        # range. Classify semantic prompts before applying that numeric fallback.
+        if ('award' in combined and ('fund' in combined or 'award' in input_type)) or (
+            600 <= int(action_index) < 700 and has_award_branch
+        ):
             return 'fund_award'
         if 'milestone' in combined and ('claim' in combined or 'fund' in combined):
             return 'claim_milestone'
+        if 'award' in option_title_l:
+            return 'fund_award'
+        if 'milestone' in option_title_l:
+            return 'claim_milestone'
+        if int(_CARD_SELECTION_MASK_BASE) <= int(action_index) < int(_CARD_SELECTION_MASK_BASE + _CARD_SELECTION_MASK_LIMIT):
+            return 'card_subset'
+        if int(_STARTUP_PLAN_BASE) <= int(action_index) < int(_STARTUP_PLAN_BASE + _STARTUP_PLAN_LIMIT):
+            return 'startup_plan'
         if input_type in ('space', 'selectspace'):
             return 'select_space'
         if input_type in ('projectcard', 'selectprojectcardtoplay'):
@@ -2617,12 +2636,12 @@ class ActionDecoder:
         if input_type in ('card', 'selectcard'):
             return 'card_prompt'
         if input_type in ('or', 'option', 'selectoption'):
-            option_payload = self._option_payload_for_action(action_index, waiting_for)
-            option_title_l = _title_text(option_payload.get('title', '')).lower()
-            if 'award' in option_title_l:
-                return 'fund_award'
-            if 'milestone' in option_title_l:
-                return 'claim_milestone'
+            return 'select_option'
+        if input_type in (
+            'selectplayer', 'player', 'selectresources', 'resources',
+            'selectproductiontolose', 'productiontolose', 'selectcolony', 'colony',
+            'selectparty', 'party', 'selectdelegate', 'delegate',
+        ):
             return 'select_option'
         if isinstance(decoded_action, dict):
             decoded_type = str(decoded_action.get('type', '') or '').lower()

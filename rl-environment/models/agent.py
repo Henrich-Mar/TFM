@@ -21,7 +21,7 @@ from collections import deque
 
 from game_interface import GameInstance, ServerTransportError
 from .state_encoder import StateEncoder
-from .action_decoder import ActionDecoder
+from .action_decoder import ActionDecoder, _message_display_text, _title_text
 from .planner_common import (
     PlannerConfig,
     bundle_to_torch,
@@ -47,8 +47,11 @@ from .ppo import (
 from debug_decision_snapshot import (
     build_decision_snapshot,
     complete_capture_request,
+    create_capture_request,
     fail_capture_request,
     has_pending_capture_request,
+    load_annotation_replay,
+    load_snapshot_annotation,
     reserve_pending_capture_request,
     save_snapshot,
 )
@@ -1315,24 +1318,35 @@ class RLAgent:
         self._turn_action_count_by_player[key] = int(self._turn_action_count_by_player.get(key, 0)) + 1
 
     def _maybe_reset_turn_action_count(self, player_id: Optional[str], player_state: Optional[Dict[str, Any]]) -> None:
-        """Reset the turn action counter when the phase transitions to/from 'action'.
+        """Synchronize the action count with the server's authoritative counter.
 
-        TM gives each player exactly 2 actions per generation-round during the
-        action phase.  We detect a new round by watching for a phase change or
-        by seeing the game move into a non-action phase and back.
+        ``actionsTakenThisRound`` resets whenever a player yields priority,
+        whereas the game phase remains ``action``.  A locally incremented
+        counter consequently leaked across turns and eventually contradicted
+        the server's "Take your first action" prompt.
         """
         if not player_id:
             return
         key = str(player_id)
         phase = ""
+        current_player: Dict[str, Any] = {}
         if isinstance(player_state, dict):
             game = player_state.get("game", {}) or {}
             phase = str(game.get("phase", "") or "").strip().lower()
+            current_player = player_state.get("thisPlayer", {}) or {}
+
+        authoritative_count = current_player.get("actionsTakenThisRound")
+        if authoritative_count is not None:
+            try:
+                self._turn_action_count_by_player[key] = max(0, int(authoritative_count))
+            except (TypeError, ValueError):
+                pass
 
         last_phase = self._last_phase_by_player.get(key, "")
         if phase != last_phase:
-            # Phase changed: if we're entering action phase (fresh round) reset counter
-            if phase == "action":
+            # Older/server-variant payloads can omit actionsTakenThisRound.
+            # Retain the phase-reset fallback only for those responses.
+            if phase == "action" and authoritative_count is None:
                 self._turn_action_count_by_player[key] = 0
             self._last_phase_by_player[key] = phase
 
@@ -1842,6 +1856,12 @@ class RLAgent:
             consecutive_transport_errors = 0
             while True:
                 try:
+                    # A successful input response can describe an intermediate
+                    # deferred action. Guided teaching must never present that
+                    # stale response as the next prompt; fetch the authoritative
+                    # player view before asking the teacher to choose.
+                    if self._guided_annotation_is_enabled() and hasattr(game_instance, "invalidate_cached_player_state"):
+                        game_instance.invalidate_cached_player_state(player_id)
                     player_state = await self._timed_get_player_state(game_instance, player_id)
                     consecutive_transport_errors = 0
                 except ServerTransportError:
@@ -2199,8 +2219,69 @@ class RLAgent:
                 else:
                     self._bump_decision_stat('epsilon_random_actions')
                 logger.debug(f"Agent {self.id[:8]} attempting policy action: {policy_action}")
+                if self._guided_annotation_is_enabled():
+                    teacher_action_idx = self._guided_replay_action_index(
+                        game_instance=game_instance,
+                        player_state=player_state,
+                        legal_descriptors=filtered_action_descriptors,
+                        turn_action_count=turn_action_count,
+                    )
+                    if teacher_action_idx is None:
+                        guided_snapshot = self._maybe_capture_decision_snapshot(
+                            game_instance=game_instance,
+                            player_id=player_id,
+                            player_state=player_state,
+                            action_input=policy_action,
+                            action_index=policy_action_idx,
+                            action_meta=action_meta,
+                            sampled_from_policy=sampled_from_policy,
+                            send_outcome="awaiting_annotation",
+                            turn_action_count=turn_action_count,
+                            state_vector=None,
+                            guided_auto_capture=True,
+                        )
+                        snapshot_id = str((guided_snapshot or {}).get("snapshot_id", "") or "")
+                        if snapshot_id:
+                            annotation = await self._wait_for_guided_annotation(snapshot_id)
+                            teacher_action_idx = self._guided_annotation_action_index(
+                                annotation,
+                                policy_action_idx,
+                                filtered_action_descriptors,
+                            )
+                        else:
+                            logger.warning("Guided annotation capture failed; continuing without a pause")
+                    if teacher_action_idx is not None and (
+                        policy_action_idx is None or int(teacher_action_idx) != int(policy_action_idx)
+                    ):
+                        teacher_action = self.action_decoder.decode_action(int(teacher_action_idx), player_state)
+                        if teacher_action:
+                            logger.info(
+                                "Guided teacher override for agent %s: action %s -> %s",
+                                self.id[:8],
+                                policy_action_idx,
+                                teacher_action_idx,
+                            )
+                            policy_action = teacher_action
+                            policy_action_idx = int(teacher_action_idx)
+                            # This action was selected by the teacher, not sampled from
+                            # the policy, so do not use it as an on-policy PPO step.
+                            sampled_from_policy = False
+                            if isinstance(action_meta, dict):
+                                action_meta["teacher_override"] = True
+                                action_meta["teacher_selected_action_index"] = int(teacher_action_idx)
+                                action_meta["chosen_action_position"] = next(
+                                    (
+                                        position for position, descriptor in enumerate(filtered_action_descriptors)
+                                        if int(descriptor.get("action_index", -1)) == int(teacher_action_idx)
+                                    ),
+                                    int(action_meta.get("chosen_action_position", 0)),
+                                )
+                                action_meta["chosen_action_label"] = self._describe_action(
+                                    int(teacher_action_idx), player_state
+                                )
                 if await self._timed_send_player_input(game_instance, player_id, policy_action):
                     self._bump_decision_stat('policy_successes')
+                    self._confirm_guided_replay_action(game_instance, policy_action_idx)
                     # Track how many actions this player has taken this turn so the
                     # state encoder can expose first-vs-second-action information.
                     self._increment_turn_action_count(player_id)
@@ -2564,18 +2645,10 @@ class RLAgent:
             # If the only alternative to pass is sell patents, keep pass.
             if not productive_actions:
                 return available_actions
-            # When at least one non-sell productive action exists, hide sell-patents
-            # choices so they are only used as a last-resort liquidity tool.
-            filtered_non_sell = [a for a in filtered if not _is_sell_patents_action(int(a))]
-            return filtered_non_sell if filtered_non_sell else (filtered if filtered else available_actions)
-
-        productive_non_sell = [a for a in non_pass_actions if not _is_sell_patents_action(int(a))]
-        if productive_non_sell:
-            return productive_non_sell
-
-        # If the only non-pass action is sell patents, keep pass to avoid forced selling.
-        if non_pass_actions and all(_is_sell_patents_action(int(a)) for a in non_pass_actions):
-            return available_actions
+            # Keep every server-legal non-pass action in the mask.  The policy
+            # may score selling poorly, but hiding it here makes diagnostics and
+            # teacher data claim a legal action family does not exist.
+            return filtered if filtered else available_actions
 
         return non_pass_actions
 
@@ -2852,9 +2925,7 @@ class RLAgent:
             idx = action_index - 200
             options = waiting_for.get('options', [])
             if 0 <= idx < len(options):
-                title = options[idx].get('title', '')
-                if isinstance(title, dict): title = title.get('message', '')
-                title = str(title).strip()
+                title = _message_display_text(options[idx].get('title', ''), player_state).strip()
                 if not title: title = options[idx].get('type', f"idx:{idx}")
                 return f"SELECT_OPTION({title})"
             return f"SELECT_OPTION({idx})"
@@ -2961,6 +3032,159 @@ class RLAgent:
         )
         return ranking
 
+    def _guided_annotation_is_enabled(self) -> bool:
+        """Whether this agent should stop for a human label on every decision."""
+        target_agent = str(os.getenv("V2_GUIDED_ANNOTATION_AGENT_ID", "") or "").strip()
+        return bool(target_agent and target_agent == str(self.id or "").strip())
+
+    @staticmethod
+    def _guided_replay_source_game_id() -> str:
+        """Original game whose saved annotations should be replayed, if any."""
+        return str(os.getenv("V2_GUIDED_REPLAY_SOURCE_GAME_ID", "") or "").strip()
+
+    def _guided_replay_action_index(
+        self,
+        game_instance: GameInstance,
+        player_state: Dict[str, Any],
+        legal_descriptors: List[Dict[str, Any]],
+        turn_action_count: int,
+    ) -> Optional[int]:
+        """Return the next recorded teacher action after verifying this prompt.
+
+        A replay is deliberately fail-fast: silently falling back to the policy
+        would make it look as though the recreated game matched when it did not.
+        The cursor advances only after the server accepts the input.
+        """
+        source_game_id = self._guided_replay_source_game_id()
+        if not source_game_id:
+            return None
+
+        if getattr(self, "_guided_replay_source_game", None) != source_game_id:
+            steps = load_annotation_replay(source_game_id, str(self.id or ""))
+            if not steps:
+                raise RuntimeError(
+                    f"No saved guided annotations found for game {source_game_id} and agent {self.id}."
+                )
+            self._guided_replay_source_game = source_game_id
+            self._guided_replay_steps = steps
+            self._guided_replay_cursor = 0
+            self._guided_replay_game_id = None
+            self._guided_replay_pending = None
+
+        current_game_id = str(getattr(game_instance, "game_id", "") or "")
+        if getattr(self, "_guided_replay_game_id", None) != current_game_id:
+            self._guided_replay_game_id = current_game_id
+            self._guided_replay_cursor = 0
+            self._guided_replay_pending = None
+
+        steps = list(getattr(self, "_guided_replay_steps", []) or [])
+        cursor = int(getattr(self, "_guided_replay_cursor", 0))
+        if cursor >= len(steps):
+            return None
+
+        expected_step = steps[cursor]
+        expected = expected_step.get("prompt", {}) or {}
+        game = player_state.get("game", {}) or {}
+        waiting_for = player_state.get("waitingFor", {}) or {}
+        this_player = player_state.get("thisPlayer", {}) or {}
+        actual = {
+            "player_name": str(this_player.get("name", "") or ""),
+            "phase": str(game.get("phase", "") or ""),
+            "generation": int(game.get("generation", 0) or 0),
+            "prompt_type": str(waiting_for.get("type", "") or ""),
+            "prompt_title": _title_text(waiting_for.get("title", "")),
+            "turn_action_count": int(turn_action_count),
+        }
+        mismatches = {
+            key: {"expected": expected.get(key), "actual": actual.get(key)}
+            for key in actual
+            if expected.get(key) != actual.get(key)
+        }
+        if mismatches:
+            raise RuntimeError(
+                "Guided annotation replay diverged before source snapshot "
+                f"{expected_step.get('source_snapshot_id')}: {mismatches}. "
+                "Use the original seed, stage, game options, and teacher policy settings."
+            )
+
+        legal = {int(item.get("action_index", -1)) for item in (legal_descriptors or [])}
+        selected = int(expected_step.get("selected_action_index", -1))
+        if selected not in legal:
+            raise RuntimeError(
+                "Guided annotation replay action is not legal at source snapshot "
+                f"{expected_step.get('source_snapshot_id')}. The game state does not match the recorded run."
+            )
+        self._guided_replay_pending = {
+            "game_id": current_game_id,
+            "cursor": cursor,
+            "action_index": int(selected),
+        }
+        logger.info(
+            "Replaying guided annotation %s/%s for agent %s: action %s",
+            cursor + 1,
+            len(steps),
+            self.id[:8],
+            selected,
+        )
+        return int(selected)
+
+    def _confirm_guided_replay_action(self, game_instance: GameInstance, action_index: Optional[int]) -> None:
+        """Advance replay only after the server has accepted its recorded action."""
+        pending = getattr(self, "_guided_replay_pending", None)
+        if not isinstance(pending, dict):
+            return
+        current_game_id = str(getattr(game_instance, "game_id", "") or "")
+        if pending.get("game_id") != current_game_id or pending.get("action_index") != action_index:
+            return
+        self._guided_replay_cursor = int(pending.get("cursor", 0)) + 1
+        self._guided_replay_pending = None
+
+    @staticmethod
+    def _guided_annotation_timeout_sec() -> float:
+        try:
+            return max(0.0, float(os.getenv("V2_GUIDED_ANNOTATION_TIMEOUT_SEC", "0") or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    async def _wait_for_guided_annotation(self, snapshot_id: str) -> Optional[Dict[str, Any]]:
+        """Hold the game at this player's prompt and return the teacher's selection."""
+        timeout_sec = self._guided_annotation_timeout_sec()
+        deadline = (time.monotonic() + timeout_sec) if timeout_sec > 0.0 else None
+        while True:
+            try:
+                annotation = load_snapshot_annotation(snapshot_id)
+                logger.info("Guided annotation received for snapshot %s", snapshot_id)
+                return annotation
+            except FileNotFoundError:
+                pass
+            if deadline is not None and time.monotonic() >= deadline:
+                logger.warning("Guided annotation timed out for snapshot %s; continuing", snapshot_id)
+                return None
+            await asyncio.sleep(0.25)
+
+    @staticmethod
+    def _guided_annotation_action_index(
+        annotation: Optional[Dict[str, Any]],
+        proposed_action_index: Optional[int],
+        legal_descriptors: List[Dict[str, Any]],
+    ) -> Optional[int]:
+        """Pick the teacher-authorized action to send for a guided decision."""
+        if not isinstance(annotation, dict) or bool(annotation.get("skip", False)):
+            return None
+        legal = {int(item.get("action_index", -1)) for item in (legal_descriptors or [])}
+        accepted = [
+            int(action_index)
+            for action_index in (annotation.get("accepted_action_indices", []) or [])
+            if int(action_index) in legal
+        ]
+        if not accepted:
+            return None
+        # Multiple selections mean "any of these are acceptable". Preserve the
+        # proposal if it is acceptable; otherwise use the first legal selection.
+        if proposed_action_index is not None and int(proposed_action_index) in accepted:
+            return int(proposed_action_index)
+        return int(accepted[0])
+
     def _maybe_capture_decision_snapshot(
         self,
         game_instance: GameInstance,
@@ -2973,9 +3197,18 @@ class RLAgent:
         send_outcome: str,
         turn_action_count: int,
         state_vector: Optional[np.ndarray],
-    ) -> None:
+        guided_auto_capture: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         if not isinstance(action_meta, dict):
-            return
+            return None
+
+        if guided_auto_capture and self._guided_annotation_is_enabled():
+            create_capture_request(
+                agent_id=self.id,
+                game_id=getattr(game_instance, "game_id", None),
+                player_id=player_id,
+                note="guided annotation: label every decision for this seat",
+            )
 
         request = reserve_pending_capture_request(
             agent_id=self.id,
@@ -2983,7 +3216,7 @@ class RLAgent:
             player_id=player_id,
         )
         if request is None:
-            return
+            return None
 
         try:
             action_meta.setdefault("game_seed", getattr(game_instance, "rl_seed", None))
@@ -3017,9 +3250,11 @@ class RLAgent:
                 str(saved.get("snapshot_id", "") or ""),
                 self.id[:8],
             )
+            return saved
         except Exception as exc:
             fail_capture_request(str(request.get("request_id", "") or ""), str(exc))
             logger.warning("Failed to capture decision snapshot for agent %s: %s", self.id[:8], exc)
+            return None
 
     def _extract_standard_project_name(
         self,
@@ -3270,13 +3505,15 @@ class RLAgent:
                     "external_policy": {
                         "version": str(decision.policy_version),
                         "confidence": float(decision.confidence),
+                        "is_forced": bool(decision.is_forced),
                         "used_fallback": bool(decision.used_fallback),
                         "scores": [asdict(row) for row in decision.actions],
                     },
                     "review_priority": {
-                        "teacher_confidence": float(decision.confidence),
+                        "teacher_confidence": None if decision.is_forced else float(decision.confidence),
+                        "teacher_forced": bool(decision.is_forced),
                         "teacher_student_disagreement": None,
-                        "priority_score": float(1.0 - decision.confidence),
+                        "priority_score": 0.0 if decision.is_forced else float(1.0 - decision.confidence),
                     },
                     "bundle_summary": {
                         "world_token_count": int(planner_state["world_tokens"].shape[0]),
@@ -3495,9 +3732,10 @@ class RLAgent:
                         for pos, action_idx in enumerate(available_actions[:len(student_probs)])
                     )
                     action_meta["review_priority"] = {
-                        "teacher_confidence": float(teacher_decision.confidence),
-                        "teacher_student_disagreement": float(disagreement),
-                        "priority_score": float(max(1.0 - teacher_decision.confidence, disagreement)),
+                        "teacher_confidence": None if teacher_decision.is_forced else float(teacher_decision.confidence),
+                        "teacher_forced": bool(teacher_decision.is_forced),
+                        "teacher_student_disagreement": None if teacher_decision.is_forced else float(disagreement),
+                        "priority_score": 0.0 if teacher_decision.is_forced else float(max(1.0 - teacher_decision.confidence, disagreement)),
                         "teacher_action_index": int(teacher_decision.chosen_action_index),
                         "student_action_index": int(action_index),
                     }

@@ -133,3 +133,18 @@ def test_tournament_manager_defaults_missing_telemetry_to_zero() -> None:
         assert "hate_draft_rate_low_hand_ev" in row
         assert row["draft_decisions"] >= 0
         assert row["hate_draft_picks"] >= 0
+
+
+def test_game_timeout_returns_a_failed_result_without_cancelling_the_collector(monkeypatch) -> None:
+    async def timeout_after_cancelling_wait_target(awaitable, timeout):
+        _ = timeout
+        awaitable.cancel()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr("tournament_manager.asyncio.wait_for", timeout_after_cancelling_wait_target)
+    agents = [_FakeAgent(id=f"agent-{idx}", telemetry=None) for idx in range(4)]
+
+    result = asyncio.run(TournamentManager(game_cluster=_FakeCluster())._run_single_game(agents=agents, tournament_id="timeout"))
+
+    assert result.completed is False
+    assert result.error_message == "Game timed out"

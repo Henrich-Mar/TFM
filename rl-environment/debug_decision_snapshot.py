@@ -21,6 +21,25 @@ _REQUEST_LOCK = threading.Lock()
 _PENDING_CAPTURE_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_SPACE_BONUS_LABELS = {
+    0: "Titanium", 1: "Steel", 2: "Plant", 3: "Card", 4: "Heat", 5: "Ocean",
+    6: "M€", 7: "Animal", 8: "Microbe", 9: "Energy", 10: "Data", 11: "Science",
+    12: "Energy production", 13: "Temperature", 15: "Asteroid", 16: "Delegate",
+    17: "Colony", 18: "Temperature (pay 4 M€)",
+}
+_TILE_TYPE_LABELS = {
+    0: "Greenery", 1: "Ocean", 2: "City", 3: "Capital", 4: "Commercial District",
+    5: "Ecological Zone", 6: "Industrial Center", 7: "Lava Flows", 8: "Mining Area",
+    9: "Mining Rights", 10: "Mohole Area", 11: "Natural Preserve", 12: "Nuclear Zone",
+    13: "Restricted Area", 14: "Deimos Down", 15: "Great Dam", 16: "Magnetic Field Generators",
+    17: "Biofertilizer Facility", 18: "Metallic Asteroid", 19: "Solar Farm", 20: "Ocean City",
+    21: "Ocean Farm", 22: "Ocean Sanctuary", 23: "Mild Dust Storm", 24: "Severe Dust Storm",
+    25: "Mild Erosion", 26: "Severe Erosion", 27: "Mining (Steel)", 28: "Mining (Titanium)",
+    29: "Moon Mine", 30: "Moon Habitat", 31: "Moon Road", 32: "Luna Trade Station",
+    33: "Luna Mining Hub", 34: "Luna Train Station", 35: "Lunar Mine Urbanization",
+    36: "Wetlands", 37: "Red City", 38: "Martian Nature Wonders", 39: "Crashlanding",
+    40: "Mars Nomads", 41: "Rey Skywalker", 42: "Man-made Volcano", 43: "New Holland",
+}
 
 
 def _utc_now_iso() -> str:
@@ -51,6 +70,30 @@ def _message_text(value: Any) -> str:
     if isinstance(value, dict):
         value = value.get("message", "")
     return str(value or "").strip()
+
+
+def _space_bonus_label(bonus: Any) -> str:
+    try:
+        numeric = int(bonus)
+    except (TypeError, ValueError):
+        numeric = None
+    if numeric is not None:
+        return _SPACE_BONUS_LABELS.get(numeric, f"Unknown bonus ({numeric})")
+    if isinstance(bonus, dict):
+        return _message_text(bonus.get("name", bonus.get("type", bonus.get("bonus", "Unknown bonus"))))
+    return _message_text(bonus).replace("_", " ").title() or "Unknown bonus"
+
+
+def _tile_type_label(tile_type: Any) -> str:
+    if tile_type is None or _message_text(tile_type) == "":
+        return "Empty"
+    try:
+        numeric = int(tile_type)
+    except (TypeError, ValueError):
+        numeric = None
+    if numeric is not None:
+        return _TILE_TYPE_LABELS.get(numeric, f"Unknown tile ({numeric})")
+    return _message_text(tile_type).replace("_", " ").title()
 
 
 def _json_safe(value: Any) -> Any:
@@ -305,10 +348,32 @@ def _player_summary(player: Any, hand_count_override: Optional[int] = None) -> D
         "resources": resources,
         "production": productions,
         "hand_count": _safe_int(hand_count_override if hand_count_override is not None else len(player.get("cardsInHand", []) or [])),
+        "card_cost": _safe_float(player.get("cardCost", 3.0), 3.0),
         "tableau_count": _safe_int(len(player.get("tableau", []) or [])),
         "cities_count": _safe_int(len(player.get("cityCards", []) or [])),
         "greeneries_count": _safe_int(len(player.get("greeneryCards", []) or [])),
     }
+
+
+def _is_same_player(candidate: Any, this_player: Any, player_id: Optional[str] = None) -> bool:
+    """Identify thisPlayer in the public players list when ids are redacted."""
+    if not isinstance(candidate, dict) or not isinstance(this_player, dict):
+        return False
+
+    candidate_id = str(candidate.get("id", "") or "").strip()
+    this_id = str(this_player.get("id", "") or "").strip()
+    requested_id = str(player_id or "").strip()
+    if candidate_id and (candidate_id == this_id or candidate_id == requested_id):
+        return True
+
+    candidate_color = str(candidate.get("color", "") or "").strip().lower()
+    this_color = str(this_player.get("color", "") or "").strip().lower()
+    if candidate_color and this_color:
+        return candidate_color == this_color
+
+    candidate_name = str(candidate.get("name", "") or "").strip()
+    this_name = str(this_player.get("name", "") or "").strip()
+    return bool(candidate_name and this_name and candidate_name == this_name)
 
 
 def _option_summary(option: Any, index: int) -> Dict[str, Any]:
@@ -340,6 +405,7 @@ def _option_summary(option: Any, index: int) -> Dict[str, Any]:
 def _space_summary(space: Any, index: int) -> Dict[str, Any]:
     if not isinstance(space, dict):
         return {"index": int(index), "label": _message_text(space)}
+    bonuses = [_space_bonus_label(item) for item in (space.get("bonus", []) or [])]
     return {
         "index": int(index),
         "id": str(space.get("id", "") or space.get("spaceId", "") or "").strip(),
@@ -347,10 +413,172 @@ def _space_summary(space: Any, index: int) -> Dict[str, Any]:
         "space_type": str(space.get("spaceType", "") or space.get("tileType", "") or "").strip(),
         "x": _safe_int(space.get("x", 0)),
         "y": _safe_int(space.get("y", 0)),
-        "bonus": [_message_text(item) for item in (space.get("bonus", []) or []) if _message_text(item)],
+        "tile_type": space.get("tileType"),
+        "tile_label": _tile_type_label(space.get("tileType")),
+        "bonus": list(space.get("bonus", []) or []),
+        "bonus_labels": bonuses,
+        "bonus_summary": ", ".join(bonuses) if bonuses else "None",
         "disabled": bool(space.get("isDisabled", False)),
-        "owner": str(space.get("playerColor", "") or space.get("owner", "") or "").strip(),
+        "owner": str(space.get("color", space.get("playerColor", space.get("owner", ""))) or "").strip(),
     }
+
+
+def _candidate_space_id(space: Any) -> str:
+    if isinstance(space, dict):
+        return str(space.get("id", space.get("spaceId", "")) or "").strip()
+    return _message_text(space).strip()
+
+
+def _prompt_space_candidates(waiting_for: Dict[str, Any]) -> List[Any]:
+    """Return space candidates from the current prompt and any nested action branch."""
+    candidates: List[Any] = []
+    seen: set[str] = set()
+
+    def append_spaces(spaces: Any) -> None:
+        for space in spaces or []:
+            identity = _candidate_space_id(space)
+            if identity and identity in seen:
+                continue
+            if identity:
+                seen.add(identity)
+            candidates.append(space)
+
+    def walk(prompt: Any) -> None:
+        if not isinstance(prompt, dict):
+            return
+        append_spaces(prompt.get("availableSpaces", prompt.get("spaces", [])) or [])
+        for option in prompt.get("options", []) or []:
+            walk(option)
+
+    walk(waiting_for)
+    return candidates
+
+
+def _space_ids_from_action(action: Any) -> set[str]:
+    ids: set[str] = set()
+    stack = [action] if isinstance(action, dict) else []
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, dict):
+            continue
+        if str(current.get("type", "") or "").lower() in ("space", "selectspace"):
+            space_id = str(current.get("spaceId", current.get("id", "")) or "").strip()
+            if space_id:
+                ids.add(space_id)
+        response = current.get("response")
+        if isinstance(response, dict):
+            stack.append(response)
+        for response in current.get("responses", []) or []:
+            if isinstance(response, dict):
+                stack.append(response)
+    return ids
+
+
+_PAYMENT_RESOURCE_KEYS = {
+    "megaCredits": "mc",
+    "steel": "steel",
+    "titanium": "titanium",
+    "plants": "plants",
+    "energy": "energy",
+    "heat": "heat",
+}
+
+
+def _action_payment_projection(player: Dict[str, Any], action: Any) -> Dict[str, Any]:
+    """Summarize the known payment while retaining the pre-action decision state."""
+    payment = {target: 0.0 for target in _PAYMENT_RESOURCE_KEYS.values()}
+    stack = [action] if isinstance(action, dict) else []
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, dict):
+            continue
+        raw_payment = current.get("payment", {}) or {}
+        if isinstance(raw_payment, dict):
+            for source, target in _PAYMENT_RESOURCE_KEYS.items():
+                payment[target] += _safe_float(raw_payment.get(source, 0.0))
+        response = current.get("response")
+        if isinstance(response, dict):
+            stack.append(response)
+        for response in current.get("responses", []) or []:
+            if isinstance(response, dict):
+                stack.append(response)
+
+    resources_before = dict(_player_summary(player).get("resources", {}) or {})
+    return {
+        "state_timing": "before_action",
+        "payment": payment,
+        "resources_after_payment": {
+            resource: float(resources_before.get(resource, 0.0)) - float(payment.get(resource, 0.0))
+            for resource in _PAYMENT_RESOURCE_KEYS.values()
+        },
+    }
+
+
+def _board_surface_space(
+    space: Any,
+    legal_ids: set[str],
+    chosen_ids: set[str],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(space, dict):
+        return None
+    try:
+        x, y = int(space.get("x")), int(space.get("y"))
+    except (TypeError, ValueError):
+        return None
+    if x < 0 or y < 0:
+        return None
+    space_id = str(space.get("id", space.get("spaceId", "")) or "").strip()
+    if not space_id:
+        return None
+    bonuses = list(space.get("bonus", []) or [])
+    bonus_labels = [_space_bonus_label(item) for item in bonuses]
+    return {
+        "id": space_id,
+        "x": x,
+        "y": y,
+        "space_type": str(space.get("spaceType", "") or "").strip(),
+        "tile_type": space.get("tileType"),
+        "tile_label": _tile_type_label(space.get("tileType")),
+        "owner": str(space.get("color", space.get("playerColor", space.get("owner", ""))) or "").strip(),
+        "bonus": bonuses,
+        "bonus_labels": bonus_labels,
+        "bonus_summary": ", ".join(bonus_labels) if bonus_labels else "None",
+        "legal_candidate": space_id in legal_ids,
+        "chosen": space_id in chosen_ids,
+    }
+
+
+def _snapshot_board_surface(
+    game: Dict[str, Any],
+    waiting_for: Dict[str, Any],
+    action_input: Optional[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    candidate_spaces = _prompt_space_candidates(waiting_for)
+    legal_ids = {_candidate_space_id(item) for item in candidate_spaces}
+    legal_ids.discard("")
+    chosen_ids = _space_ids_from_action(action_input)
+
+    def summarize(spaces: Any) -> List[Dict[str, Any]]:
+        result = [_board_surface_space(space, legal_ids, chosen_ids) for space in (spaces or [])]
+        return [item for item in result if item is not None]
+
+    moon = game.get("moon", {}) or {}
+    mars_spaces = summarize(game.get("spaces", []))
+    moon_spaces = summarize(moon.get("spaces", []))
+    known_ids = {str(item["id"]) for item in mars_spaces + moon_spaces}
+    moon_ids = {str(item["id"]) for item in moon_spaces}
+    # Some response variants expose a legal location before it appears in the
+    # public board list. Preserve it as a virtual board cell so the reviewer
+    # can still see every legal choice.
+    for candidate in candidate_spaces:
+        compact = _board_surface_space(candidate, legal_ids, chosen_ids)
+        if compact is None or compact["id"] in known_ids:
+            continue
+        candidate_type = str(candidate.get("spaceType", "") or "").lower() if isinstance(candidate, dict) else ""
+        is_moon = compact["id"] in moon_ids or compact["id"].lower().startswith("m") or "moon" in candidate_type or "lunar" in candidate_type
+        (moon_spaces if is_moon else mars_spaces).append(compact)
+        known_ids.add(compact["id"])
+    return {"spaces": mars_spaces, "moon_spaces": moon_spaces}
 
 
 def _award_summary(award: Any, index: int) -> Dict[str, Any]:
@@ -511,6 +739,7 @@ def _descriptor_lookup(action_descriptors: List[Dict[str, Any]]) -> Dict[int, Di
             "award_name": str(descriptor.get("award_name", "") or "").strip(),
             "milestone_name": str(descriptor.get("milestone_name", "") or "").strip(),
             "decoded_action": descriptor.get("decoded_action", {}),
+            "space_features": dict(descriptor.get("space_features", {}) or {}),
         }
     return out
 
@@ -551,12 +780,12 @@ def _fallback_chosen_descriptor(
     }
 
 
-def _summarize_prompt_candidates(waiting_for: Dict[str, Any]) -> Dict[str, Any]:
+def _summarize_prompt_candidates(waiting_for: Dict[str, Any], game: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     options = waiting_for.get("options", []) or []
     cards = waiting_for.get("cards", []) or []
     if not cards:
         cards = _or_project_card_candidates(waiting_for)
-    spaces = waiting_for.get("availableSpaces", waiting_for.get("spaces", [])) or []
+    spaces = _prompt_space_candidates(waiting_for)
     players = waiting_for.get("players", []) or []
     colonies = waiting_for.get("colonies", []) or []
     parties = waiting_for.get("parties", []) or []
@@ -565,7 +794,25 @@ def _summarize_prompt_candidates(waiting_for: Dict[str, Any]) -> Dict[str, Any]:
     policies = waiting_for.get("policies", []) or []
     include = waiting_for.get("include", []) or []
 
-    map_candidates = [_space_summary(space, idx) for idx, space in enumerate(spaces)]
+    board_spaces = list((game or {}).get("spaces", []) or [])
+    moon = (game or {}).get("moon", {}) or {}
+    board_spaces.extend(list(moon.get("spaces", []) or []))
+    board_by_id = {
+        _candidate_space_id(space): space
+        for space in board_spaces
+        if isinstance(space, dict) and _candidate_space_id(space)
+    }
+    map_candidates = []
+    for idx, space in enumerate(spaces):
+        if isinstance(space, dict):
+            map_candidates.append(_space_summary(space, idx))
+            continue
+        space_id = _candidate_space_id(space)
+        board_space = board_by_id.get(space_id)
+        if isinstance(board_space, dict):
+            map_candidates.append(_space_summary(board_space, idx))
+        else:
+            map_candidates.append({"index": int(idx), "id": space_id, "label": space_id})
     moon_candidates = [
         dict(item)
         for item in map_candidates
@@ -689,9 +936,9 @@ def build_decision_snapshot(
     other_players = [
         _player_summary(player)
         for player in (player_state.get("players", []) or [])
-        if isinstance(player, dict) and str(player.get("id", "") or "") != str(player_id or "")
+        if isinstance(player, dict) and not _is_same_player(player, this_player, player_id)
     ]
-    prompt_candidates = _summarize_prompt_candidates(waiting_for)
+    prompt_candidates = _summarize_prompt_candidates(waiting_for, game)
     prompt_card_rankings = list(action_meta.get("prompt_card_rankings", []) or [])
     if prompt_card_rankings:
         prompt_candidates["cards"] = _attach_requirement_rankings(list(prompt_candidates.get("cards", []) or []), prompt_card_rankings)
@@ -708,6 +955,7 @@ def build_decision_snapshot(
     hand_cards = _snapshot_hand_cards(player_state)
     if prompt_card_rankings:
         hand_cards = _attach_requirement_rankings(hand_cards, prompt_card_rankings)
+    board_surface = _snapshot_board_surface(game, waiting_for, action_input)
 
     snapshot = {
         "schema_version": "decision_snapshot.v1",
@@ -746,6 +994,8 @@ def build_decision_snapshot(
                 "oceans": _safe_float(game.get("oceans", 0.0)),
                 "venus": _safe_float(game.get("venusScaleLevel", 0.0)),
                 "map_name": str(game.get("boardName", "") or game.get("mapName", "") or "").strip(),
+                "spaces": board_surface["spaces"],
+                "moon_spaces": board_surface["moon_spaces"],
             },
             "awards": [_award_summary(award, idx) for idx, award in enumerate(game.get("awards", []) or [])],
             "milestones": [_milestone_summary(milestone, idx) for idx, milestone in enumerate(game.get("milestones", []) or [])],
@@ -753,6 +1003,7 @@ def build_decision_snapshot(
             "prompt_card_rankings": prompt_card_rankings,
             "planner": dict(action_meta.get("bundle_summary", {}) or {}),
             "planner_bundle": action_meta.get("planner_bundle", {}),
+            "action_projection": _action_payment_projection(this_player, action_input),
         },
         "policy": {
             "chosen_action_index": chosen_action_index,
@@ -902,3 +1153,66 @@ def load_snapshot_annotation(snapshot_id: str) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("invalid teacher annotation")
     return payload
+
+
+def load_annotation_replay(source_game_id: str, agent_id: str) -> List[Dict[str, Any]]:
+    """Load saved guided labels for one agent in their original decision order.
+
+    Snapshot IDs include a timestamp and are necessarily different when a game is
+    recreated.  This joins the annotation files back to their source snapshots by
+    game and agent instead, so a deterministic game can reuse the recorded
+    choices.
+    """
+    source_game_id = str(source_game_id or "").strip()
+    agent_id = str(agent_id or "").strip()
+    if not source_game_id or not agent_id:
+        return []
+
+    replay: List[Dict[str, Any]] = []
+    annotation_root = Path(get_annotation_root())
+    snapshot_root = Path(get_snapshot_root())
+    for annotation_path in annotation_root.glob("*.json"):
+        try:
+            annotation = json.loads(annotation_path.read_text(encoding="utf-8"))
+            if not isinstance(annotation, dict) or bool(annotation.get("skip", False)):
+                continue
+            accepted = sorted({int(item) for item in (annotation.get("accepted_action_indices", []) or [])})
+            if not accepted:
+                continue
+            snapshot_id = str(annotation.get("snapshot_id", "") or "").strip()
+            snapshot_path = snapshot_root / f"{_sanitize_id(snapshot_id)}.json"
+            if not snapshot_id or not snapshot_path.is_file():
+                continue
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            if not isinstance(snapshot, dict):
+                continue
+            prompt = snapshot.get("prompt", {}) or {}
+            snapshot_agent_id = str((snapshot.get("agent", {}) or {}).get("id", "") or "").strip()
+            if str(prompt.get("game_id", "") or "").strip() != source_game_id or snapshot_agent_id != agent_id:
+                continue
+            proposed_action_index = _safe_int((snapshot.get("policy", {}) or {}).get("chosen_action_index", -1), -1)
+            selected_action_index = proposed_action_index if proposed_action_index in accepted else accepted[0]
+            replay.append(
+                {
+                    "source_snapshot_id": snapshot_id,
+                    "captured_at": str(snapshot.get("captured_at", "") or ""),
+                    "accepted_action_indices": accepted,
+                    "selected_action_index": selected_action_index,
+                    "prompt": {
+                        "player_name": str(prompt.get("player_name", "") or ""),
+                        "phase": str(prompt.get("phase", "") or ""),
+                        "generation": _safe_int(prompt.get("generation", 0)),
+                        "prompt_type": str(prompt.get("prompt_type", "") or ""),
+                        "prompt_title": str(prompt.get("prompt_title", "") or ""),
+                        "turn_action_count": _safe_int(prompt.get("turn_action_count", 0)),
+                    },
+                }
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            # A malformed or partial debug file must not make unrelated replays
+            # unavailable. The caller will still fail clearly if no usable steps
+            # remain for the requested source game.
+            continue
+
+    replay.sort(key=lambda step: (str(step.get("captured_at", "")), str(step.get("source_snapshot_id", ""))))
+    return replay

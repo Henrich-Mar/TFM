@@ -224,6 +224,28 @@ def test_state_encoder_respects_planner_token_limits() -> None:
     assert int(np.count_nonzero(encoded["world_token_types"] == 8)) == 1
 
 
+def test_state_encoder_excludes_self_when_player_ids_are_redacted() -> None:
+    if "rl-environment" not in sys.path:
+        sys.path.append("rl-environment")
+    from models.planner_common import PlannerConfig
+    from models.state_encoder import StateEncoder
+
+    encoder = StateEncoder(PlannerConfig(tableau_limit=0, hand_limit=0, opponent_limit=4))
+    player_state = {
+        "thisPlayer": {"id": "", "name": "A2", "color": "blue"},
+        "players": [
+            {"id": "", "name": "A1", "color": "red"},
+            {"id": "", "name": "A2", "color": "blue"},
+            {"id": "", "name": "A3", "color": "green"},
+            {"id": "", "name": "A4", "color": "yellow"},
+        ],
+    }
+
+    encoded = encoder.encode(player_state)
+
+    assert int(np.count_nonzero(encoded["world_token_types"] == 4)) == 3
+
+
 def test_board_opportunity_rows_prefer_greenery_near_own_city() -> None:
     if "rl-environment" not in sys.path:
         sys.path.append("rl-environment")

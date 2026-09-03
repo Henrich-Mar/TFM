@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from pathlib import Path
@@ -12,6 +13,7 @@ from debug_decision_snapshot import (  # noqa: E402
     build_decision_snapshot,
     create_capture_request,
     list_saved_snapshots,
+    load_annotation_replay,
     load_snapshot,
     reset_capture_state,
     save_snapshot,
@@ -507,6 +509,10 @@ def test_snapshot_routes_and_page_render(monkeypatch, tmp_path: Path) -> None:
     assert page_resp.status_code == 200
     assert "Agent Decision Explainer" in page_resp.text
     assert "Arm Next Snapshot" in page_resp.text
+    assert "Mars board" in page_resp.text
+    assert "const middleY = (minY + maxY) / 2;" in page_resp.text
+    assert "actionDisplayLabel" in page_resp.text
+    assert "loadNextGuidedSnapshot" in page_resp.text
 
     listed = list_saved_snapshots()
     assert listed[0]["snapshot_id"] == saved["snapshot_id"]
@@ -514,3 +520,200 @@ def test_snapshot_routes_and_page_render(monkeypatch, tmp_path: Path) -> None:
     assert loaded["policy"]["chosen_action_label"] == "PLAY_CARD(Asteroid Mining)"
     assert loaded["policy"]["chosen_action_descriptor"]["family"] == "play_card"
     assert loaded["state"]["prompt_card_rankings"][0]["name"] == "AI Central"
+
+
+def test_snapshot_excludes_self_when_player_ids_are_redacted() -> None:
+    player_state = _make_player_state("or", {"options": [{"type": "option", "title": "Pass"}]})
+    player_state["thisPlayer"]["id"] = ""
+    player_state["thisPlayer"]["name"] = "A2"
+    player_state["thisPlayer"]["color"] = "blue"
+    player_state["players"] = [
+        {"id": "", "name": "A1", "color": "red"},
+        {"id": "", "name": "A2", "color": "blue"},
+        {"id": "", "name": "A3", "color": "green"},
+        {"id": "", "name": "A4", "color": "yellow"},
+    ]
+
+    snapshot = build_decision_snapshot(
+        request=create_capture_request(note="redacted-player-id"),
+        agent_id="agent-blue",
+        game_id="game-redacted-ids",
+        game_url="http://localhost:8081/game?id=game-redacted-ids",
+        player_id="player-blue",
+        player_state=player_state,
+        action_input={"type": "or", "index": 0},
+        action_index=201,
+        action_meta=_base_action_meta(),
+        sampled_from_policy=True,
+        send_outcome="accepted",
+        turn_action_count=0,
+    )
+
+    assert [opponent["color"] for opponent in snapshot["state"]["opponents"]] == ["red", "green", "yellow"]
+
+
+def test_space_snapshot_preserves_renderable_mars_and_moon_boards() -> None:
+    player_state = _make_player_state(
+        "space",
+        {"availableSpaces": [{"id": "legal", "x": 2, "y": 3, "spaceType": "land"}]},
+    )
+    player_state["game"]["spaces"] = [
+        {"id": "colony", "x": -1, "y": -1, "spaceType": "colony", "tileType": 2},
+        {"id": "legal", "x": 2, "y": 3, "spaceType": "land", "bonus": [3]},
+        {"id": "city", "x": 3, "y": 3, "spaceType": "land", "tileType": 2, "color": "red"},
+    ]
+    player_state["game"]["moon"] = {
+        "spaces": [{"id": "m01", "x": 1, "y": 0, "spaceType": "land", "tileType": 29, "color": "blue"}],
+    }
+
+    snapshot = build_decision_snapshot(
+        request=create_capture_request(note="board-surface"),
+        agent_id="agent-red",
+        game_id="game-board",
+        game_url="http://localhost:8081/game?id=game-board",
+        player_id="player-red",
+        player_state=player_state,
+        action_input={"type": "space", "spaceId": "legal"},
+        action_index=300,
+        action_meta=_base_action_meta(),
+        sampled_from_policy=True,
+        send_outcome="accepted",
+        turn_action_count=0,
+    )
+
+    board = snapshot["state"]["board"]
+    assert [space["id"] for space in board["spaces"]] == ["legal", "city"]
+    assert board["spaces"][0]["legal_candidate"] is True
+    assert board["spaces"][0]["chosen"] is True
+    assert board["spaces"][1]["owner"] == "red"
+    assert board["moon_spaces"][0]["id"] == "m01"
+
+
+def test_space_id_candidates_are_resolved_and_marked_legal_on_the_board() -> None:
+    player_state = _make_player_state("space", {"availableSpaces": ["04"]})
+    player_state["game"]["spaces"] = [{"id": "04", "x": 5, "y": 0, "spaceType": "ocean"}]
+
+    snapshot = build_decision_snapshot(
+        request=create_capture_request(note="string-space-candidate"),
+        agent_id="agent-red",
+        game_id="game-board",
+        game_url="http://localhost:8081/game?id=game-board",
+        player_id="player-red",
+        player_state=player_state,
+        action_input={"type": "space", "spaceId": "04"},
+        action_index=300,
+        action_meta=_base_action_meta(),
+        sampled_from_policy=True,
+        send_outcome="accepted",
+        turn_action_count=0,
+    )
+
+    assert snapshot["state"]["board"]["spaces"][0]["legal_candidate"] is True
+    assert snapshot["state"]["prompt_candidates"]["map_candidates"] == [{
+        "index": 0, "id": "04", "name": "space-0", "space_type": "ocean",
+        "x": 5, "y": 0, "tile_type": None, "tile_label": "Empty", "bonus": [],
+        "bonus_labels": [], "bonus_summary": "None", "disabled": False, "owner": "",
+    }]
+
+
+def test_nested_space_candidates_include_readable_tile_and_bonus_details() -> None:
+    player_state = _make_player_state(
+        "or",
+        {
+            "options": [{
+                "type": "space",
+                "title": "Convert 8 plants into greenery",
+                "availableSpaces": [{"id": "bonus-space", "x": 2, "y": 3, "spaceType": "land", "bonus": [0, 3]}],
+            }],
+        },
+    )
+    player_state["game"]["spaces"] = [
+        {"id": "bonus-space", "x": 2, "y": 3, "spaceType": "land", "bonus": [0, 3]},
+        {"id": "city-space", "x": 3, "y": 3, "spaceType": "land", "tileType": 2},
+    ]
+
+    snapshot = build_decision_snapshot(
+        request=create_capture_request(note="nested-greenery-space"),
+        agent_id="agent-red",
+        game_id="game-board",
+        game_url="http://localhost:8081/game?id=game-board",
+        player_id="player-red",
+        player_state=player_state,
+        action_input={"type": "or", "index": 0, "response": {"type": "space", "spaceId": "bonus-space"}},
+        action_index=301,
+        action_meta=_base_action_meta(),
+        sampled_from_policy=True,
+        send_outcome="accepted",
+        turn_action_count=0,
+    )
+
+    candidate = snapshot["state"]["prompt_candidates"]["map_candidates"][0]
+    assert candidate["tile_label"] == "Empty"
+    assert candidate["bonus_labels"] == ["Titanium", "Card"]
+    assert candidate["bonus_summary"] == "Titanium, Card"
+    assert snapshot["state"]["board"]["spaces"][1]["tile_label"] == "City"
+    assert snapshot["state"]["board"]["spaces"][0]["legal_candidate"] is True
+
+
+def test_snapshot_includes_the_payment_projection_for_its_pre_action_state() -> None:
+    player_state = _make_player_state("projectCard", {"cards": [{"name": "Greenhouses", "cost": 6}]})
+
+    snapshot = build_decision_snapshot(
+        request=create_capture_request(note="payment-projection"),
+        agent_id="agent-red",
+        game_id="game-payment",
+        game_url="http://localhost:8081/game?id=game-payment",
+        player_id="player-red",
+        player_state=player_state,
+        action_input={"type": "projectCard", "card": "Greenhouses", "payment": {"megaCredits": 6}},
+        action_index=0,
+        action_meta=_base_action_meta(),
+        sampled_from_policy=True,
+        send_outcome="accepted",
+        turn_action_count=0,
+    )
+
+    projection = snapshot["state"]["action_projection"]
+    assert projection["state_timing"] == "before_action"
+    assert projection["payment"]["mc"] == 6
+    assert projection["resources_after_payment"]["mc"] == 24
+
+
+def test_load_annotation_replay_uses_source_snapshot_order_and_original_choice(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DECISION_SNAPSHOT_DIR", str(tmp_path))
+    annotations = tmp_path / "annotations"
+    annotations.mkdir()
+    snapshots = [
+        ("later", "2026-09-02T12:50:00Z", 301, [300, 301], "card"),
+        ("earlier", "2026-09-02T12:49:00Z", 204, [202], "or"),
+    ]
+    for snapshot_id, captured_at, proposed, accepted, prompt_type in snapshots:
+        (tmp_path / f"{snapshot_id}.json").write_text(
+            json.dumps(
+                {
+                    "snapshot_id": snapshot_id,
+                    "captured_at": captured_at,
+                    "agent": {"id": "teacher-v1-seat-0"},
+                    "prompt": {
+                        "game_id": "original-game",
+                        "player_name": "A1_teacherv",
+                        "phase": "action",
+                        "generation": 6,
+                        "prompt_type": prompt_type,
+                        "prompt_title": "Choose",
+                        "turn_action_count": 1,
+                    },
+                    "policy": {"chosen_action_index": proposed},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (annotations / f"{snapshot_id}.json").write_text(
+            json.dumps({"snapshot_id": snapshot_id, "accepted_action_indices": accepted, "skip": False}),
+            encoding="utf-8",
+        )
+
+    replay = load_annotation_replay("original-game", "teacher-v1-seat-0")
+
+    assert [step["source_snapshot_id"] for step in replay] == ["earlier", "later"]
+    assert [step["selected_action_index"] for step in replay] == [202, 301]

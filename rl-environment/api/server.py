@@ -25,6 +25,8 @@ from debug_decision_snapshot import (
     save_snapshot_annotation,
 )
 
+from training.human_game_listener import HumanGameListener
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Terraforming Mars RL Monitor", version="1.0.0")
@@ -34,6 +36,51 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 # Global reference to coordinator (set when starting server)
 coordinator = None
+human_game_listener: Optional[HumanGameListener] = None
+human_game_listener_token = ""
+human_listener_games: List[Dict[str, Any]] = []
+
+
+def configure_human_game_listener(listener: HumanGameListener, token: str = "") -> None:
+    """Attach the passive human-play collector to this FastAPI process."""
+    global human_game_listener, human_game_listener_token
+    human_game_listener = listener
+    human_game_listener_token = str(token or "")
+
+
+def set_human_listener_games(games: List[Dict[str, Any]]) -> None:
+    global human_listener_games
+    human_listener_games = [dict(game) for game in games]
+
+
+def mark_human_listener_game_complete(game_id: str) -> None:
+    for game in human_listener_games:
+        if str(game.get("game_id", "") or "") == str(game_id or ""):
+            game["status"] = "completed"
+
+
+@app.get("/human-listener/games")
+async def get_human_listener_games():
+    return {"games": human_listener_games}
+
+
+@app.post("/human-listener/decision")
+async def record_human_listener_decision(request: Request):
+    """Receive an out-of-band UI choice from a locally configured game server."""
+    if human_game_listener is None:
+        raise HTTPException(status_code=503, detail="human listener is not running")
+    if human_game_listener_token and request.headers.get("X-TFM-Human-Listener-Token", "") != human_game_listener_token:
+        raise HTTPException(status_code=401, detail="invalid human listener token")
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("human listener event must be an object")
+        if str(payload.get("event_type", "") or "") == "game_complete":
+            state = payload.get("player_state", {}) or {}
+            return human_game_listener.complete_game(str(payload.get("game_id", "") or ""), state)
+        return human_game_listener.record(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 class DebugGameRequest(BaseModel):
     agent_ids: Optional[List[str]] = None

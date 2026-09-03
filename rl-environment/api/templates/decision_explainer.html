@@ -141,6 +141,17 @@
       gap: 10px;
       margin-bottom: 12px;
     }
+    .board-map {
+      width: 100%;
+      max-height: 540px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #211b17;
+    }
+    .board-map-legend { display: flex; flex-wrap: wrap; gap: 10px; color: var(--muted); font-size: 12px; }
+    .board-map-legend span::before { content: "⬢"; margin-right: 4px; }
+    .legend-candidate::before { color: #4ed4ff; }
+    .legend-chosen::before { color: #ffd166; }
     @media (max-width: 720px) {
       .kv { grid-template-columns: 1fr; }
       header, main { padding: 16px; }
@@ -160,6 +171,13 @@
 
   <main>
     <section class="toolbar">
+      <div class="panel strong">
+        <div class="section-head">
+          <h2>Passive Human Games</h2>
+          <button id="refreshHumanGames" type="button" class="secondary">Refresh links</button>
+        </div>
+        <div id="humanGames" class="empty">No passive games have been launched.</div>
+      </div>
       <div class="panel">
         <div class="section-head">
           <h2>Load Snapshot</h2>
@@ -206,7 +224,7 @@
     <section class="grid two">
       <div class="panel">
         <div class="section-head">
-          <h2>Chosen Action</h2>
+          <h2>Model Proposal / Selected Action</h2>
         </div>
         <div id="chosenAction" class="muted-box empty">No snapshot selected.</div>
       </div>
@@ -229,19 +247,19 @@
       <div class="section-head">
         <h2>Human Teacher Annotation</h2>
       </div>
-      <label for="acceptedActions">Acceptable actions (Ctrl/Cmd for multiple)</label>
+      <label for="acceptedActions">Choose the action to send (Ctrl/Cmd for multiple acceptable alternatives)</label>
       <select id="acceptedActions" multiple size="8"></select>
       <label for="annotationNote">Why is this strategically acceptable?</label>
       <textarea id="annotationNote" placeholder="Short strategic reason"></textarea>
       <label><input id="annotationSkip" type="checkbox" style="width:auto; margin-right:8px;">Skip this position</label>
-      <button id="saveAnnotation" type="button">Save Teacher Annotation</button>
+      <button id="saveAnnotation" type="button">Save Teacher Choice &amp; Continue</button>
       <div id="annotationStatus" class="status subtle"></div>
     </section>
 
     <section class="grid two">
       <div class="panel">
         <div class="section-head">
-          <h2>Player State</h2>
+          <h2>Player State at Decision Time</h2>
         </div>
         <div id="playerState" class="kv"></div>
       </div>
@@ -346,6 +364,147 @@
       element.innerHTML = items.map(renderItem).join("");
     };
 
+    const actionContainsType = (action, types) => {
+      const stack = action && typeof action === "object" ? [action] : [];
+      while (stack.length) {
+        const current = stack.pop();
+        if (!current || typeof current !== "object") continue;
+        if (types.includes(String(current.type || "").toLowerCase())) return true;
+        if (current.response && typeof current.response === "object") stack.push(current.response);
+        for (const nested of (Array.isArray(current.responses) ? current.responses : [])) {
+          if (nested && typeof nested === "object") stack.push(nested);
+        }
+      }
+      return false;
+    };
+
+    const actionSpaceId = (action) => {
+      const stack = action && typeof action === "object" ? [action] : [];
+      while (stack.length) {
+        const current = stack.pop();
+        if (!current || typeof current !== "object") continue;
+        const spaceId = current.spaceId || current.id;
+        if (["space", "selectspace"].includes(String(current.type || "").toLowerCase()) && spaceId) return String(spaceId);
+        if (current.response && typeof current.response === "object") stack.push(current.response);
+        for (const nested of (Array.isArray(current.responses) ? current.responses : [])) {
+          if (nested && typeof nested === "object") stack.push(nested);
+        }
+      }
+      return "";
+    };
+
+    // Keep older saved snapshots intelligible too: their descriptor label may
+    // have been inherited from the duplicate Sell Patents branch of an OR input.
+    const actionDisplayLabel = (row, cardCost = 3) => {
+      if (row && row.family === "play_card" && row.card_name &&
+          actionContainsType(row.decoded_action, ["projectcard", "selectprojectcardtoplay"])) {
+        return `Play project card: ${row.card_name}`;
+      }
+      if (row && row.family === "select_space") {
+        const space = row.space_features || {};
+        const spaceId = space.space_id || actionSpaceId(row.decoded_action);
+        if (spaceId) return `${space.placement_tile_label ? `Place ${space.placement_tile_label}` : "Select space"}: ${spaceId}`;
+      }
+      if (row && row.family === "card_subset") {
+        const cards = row.decoded_action && Array.isArray(row.decoded_action.cards)
+          ? row.decoded_action.cards.filter(Boolean).map(String) : [];
+        const buyCost = cards.length * (Number(cardCost) || 3);
+        return cards.length ? `Buy (${cards.length}, ${buyCost} M€): ${cards.join(" + ")}` : "Buy no cards (0 M€)";
+      }
+      return (row && (row.label || row.family || row.action_index)) || "";
+    };
+
+    const paymentFromAction = (action) => {
+      const payment = { mc: 0, steel: 0, titanium: 0, plants: 0, energy: 0, heat: 0 };
+      const resourceKeys = { megaCredits: "mc", steel: "steel", titanium: "titanium", plants: "plants", energy: "energy", heat: "heat" };
+      const stack = action && typeof action === "object" ? [action] : [];
+      while (stack.length) {
+        const current = stack.pop();
+        if (!current || typeof current !== "object") continue;
+        if (current.payment && typeof current.payment === "object") {
+          for (const [source, target] of Object.entries(resourceKeys)) {
+            payment[target] += Number(current.payment[source]) || 0;
+          }
+        }
+        if (current.response && typeof current.response === "object") stack.push(current.response);
+        for (const nested of (Array.isArray(current.responses) ? current.responses : [])) {
+          if (nested && typeof nested === "object") stack.push(nested);
+        }
+      }
+      return payment;
+    };
+
+    const boardTileKind = (space) => {
+      const hasTile = space.tile_type !== null && space.tile_type !== undefined && space.tile_type !== "";
+      const tile = hasTile ? Number(space.tile_type) : Number.NaN;
+      if ([1, 20, 21, 22, 36, 43].includes(tile) || String(space.space_type || "").toLowerCase() === "ocean") return "ocean";
+      if ([2, 3, 20, 37, 43].includes(tile)) return "city";
+      if ([0, 36].includes(tile)) return "greenery";
+      return hasTile ? "special" : "empty";
+    };
+
+    const boardTileLabel = (space) => {
+      if (space.tile_label) return String(space.tile_label);
+      const kind = boardTileKind(space);
+      return kind === "empty" ? "Empty" : `${kind[0].toUpperCase()}${kind.slice(1)}`;
+    };
+
+    const boardBonusLabels = (space) => {
+      if (Array.isArray(space.bonus_labels) && space.bonus_labels.length) return space.bonus_labels.map(String);
+      return Array.isArray(space.bonus) ? space.bonus.map(String) : [];
+    };
+
+    const boardFill = (space) => {
+      const kind = boardTileKind(space);
+      if (kind === "ocean") return "#287fbd";
+      if (kind === "city") return "#a7a7a7";
+      if (kind === "greenery") return "#438a38";
+      if (kind === "special") return "#8d623d";
+      return "#4a382d";
+    };
+
+    const boardOwnerFill = (owner) => ({
+      red: "#d74a42", blue: "#338bd3", green: "#51a34b", yellow: "#e4c538", black: "#333333", purple: "#8f63b8",
+    })[String(owner || "").toLowerCase()] || "";
+
+    const hexPoints = (cx, cy, radius = 18) => Array.from({ length: 6 }, (_, i) => {
+      const angle = Math.PI / 180 * (60 * i);
+      return `${(cx + radius * Math.cos(angle)).toFixed(1)},${(cy + radius * Math.sin(angle)).toFixed(1)}`;
+    }).join(" ");
+
+    const renderBoardMap = (spaces, title, legalSpaceIds = new Set()) => {
+      const cells = (spaces || []).filter((space) => Number.isFinite(Number(space.x)) && Number.isFinite(Number(space.y)));
+      if (!cells.length) return `<div class="empty">This older snapshot does not contain a board surface.</div>`;
+      const xs = cells.map((space) => Number(space.x));
+      const ys = cells.map((space) => Number(space.y));
+      const minX = Math.min(...xs), minY = Math.min(...ys);
+      const maxX = Math.max(...xs), maxY = Math.max(...ys);
+      const width = Math.max(180, 72 + (maxX - minX + 1) * 38 + 20);
+      const height = Math.max(120, 72 + (maxY - minY + 1) * 32);
+      const middleY = (minY + maxY) / 2;
+      const cellsMarkup = cells.map((space) => {
+        const x = Number(space.x), y = Number(space.y);
+        // Board coordinates narrow by one space per row toward the top/bottom.
+        // Their horizontal offset therefore grows toward the centre row, rather
+        // than alternating by row parity.
+        const rowOffset = (middleY - Math.abs(y - middleY)) * 19;
+        const cx = 36 + (x - minX) * 38 + rowOffset;
+        const cy = 36 + (y - minY) * 32;
+        const owner = boardOwnerFill(space.owner);
+        const legal = Boolean(space.legal_candidate) || legalSpaceIds.has(String(space.id || ""));
+        const stroke = space.chosen ? "#ffd166" : legal ? "#4ed4ff" : "#bda986";
+        const strokeWidth = space.chosen ? 4 : legal ? 3 : 1;
+        const bonusLabels = boardBonusLabels(space);
+        const bonus = bonusLabels.length ? "+" : "";
+        const kind = boardTileKind(space);
+        const tileLabel = boardTileLabel(space);
+        const tileShort = tileLabel === "Empty" ? "" : tileLabel.slice(0, 8);
+        const tooltip = `${space.id} (${x},${y}) | tile: ${tileLabel} | space: ${space.space_type || "unknown"}${space.owner ? ` | ${space.owner}` : ""}${bonus ? ` | placement bonus: ${bonusLabels.join(", ")}` : ""}${legal ? " | legal" : ""}${space.chosen ? " | chosen" : ""}`;
+        return `<g><title>${esc(tooltip)}</title><polygon points="${hexPoints(cx, cy)}" fill="${boardFill(space)}" stroke="${stroke}" stroke-width="${strokeWidth}"/>${owner ? `<circle cx="${cx}" cy="${cy}" r="7" fill="${owner}" stroke="#fff7df" stroke-width="1"/>` : ""}${bonus ? `<text x="${cx + 10}" y="${cy - 8}" fill="#fff7df" font-size="14" font-weight="bold">+</text>` : ""}<text x="${cx}" y="${cy + 2}" fill="#fff7df" text-anchor="middle" font-size="8">${esc(space.id)}</text>${tileShort ? `<text x="${cx}" y="${cy + 12}" fill="#ddd0bb" text-anchor="middle" font-size="6">${esc(tileShort)}</text>` : ""}</g>`;
+      }).join("");
+      return `<div class="stack"><div><strong>${esc(title)}</strong></div><svg class="board-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(title)}">${cellsMarkup}</svg><div class="board-map-legend"><span class="legend-candidate">cyan outline: legal</span><span class="legend-chosen">gold outline: chosen</span><span>dot: owner</span><span>+: space bonus</span></div></div>`;
+    };
+
     const requirementLine = (row) => {
       if (!row || typeof row !== "object") return "";
       const flags = [
@@ -374,7 +533,7 @@
       const select = document.getElementById("snapshotSelect");
       const snapshots = Array.isArray(payload.snapshots) ? payload.snapshots : [];
       select.innerHTML = snapshots.length
-        ? snapshots.map((item) => `<option value="${esc(item.snapshot_id)}">priority ${fmt(item.review_priority, 3)} | ${esc(item.prompt_type)} | ${esc(item.player_name || item.player_id || item.agent_id)}</option>`).join("")
+        ? snapshots.map((item) => `<option value="${esc(item.snapshot_id)}">${esc(String(item.captured_at || "unknown time").replace("T", " "))} | priority ${fmt(item.review_priority, 3)} | ${esc(item.prompt_type)} | ${esc(item.player_name || item.player_id || item.agent_id)}</option>`).join("")
         : `<option value="">No snapshots yet</option>`;
       return payload;
     }
@@ -411,8 +570,8 @@
       renderKV(document.getElementById("diagnostics"), [
         ["Value estimate", fmt(policy.value_estimate, 4)],
         ["Policy temperature", fmt(policy.policy_temperature, 3)],
-        ["Review priority", fmt(review.priority_score, 3)],
-        ["Teacher confidence", fmt(review.teacher_confidence, 3)],
+        ["Review priority", review.teacher_forced ? "excluded (forced action)" : fmt(review.priority_score, 3)],
+        ["Teacher confidence", review.teacher_forced ? "not applicable (forced action)" : fmt(review.teacher_confidence, 3)],
         ["Teacher/student disagreement", fmt(review.teacher_student_disagreement, 3)],
         ["Transformer enabled", transformer.enabled ? "yes" : "no"],
         ["Token count", esc(transformer.token_count ?? 0)],
@@ -426,9 +585,27 @@
       ]);
 
       const chosenDescriptor = policy.chosen_action_descriptor || {};
+      const chosenSpace = chosenDescriptor.space_features || {};
+      const chosenActionLabel = actionDisplayLabel(chosenDescriptor, player.card_cost) || policy.chosen_action_label || "unknown";
+      const projection = state.action_projection || {};
+      const payment = projection.payment || paymentFromAction(policy.chosen_action_payload || {});
+      const afterPayment = projection.resources_after_payment || Object.fromEntries(
+        Object.entries((player.resources || {})).map(([resource, amount]) => [resource, (Number(amount) || 0) - (Number(payment[resource]) || 0)])
+      );
+      const paymentSummary = Object.entries(payment)
+        .filter(([, amount]) => Number(amount) !== 0)
+        .map(([resource, amount]) => `${resource} ${fmt(amount, 0)}`)
+        .join(", ");
+      const afterPaymentSummary = Object.entries(afterPayment)
+        .filter(([resource]) => Number(payment[resource]) !== 0)
+        .map(([resource, amount]) => `${resource} ${fmt(amount, 1)}`)
+        .join(" | ");
       document.getElementById("chosenAction").innerHTML = `
-        <div><strong>${esc(policy.chosen_action_label || "unknown")}</strong></div>
+        <div><strong>${esc(chosenActionLabel)}</strong></div>
         <div class="subtle">${esc(chosenDescriptor.family || "untyped")} | pos ${esc(chosenDescriptor.action_position ?? "-")} | ${esc(chosenDescriptor.card_name || chosenDescriptor.project_name || chosenDescriptor.award_name || chosenDescriptor.milestone_name || "")}</div>
+        ${chosenDescriptor.family === "select_space" ? `<div class="subtle">place ${esc(chosenSpace.placement_tile_label || chosenSpace.intent || "tile")} on ${esc(chosenSpace.space_type || "space")} ${esc(chosenSpace.space_id || "?")} @ (${esc(chosenSpace.x ?? "?")},${esc(chosenSpace.y ?? "?")}) | current: ${esc(chosenSpace.current_tile_label || "Empty")} | gains: ${esc(chosenSpace.placement_bonus_summary || "None")}</div><div class="subtle">value ${fmt(chosenSpace.total_value, 2)} | bonus value ${fmt(chosenSpace.bonus_value, 1)} | deny ${fmt(chosenSpace.deny_value, 2)} | risk ${fmt(chosenSpace.risk_value, 2)}</div>` : ""}
+        <div class="subtle">Decision state is captured before this action is submitted.</div>
+        ${paymentSummary ? `<div class="subtle">Payment: ${esc(paymentSummary)}. After payment (before card effects): ${esc(afterPaymentSummary)}</div>` : ""}
         <pre class="mono">${esc(JSON.stringify(policy.chosen_action_payload || {}, null, 2))}</pre>
       `;
 
@@ -464,7 +641,7 @@
             ${ranking.map((row, idx) => `
               <tr>
                 <td>${idx + 1}</td>
-                <td><span class="mono">${esc(row.label || "")}</span><div class="subtle">${esc(row.family || "untyped")} | pos ${esc(row.action_position ?? "-")}</div></td>
+                <td><span class="mono">${esc(actionDisplayLabel(row, player.card_cost))}</span><div class="subtle">${esc(row.family || "untyped")} | pos ${esc(row.action_position ?? "-")}</div></td>
                 <td>${fmt(row.masked_probability, 4)}</td>
                 <td>${fmt(row.raw_probability, 4)}</td>
                 <td>${fmt(row.logit, 4)}</td>
@@ -477,7 +654,7 @@
       ` : `<div class="empty">No ranking available.</div>`;
       const descriptors = Array.isArray(policy.action_descriptors) ? policy.action_descriptors : [];
       document.getElementById("acceptedActions").innerHTML = descriptors.map((row) =>
-        `<option value="${esc(row.action_index)}">${esc(row.label || row.family || row.action_index)} | ${esc(row.family || "other")}</option>`
+        `<option value="${esc(row.action_index)}">${esc(actionDisplayLabel(row, player.card_cost))} | ${esc(row.family || "other")}</option>`
       ).join("");
       document.getElementById("annotationNote").value = "";
       document.getElementById("annotationSkip").checked = false;
@@ -548,32 +725,48 @@
 
       const promptCandidates = state.prompt_candidates || {};
       const promptRankings = Array.isArray(state.prompt_card_rankings) ? state.prompt_card_rankings : [];
+      const selectSpaceIds = new Set((policy.action_descriptors || [])
+        .filter((row) => row && row.family === "select_space")
+        .map((row) => row.decoded_action && (row.decoded_action.spaceId || row.decoded_action.id))
+        .filter(Boolean)
+        .map(String));
+      for (const row of (promptCandidates.map_candidates || [])) {
+        const id = row && (row.id || row.space_id || row.spaceId || row.label || row.name);
+        if (id) selectSpaceIds.add(String(id));
+      }
+      const boardSpaceById = new Map([...(board.spaces || []), ...(board.moon_spaces || [])]
+        .map((space) => [String(space.id || ""), space]));
+      const spaceCandidateLabel = (row) => {
+        const id = String((row && (row.id || row.space_id || row.spaceId || row.label || row.name)) || "");
+        const space = boardSpaceById.get(id);
+        const tileLabel = (row && row.tile_label) || (space && boardTileLabel(space)) || "Empty";
+        const bonuses = (row && row.bonus_labels) || (space && boardBonusLabels(space)) || [];
+        const bonusText = bonuses.length ? ` | gains: ${bonuses.join(", ")}` : " | gains: none";
+        return space ? `${id} (${space.x},${space.y}) | ${space.space_type || "space"} | ${tileLabel}${bonusText}` : `${id || "unknown space"} | ${tileLabel}${bonusText}`;
+      };
       document.getElementById("promptCandidates").innerHTML = `
         <div class="stack">
           <div><strong>Option candidates</strong></div>
           <div class="cards">${(promptCandidates.options || []).map((row) => `<div class="chip">${esc(row.label || row.type || row.index)}</div>`).join("") || `<div class="empty">None</div>`}</div>
           <div><strong>Card candidates</strong></div>
-          <div class="cards">${(promptCandidates.cards || []).map((row) => `<div class="chip">${esc(row.name || row.label || "card")}${row.all_satisfied === false ? ` | ${esc(row.plan_summary || "locked")}` : ""}</div>`).join("") || `<div class="empty">None</div>`}</div>
+          <div class="cards">${(promptCandidates.cards || []).map((row) => `
+            <div class="card">
+              <strong>${esc(row.name || row.label || "card")}</strong>
+              <div class="subtle">Buy now ${fmt(player.card_cost ?? 3, 0)} M€ | play cost ${fmt(row.calculated_cost ?? row.cost, 0)} M€ | VP ${fmt(row.victory_points, 0)}</div>
+              <div class="subtle">${esc((row.tags || []).join(", ") || "no tags supplied")}</div>
+              ${row.all_satisfied === false ? `<div class="subtle">${esc(row.plan_summary || "locked")}</div>` : ""}
+            </div>`).join("") || `<div class="empty">None</div>`}</div>
           <div><strong>Payment context</strong></div>
-          <pre class="mono">${esc(JSON.stringify(promptCandidates.payment_context || {}, null, 2))}</pre>
+          <div class="subtle">Choose ${esc((promptCandidates.payment_context || {}).min ?? 0)}–${esc((promptCandidates.payment_context || {}).max ?? 0)} card(s); the draft purchase cost is ${fmt(player.card_cost ?? 3, 0)} M€ per card.</div>
         </div>
       `;
 
       document.getElementById("mapCandidates").innerHTML = `
         <div class="stack">
-          <div><strong>Map candidates</strong></div>
-          <div class="cards">${(promptCandidates.map_candidates || []).map((row) => `<div class="chip">${esc(row.name || row.id || row.index)} (${row.x},${row.y})</div>`).join("") || `<div class="empty">None</div>`}</div>
-          <div><strong>Moon candidates</strong></div>
-          <div class="cards">${(promptCandidates.moon_candidates || []).map((row) => `<div class="chip">${esc(row.name || row.id || row.index)}</div>`).join("") || `<div class="empty">None</div>`}</div>
-          <div><strong>Other prompt lists</strong></div>
-          <pre class="mono">${esc(JSON.stringify({
-            players: promptCandidates.players || [],
-            colonies: promptCandidates.colonies || [],
-            parties: promptCandidates.parties || [],
-            global_events: promptCandidates.global_events || [],
-            policies: promptCandidates.policies || [],
-            resource_types: promptCandidates.resource_types || []
-          }, null, 2))}</pre>
+          ${renderBoardMap(board.spaces, "Mars board", selectSpaceIds)}
+          ${renderBoardMap(board.moon_spaces, "Moon board", selectSpaceIds)}
+          <div><strong>Legal space list</strong></div>
+          <div class="cards">${(promptCandidates.map_candidates || []).map((row) => `<div class="chip">${esc(spaceCandidateLabel(row))}</div>`).join("") || `<div class="empty">None</div>`}</div>
         </div>
       `;
 
@@ -624,6 +817,7 @@
 
     async function saveAnnotation() {
       if (!currentSnapshot || !currentSnapshot.snapshot_id) throw new Error("No snapshot selected");
+      const annotatedSnapshot = currentSnapshot;
       const accepted = Array.from(document.getElementById("acceptedActions").selectedOptions).map((option) => Number(option.value));
       const payload = {
         accepted_action_indices: accepted,
@@ -639,11 +833,39 @@
         const error = await resp.text();
         throw new Error(`HTTP ${resp.status}: ${error}`);
       }
-      document.getElementById("annotationStatus").textContent = "Annotation saved.";
+      document.getElementById("annotationStatus").textContent = "Teacher choice saved. The agent will now send the selected action.";
+      await loadNextGuidedSnapshot(annotatedSnapshot);
+    }
+
+    async function loadNextGuidedSnapshot(annotatedSnapshot) {
+      const baseline = String((annotatedSnapshot || {}).captured_at || "");
+      const prompt = (annotatedSnapshot || {}).prompt || {};
+      const sameGuidedSeat = (item) =>
+        item && item.snapshot_id !== annotatedSnapshot.snapshot_id &&
+        String(item.agent_id || "") === String((annotatedSnapshot.agent || {}).id || "") &&
+        String(item.game_id || "") === String(prompt.game_id || "") &&
+        String(item.player_id || "") === String(prompt.player_id || "");
+      const deadline = Date.now() + 120000;
+
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 750));
+        const payload = await loadSnapshotList();
+        const next = (payload.snapshots || [])
+          .filter((item) => sameGuidedSeat(item) && String(item.captured_at || "") > baseline)
+          .sort((left, right) => String(right.captured_at || "").localeCompare(String(left.captured_at || "")))[0];
+        if (next) {
+          document.getElementById("snapshotSelect").value = next.snapshot_id;
+          await loadSnapshot(next.snapshot_id);
+          document.getElementById("annotationStatus").textContent = "Loaded the next teacher decision.";
+          return;
+        }
+      }
+      document.getElementById("annotationStatus").textContent = "Teacher choice saved. Waiting for the next decision timed out; refresh when it is ready.";
     }
 
     async function init() {
       try {
+        await loadHumanGames();
         const payload = await loadSnapshotList();
         const snapshots = Array.isArray(payload.snapshots) ? payload.snapshots : [];
         const selected = initialSnapshotId || (snapshots[0] && snapshots[0].snapshot_id) || "";
@@ -658,12 +880,37 @@
       }
     }
 
+    async function loadHumanGames() {
+      const target = document.getElementById("humanGames");
+      const resp = await fetch("/human-listener/games");
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const payload = await resp.json();
+      const games = Array.isArray(payload.games) ? payload.games : [];
+      if (!games.length) {
+        target.innerHTML = `<div class="empty">No passive games have been launched.</div>`;
+        return;
+      }
+      target.innerHTML = `<table><thead><tr><th>Game</th><th>Seed</th><th>Status</th><th>Play</th></tr></thead><tbody>${games.map((game) => {
+        const state = String(game.status || "active");
+        const url = String(game.player_url || "");
+        return `<tr><td class="mono">${esc(game.game_id || "")}</td><td>${esc(game.seed || "")}</td><td><span class="pill ${state === "completed" ? "good" : "warn"}">${esc(state)}</span></td><td>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">Open game</a>` : ""}</td></tr>`;
+      }).join("")}</tbody></table>`;
+    }
+
     document.getElementById("refreshList").addEventListener("click", async () => {
       try {
         await loadSnapshotList();
         setStatus("Snapshot list refreshed.");
       } catch (err) {
         setStatus(`Refresh failed: ${err}`, "bad");
+      }
+    });
+
+    document.getElementById("refreshHumanGames").addEventListener("click", async () => {
+      try {
+        await loadHumanGames();
+      } catch (err) {
+        setStatus(`Failed to load human-game links: ${err}`, "bad");
       }
     });
 

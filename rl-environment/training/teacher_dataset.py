@@ -41,9 +41,13 @@ def split_for_episode(episode_id: str) -> str:
     return "test"
 
 
-def source_weight(source: str, confidence: float) -> float:
+def source_weight(source: str, confidence: float, is_forced: bool = False) -> float:
     if str(source).startswith("human"):
         return 4.0
+    # Forced decisions contain no preference signal. Keep a small weight for
+    # state/value coverage without treating their one-action mask as quality.
+    if is_forced:
+        return 0.25
     return 1.0 if float(confidence) >= 0.5 else 0.25
 
 
@@ -240,6 +244,7 @@ class TeacherDatasetRecorder:
         if not probabilities:
             return
         confidence = float(external.get("confidence", 0.0) or 0.0)
+        is_forced = bool(external.get("is_forced", False))
         source = str(external.get("version", "heuristic-teacher.v1") or "heuristic-teacher.v1")
         key = self._key(game_id, agent_id)
         with self._lock:
@@ -264,8 +269,9 @@ class TeacherDatasetRecorder:
                     "chosen_action_position": int(action_meta.get("chosen_action_position", 0)),
                     "phase_index": int(action_meta.get("phase_index", 0)),
                     "confidence": confidence,
+                    "is_forced": is_forced,
                     "source": source,
-                    "sample_weight": source_weight(source, confidence),
+                    "sample_weight": source_weight(source, confidence, is_forced=is_forced),
                     "seed": int(pending.seed),
                     "game_id": str(pending.game_id),
                     "value_target": 0.0,

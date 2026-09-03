@@ -354,7 +354,11 @@ class TournamentManager:
             except Exception:
                 timeout_sec = 300.0
             timeout_sec = max(60.0, timeout_sec)
-            agent_results = await asyncio.wait_for(agent_group, timeout=timeout_sec)
+            # Keep the group alive when the supervisory timeout fires.  The timeout
+            # handler below then records the reason and cancels every child itself;
+            # otherwise wait_for cancels the gather first and its CancelledError can
+            # escape the timeout path, shutting down the whole collector.
+            agent_results = await asyncio.wait_for(asyncio.shield(agent_group), timeout=timeout_sec)
             task_errors = [r for r in agent_results if isinstance(r, Exception)]
             task_cancellations = [r for r in agent_results if isinstance(r, asyncio.CancelledError)]
             if task_cancellations:
@@ -560,7 +564,7 @@ class TournamentManager:
                     reason="game_timeout",
                     game_id=actual_game_id,
                 )
-            with suppress(Exception):
+            with suppress(asyncio.CancelledError, Exception):
                 if "agent_group" in locals():
                     await agent_group
             try:
@@ -613,7 +617,7 @@ class TournamentManager:
                     reason="tournament_cancelled",
                     game_id=actual_game_id,
                 )
-            with suppress(Exception):
+            with suppress(asyncio.CancelledError, Exception):
                 if "agent_group" in locals():
                     await agent_group
             raise
@@ -625,7 +629,7 @@ class TournamentManager:
                     reason="game_failed",
                     game_id=actual_game_id,
                 )
-            with suppress(Exception):
+            with suppress(asyncio.CancelledError, Exception):
                 if "agent_group" in locals():
                     await agent_group
             logger.error(f"Game {actual_game_id} failed: {e}")

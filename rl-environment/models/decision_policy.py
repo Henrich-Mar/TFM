@@ -27,6 +27,7 @@ class PolicyDecision:
     confidence: float
     policy_version: str
     used_fallback: bool = False
+    is_forced: bool = False
 
 
 class DecisionPolicy(Protocol):
@@ -86,6 +87,7 @@ class RandomLegalPolicy:
             actions=actions,
             confidence=0.0,
             policy_version="random-legal.v1",
+            is_forced=len({int(row.get("action_index", -1)) for row in descriptors}) <= 1,
         )
 
 
@@ -189,10 +191,23 @@ class HeuristicTeacherPolicy:
             metal_spend = 2.0 * self._safe_float(payment.get("steel", 0)) + 3.0 * self._safe_float(payment.get("titanium", 0)) if isinstance(payment, dict) else 0.0
             return 1.0 + 0.04 * metal_spend - 0.015 * mc_spend, ["preserve flexible MC", "use matching metals"], False
         if family == "select_space":
-            decoded = descriptor.get("decoded_action", {}) or {}
-            bonus_count = len(decoded.get("bonuses", []) or []) if isinstance(decoded, dict) else 0
-            adjacency = 0.35 if any(token in label for token in ("city", "greenery", "ocean")) else 0.0
-            return 0.9 + 0.18 * bonus_count + adjacency, ["placement bonuses", "adjacency"], False
+            space = descriptor.get("space_features", {}) or {}
+            if bool(space.get("board_context_available", False)):
+                total = self._safe_float(space.get("total_value", 0.0))
+                self_value = self._safe_float(space.get("self_value", 0.0))
+                deny_value = self._safe_float(space.get("deny_value", 0.0))
+                risk_value = self._safe_float(space.get("risk_value", 0.0))
+                bonus_value = self._safe_float(space.get("bonus_value", 0.0))
+                score = (0.4 + (2.4 * total) + (0.45 * self_value) + (0.35 * deny_value) - (0.45 * risk_value))
+                reasons = [
+                    f"space={space.get('space_id', '?')}",
+                    f"placement-value={total:.2f}",
+                    f"bonus={bonus_value:.1f}",
+                    f"deny={deny_value:.2f}",
+                    f"risk={risk_value:.2f}",
+                ]
+                return score, reasons, False
+            return 0.2, ["space board context unavailable"], False
         if family == "standard_project":
             phase = min(1.0, generation / 14.0)
             score = -0.15 + 0.75 * phase
@@ -239,7 +254,9 @@ class HeuristicTeacherPolicy:
             chosen = max(range(len(scores)), key=lambda idx: (scores[idx], -idx))
         ordered = sorted(scores, reverse=True)
         margin = ordered[0] - ordered[1] if len(ordered) > 1 else 4.0
-        confidence = max(0.0, min(1.0, 1.0 - math.exp(-max(0.0, margin))))
+        is_forced = len({int(row.get("action_index", -1)) for row in descriptors}) <= 1
+        # A one-action mask establishes legality, not strategic certainty.
+        confidence = 0.0 if is_forced else max(0.0, min(1.0, 1.0 - math.exp(-max(0.0, margin))))
         actions = [
             ActionScore(
                 action_position=int(row.get("action_position", idx)),
@@ -257,6 +274,7 @@ class HeuristicTeacherPolicy:
             confidence=float(confidence),
             policy_version="heuristic-teacher.v1",
             used_fallback=bool(fallback),
+            is_forced=bool(is_forced),
         )
 
 
@@ -279,5 +297,6 @@ class NeuralDecisionPolicy:
             for idx, row in enumerate(descriptors)
         ]
         ordered = sorted(probabilities, reverse=True)
-        confidence = ordered[0] - ordered[1] if len(ordered) > 1 else 1.0
-        return PolicyDecision(actions[chosen].action_position, actions[chosen].action_index, actions, confidence, self.version)
+        is_forced = len({int(row.get("action_index", -1)) for row in descriptors}) <= 1
+        confidence = (ordered[0] - ordered[1]) if len(ordered) > 1 else 0.0
+        return PolicyDecision(actions[chosen].action_position, actions[chosen].action_index, actions, confidence, self.version, is_forced=is_forced)

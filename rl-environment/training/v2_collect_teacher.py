@@ -27,8 +27,15 @@ async def collect(
     serve_api: bool = False,
     api_host: str = "0.0.0.0",
     api_port: int = 5000,
+    annotate_seat: int | None = None,
+    annotation_timeout_sec: float = 0.0,
+    replay_source_game_id: str | None = None,
 ) -> dict:
     initialize_v2_runtime()
+    if annotate_seat is not None and not serve_api:
+        raise RuntimeError("guided annotation requires --serve-api so labels can be saved")
+    if replay_source_game_id and annotate_seat is None:
+        raise RuntimeError("annotation replay requires --annotate-seat for the seat that owns the saved labels")
     reserved = load_reserved_benchmark_seeds()
     seeds = [int(seed_start) + idx for idx in range(max(1, int(games)))]
     overlap = reserved.intersection(seeds)
@@ -64,6 +71,22 @@ async def collect(
         agent.config.train_from_self_play = False
         agent.ppo_enable = False
         agents.append(agent)
+    if annotate_seat is not None:
+        target_agent_id = agents[int(annotate_seat)].id
+        os.environ["V2_GUIDED_ANNOTATION_AGENT_ID"] = target_agent_id
+        os.environ["V2_GUIDED_ANNOTATION_TIMEOUT_SEC"] = str(max(0.0, float(annotation_timeout_sec)))
+        if replay_source_game_id:
+            os.environ["V2_GUIDED_REPLAY_SOURCE_GAME_ID"] = str(replay_source_game_id).strip()
+        print(
+            f"[teacher] guided annotation enabled for seat {annotate_seat} ({target_agent_id}); "
+            "each decision will wait for a saved annotation",
+            flush=True,
+        )
+        if replay_source_game_id:
+            print(
+                f"[teacher] replaying saved annotations from game {replay_source_game_id} before pausing for new labels",
+                flush=True,
+            )
     completed = 0
     failed = 0
     try:
@@ -139,6 +162,22 @@ def main() -> None:
     )
     parser.add_argument("--api-host", default="0.0.0.0")
     parser.add_argument("--api-port", type=int, default=5000)
+    parser.add_argument(
+        "--annotate-seat",
+        type=int,
+        choices=range(4),
+        help="Pause before every decision for this seat until it is annotated (requires --serve-api)",
+    )
+    parser.add_argument(
+        "--annotation-timeout-sec",
+        type=float,
+        default=0.0,
+        help="Optional per-decision annotation timeout; 0 waits indefinitely",
+    )
+    parser.add_argument(
+        "--replay-source-game-id",
+        help="Replay saved annotations from this original game before collecting new labels (requires --annotate-seat)",
+    )
     args = parser.parse_args()
     expected_options = f"game_options.v2_stage{args.stage}.json"
     if expected_options not in str(os.getenv("GAME_OPTIONS_FILE", "")):
@@ -154,6 +193,9 @@ def main() -> None:
                     serve_api=args.serve_api,
                     api_host=args.api_host,
                     api_port=args.api_port,
+                    annotate_seat=args.annotate_seat,
+                    annotation_timeout_sec=args.annotation_timeout_sec,
+                    replay_source_game_id=args.replay_source_game_id,
                 )
             ),
             indent=2,

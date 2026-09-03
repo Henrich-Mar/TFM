@@ -84,6 +84,367 @@ def _title_text(value: Any) -> str:
         return value
     return ''
 
+
+def _message_display_text(value: Any, player_state: Optional[Dict[str, Any]] = None) -> str:
+    """Render a server Message template using its serialized argument data."""
+    template = _title_text(value)
+    if not isinstance(value, dict) or not template:
+        return template
+
+    players_by_color: Dict[str, str] = {}
+    if isinstance(player_state, dict):
+        player_rows = [player_state.get('thisPlayer', {})] + list(player_state.get('players', []) or [])
+        for player in player_rows:
+            if not isinstance(player, dict):
+                continue
+            color = str(player.get('color', '') or '').strip().lower()
+            name = str(player.get('name', '') or '').strip()
+            if color and name:
+                players_by_color[color] = name
+
+    replacements: List[str] = []
+    for item in value.get('data', []) or []:
+        if not isinstance(item, dict):
+            replacements.append(str(item))
+            continue
+        raw_value = item.get('value', '')
+        item_type = str(item.get('type', '') or '').strip().lower()
+        if item_type in ('2', 'player'):
+            color = str(raw_value or '').strip().lower()
+            replacements.append(players_by_color.get(color, color.title() or 'Unknown player'))
+        elif item_type in ('9', 'tile_type', 'tiletype'):
+            replacements.append(_tile_type_label(raw_value))
+        elif item_type in ('10', 'space_bonus', 'spacebonus'):
+            replacements.append(_space_bonus_label(raw_value))
+        else:
+            replacements.append(str(raw_value))
+
+    for index, replacement in enumerate(replacements):
+        template = template.replace(f'${{{index}}}', replacement)
+    return template
+
+
+def _card_name_from_action(action: Any) -> str:
+    """Extract the concrete card selected inside nested OR/card responses."""
+    stack = [action] if isinstance(action, dict) else []
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, dict):
+            continue
+        raw_card = current.get('card')
+        if isinstance(raw_card, str) and raw_card.strip():
+            return raw_card.strip()
+        cards = current.get('cards', []) or []
+        if isinstance(cards, list):
+            for card in cards:
+                if isinstance(card, str) and card.strip():
+                    return card.strip()
+                if isinstance(card, dict) and str(card.get('name', '') or '').strip():
+                    return str(card.get('name', '') or '').strip()
+        response = current.get('response')
+        if isinstance(response, dict):
+            stack.append(response)
+        for response in current.get('responses', []) or []:
+            if isinstance(response, dict):
+                stack.append(response)
+    return ''
+
+
+def _action_contains_type(action: Any, types: set[str]) -> bool:
+    """Return whether an action response contains one of the given input types."""
+    stack = [action] if isinstance(action, dict) else []
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, dict):
+            continue
+        if str(current.get('type', '') or '').strip().lower() in types:
+            return True
+        response = current.get('response')
+        if isinstance(response, dict):
+            stack.append(response)
+        for nested in current.get('responses', []) or []:
+            if isinstance(nested, dict):
+                stack.append(nested)
+    return False
+
+
+def _find_prompt_card(waiting_for: Dict[str, Any], card_name: str) -> Dict[str, Any]:
+    """Find a card across a root prompt and its nested option branches."""
+    target = str(card_name or '').strip()
+    if not target:
+        return {}
+    stack = [waiting_for] if isinstance(waiting_for, dict) else []
+    while stack:
+        prompt = stack.pop()
+        for card in prompt.get('cards', []) or []:
+            if isinstance(card, dict) and str(card.get('name', '') or '').strip() == target:
+                return card
+        for option in prompt.get('options', []) or []:
+            if isinstance(option, dict):
+                stack.append(option)
+    return {}
+
+
+def _find_prompt_for_card(waiting_for: Dict[str, Any], card_name: str) -> Dict[str, Any]:
+    """Return the nested prompt branch which exposes a concrete card."""
+    target = str(card_name or '').strip()
+    if not target:
+        return {}
+    stack = [waiting_for] if isinstance(waiting_for, dict) else []
+    while stack:
+        prompt = stack.pop()
+        for card in prompt.get('cards', []) or []:
+            if isinstance(card, dict) and str(card.get('name', '') or '').strip() == target:
+                return prompt
+        for option in prompt.get('options', []) or []:
+            if isinstance(option, dict):
+                stack.append(option)
+    return {}
+
+
+_CITY_TILE_TYPES = {2, 3, 20, 37, 43}
+_GREENERY_TILE_TYPES = {0, 36}
+_OCEAN_TILE_TYPES = {1, 20, 21, 22, 36, 43}
+_SPACE_BONUS_VALUES = {
+    0: 1.6,  # titanium
+    1: 1.3,  # steel
+    2: 1.1,  # plant
+    3: 1.8,  # card
+    4: 0.8,  # heat
+    5: 1.4,  # ocean
+    6: 0.6,  # megacredits
+    9: 0.8,  # energy
+    11: 1.5, # science
+    12: 1.2, # energy production
+    13: 1.4, # temperature
+}
+_SPACE_BONUS_LABELS = {
+    0: 'Titanium', 1: 'Steel', 2: 'Plant', 3: 'Card', 4: 'Heat', 5: 'Ocean',
+    6: 'M€', 7: 'Animal', 8: 'Microbe', 9: 'Energy', 10: 'Data', 11: 'Science',
+    12: 'Energy production', 13: 'Temperature', 15: 'Asteroid', 16: 'Delegate',
+    17: 'Colony', 18: 'Temperature (pay 4 M€)',
+}
+_TILE_TYPE_LABELS = {
+    0: 'Greenery', 1: 'Ocean', 2: 'City', 3: 'Capital', 4: 'Commercial District',
+    5: 'Ecological Zone', 6: 'Industrial Center', 7: 'Lava Flows', 8: 'Mining Area',
+    9: 'Mining Rights', 10: 'Mohole Area', 11: 'Natural Preserve', 12: 'Nuclear Zone',
+    13: 'Restricted Area', 14: 'Deimos Down', 15: 'Great Dam', 16: 'Magnetic Field Generators',
+    17: 'Biofertilizer Facility', 18: 'Metallic Asteroid', 19: 'Solar Farm', 20: 'Ocean City',
+    21: 'Ocean Farm', 22: 'Ocean Sanctuary', 23: 'Mild Dust Storm', 24: 'Severe Dust Storm',
+    25: 'Mild Erosion', 26: 'Severe Erosion', 27: 'Mining (Steel)', 28: 'Mining (Titanium)',
+    29: 'Moon Mine', 30: 'Moon Habitat', 31: 'Moon Road', 32: 'Luna Trade Station',
+    33: 'Luna Mining Hub', 34: 'Luna Train Station', 35: 'Lunar Mine Urbanization',
+    36: 'Wetlands', 37: 'Red City', 38: 'Martian Nature Wonders', 39: 'Crashlanding',
+    40: 'Mars Nomads', 41: 'Rey Skywalker', 42: 'Man-made Volcano', 43: 'New Holland',
+}
+
+
+def _space_id(space: Any) -> str:
+    if not isinstance(space, dict):
+        return str(space or '').strip()
+    return str(space.get('id', space.get('spaceId', '')) or '').strip()
+
+
+def _space_coordinates(space: Any) -> Optional[Tuple[int, int]]:
+    if not isinstance(space, dict):
+        return None
+    try:
+        x = int(space.get('x'))
+        y = int(space.get('y'))
+    except (TypeError, ValueError):
+        return None
+    return (x, y) if x >= 0 and y >= 0 else None
+
+
+def _space_tile_flags(space: Dict[str, Any]) -> Tuple[bool, bool, bool]:
+    raw = space.get('tileType')
+    try:
+        tile_number = int(raw)
+    except (TypeError, ValueError):
+        tile_number = None
+    name = str(raw or '').strip().lower().replace('-', '_').replace(' ', '_')
+    return (
+        bool(tile_number in _CITY_TILE_TYPES or 'city' in name or name in ('capital', 'new_holland')),
+        bool(tile_number in _GREENERY_TILE_TYPES or 'greenery' in name or 'wetland' in name),
+        bool(tile_number in _OCEAN_TILE_TYPES or 'ocean' in name or 'wetland' in name),
+    )
+
+
+def _space_bonus_value(space: Dict[str, Any]) -> float:
+    total = 0.0
+    text_values = {
+        'card': 1.8, 'titanium': 1.6, 'steel': 1.3, 'plant': 1.1,
+        'heat': 0.8, 'energy': 0.8, 'ocean': 1.4, 'science': 1.5,
+        'temperature': 1.4, 'megacredit': 0.6, 'm€': 0.6,
+    }
+    for bonus in (space.get('bonus', []) or []):
+        try:
+            numeric = int(bonus)
+        except (TypeError, ValueError):
+            numeric = None
+        if numeric is not None:
+            total += _SPACE_BONUS_VALUES.get(numeric, 0.9)
+            continue
+        label = str((bonus or {}).get('type', '') if isinstance(bonus, dict) else bonus or '').lower()
+        total += next((value for token, value in text_values.items() if token in label), 0.9)
+    return min(total, 6.0)
+
+
+def _space_bonus_label(bonus: Any) -> str:
+    """Convert the game's serialized SpaceBonus into a reviewer-friendly label."""
+    try:
+        numeric = int(bonus)
+    except (TypeError, ValueError):
+        numeric = None
+    if numeric is not None:
+        return _SPACE_BONUS_LABELS.get(numeric, f'Unknown bonus ({numeric})')
+    if isinstance(bonus, dict):
+        return str(bonus.get('name', bonus.get('type', bonus.get('bonus', 'Unknown bonus'))) or 'Unknown bonus')
+    return str(bonus or 'Unknown bonus').replace('_', ' ').strip().title()
+
+
+def _tile_type_label(tile_type: Any) -> str:
+    if tile_type is None or str(tile_type).strip() == '':
+        return 'Empty'
+    try:
+        numeric = int(tile_type)
+    except (TypeError, ValueError):
+        numeric = None
+    if numeric is not None:
+        return _TILE_TYPE_LABELS.get(numeric, f'Unknown tile ({numeric})')
+    return str(tile_type).replace('_', ' ').strip().title()
+
+
+def _space_prompt_intent(waiting_for: Dict[str, Any]) -> str:
+    title = _title_text(waiting_for.get('title', '')).lower()
+    context = f"{title} {str(waiting_for.get('buttonLabel', '') or '').lower()}"
+    if 'greenery' in context:
+        return 'greenery'
+    if 'ocean' in context or 'aquifer' in context:
+        return 'ocean'
+    if 'city' in context:
+        return 'city'
+    return 'special'
+
+
+def _hex_neighbor_coordinates(coords: Tuple[int, int], middle_row: float) -> List[Tuple[int, int]]:
+    x, y = coords
+    top_left, top_right = [x, y - 1], [x, y - 1]
+    bottom_left, bottom_right = [x, y + 1], [x, y + 1]
+    if y < middle_row:
+        bottom_left[0] -= 1
+        top_right[0] += 1
+    elif y == middle_row:
+        bottom_right[0] += 1
+        top_right[0] += 1
+    else:
+        bottom_right[0] += 1
+        top_left[0] -= 1
+    return [tuple(top_left), tuple(top_right), (x + 1, y), tuple(bottom_right), tuple(bottom_left), (x - 1, y)]
+
+
+def _space_candidate_features(player_state: Dict[str, Any], decoded_action: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Describe one legal space using its coordinates plus the authoritative board."""
+    waiting_for = player_state.get('waitingFor', {}) or {}
+    # A placement can be the direct prompt response or live inside an OR branch
+    # (for example, converting plants from the action menu). Follow the selected
+    # branch so the selected ID, candidate list, and prompt intent stay aligned.
+    selected_id = ''
+    space_prompt = waiting_for
+    response = decoded_action or {}
+    while isinstance(response, dict):
+        response_type = str(response.get('type', '') or '').lower()
+        if response_type == 'space':
+            selected_id = str(response.get('spaceId', '') or '').strip()
+            break
+        if response_type != 'or':
+            break
+        try:
+            option_index = int(response.get('index', -1))
+        except (TypeError, ValueError):
+            break
+        options = space_prompt.get('options', []) or []
+        if not 0 <= option_index < len(options) or not isinstance(options[option_index], dict):
+            break
+        space_prompt = options[option_index]
+        response = response.get('response', {})
+
+    candidates = space_prompt.get('availableSpaces', space_prompt.get('spaces', [])) or []
+    candidate = next((item for item in candidates if _space_id(item) == selected_id), {})
+    game = player_state.get('game', {}) or {}
+    board_spaces = [item for item in (game.get('spaces', []) or []) if isinstance(item, dict)]
+    moon = game.get('moon', {}) or {}
+    board_spaces.extend(item for item in (moon.get('spaces', []) or []) if isinstance(item, dict))
+    board_by_id = {_space_id(item): item for item in board_spaces if _space_id(item)}
+    board_space = dict(board_by_id.get(selected_id, {}))
+    if isinstance(candidate, dict):
+        board_space.update(candidate)
+    intent = _space_prompt_intent(space_prompt)
+    placement_tile_label = {
+        'greenery': 'Greenery', 'ocean': 'Ocean', 'city': 'City',
+    }.get(intent, 'Special tile')
+    placement_bonuses = [_space_bonus_label(bonus) for bonus in (board_space.get('bonus', []) or [])]
+    base_details = {
+        'space_id': selected_id, 'intent': intent,
+        'space_type': str(board_space.get('spaceType', '') or '').strip().title() or 'Unknown',
+        'current_tile_type': board_space.get('tileType'),
+        'current_tile_label': _tile_type_label(board_space.get('tileType')),
+        'placement_tile_type': intent,
+        'placement_tile_label': placement_tile_label,
+        'placement_bonuses': placement_bonuses,
+        'placement_bonus_summary': ', '.join(placement_bonuses) if placement_bonuses else 'None',
+    }
+    coords = _space_coordinates(board_space)
+    if coords is None:
+        return {**base_details, 'board_context_available': False}
+
+    coord_to_space = {
+        coord: item for item in board_spaces
+        if (coord := _space_coordinates(item)) is not None and str(item.get('spaceType', '') or '').lower() != 'colony'
+    }
+    max_y = max((coord[1] for coord in coord_to_space), default=0)
+    neighbors = [coord_to_space[coord] for coord in _hex_neighbor_coordinates(coords, max_y / 2.0) if coord in coord_to_space]
+    own_color = str((player_state.get('thisPlayer', {}) or {}).get('color', '') or '').strip().lower()
+    own_city = enemy_city = own_greenery = enemy_greenery = ocean = empty = 0
+    for neighbor in neighbors:
+        is_city, is_greenery, is_ocean = _space_tile_flags(neighbor)
+        owner = str(neighbor.get('color', neighbor.get('playerColor', neighbor.get('owner', ''))) or '').strip().lower()
+        own_city += int(is_city and owner == own_color)
+        enemy_city += int(is_city and bool(owner) and owner != own_color)
+        own_greenery += int(is_greenery and owner == own_color)
+        enemy_greenery += int(is_greenery and bool(owner) and owner != own_color)
+        ocean += int(is_ocean)
+        empty += int(neighbor.get('tileType') is None and str(neighbor.get('spaceType', '') or '').lower() in ('land', 'restricted', 'ocean'))
+
+    bonus = _space_bonus_value(board_space)
+    bonus_norm = min(bonus / 6.0, 1.0)
+    own_city_norm, enemy_city_norm = min(own_city / 3.0, 1.0), min(enemy_city / 3.0, 1.0)
+    own_greenery_norm = min(own_greenery / 4.0, 1.0)
+    empty_norm = min(empty / 6.0, 1.0)
+    ocean_norm = min(ocean / 3.0, 1.0)
+    if intent == 'ocean':
+        self_value = min(1.0, .45 * bonus_norm + .30 * empty_norm + .15 * own_city_norm + .15 * own_greenery_norm)
+        deny_value, risk_value = min(1.0, .70 * enemy_city_norm), min(1.0, .50 * own_city_norm)
+    elif intent == 'greenery':
+        self_value = min(1.0, .70 * own_city_norm + .20 * ocean_norm + .20 * bonus_norm)
+        deny_value, risk_value = min(1.0, .15 * enemy_greenery / 4.0), enemy_city_norm
+    elif intent == 'city':
+        self_value = min(1.0, .55 * min((own_greenery + enemy_greenery) / 6.0, 1.0) + .25 * empty_norm + .15 * ocean_norm + .20 * bonus_norm)
+        deny_value, risk_value = enemy_city_norm, own_city_norm
+    else:
+        self_value = min(1.0, .40 * bonus_norm + .25 * own_city_norm + .15 * ocean_norm + .15 * own_greenery_norm)
+        deny_value, risk_value = min(1.0, .80 * enemy_city_norm + .20 * enemy_greenery / 4.0), min(1.0, .70 * own_city_norm + .20 * own_greenery_norm)
+    total = max(0.0, min(1.0, self_value + .35 * deny_value - .25 * risk_value))
+    return {
+        **base_details, 'x': coords[0], 'y': coords[1],
+        'board_context_available': bool(board_spaces), 'bonus_value': bonus,
+        'own_city_adjacent': own_city, 'enemy_city_adjacent': enemy_city,
+        'own_greenery_adjacent': own_greenery, 'enemy_greenery_adjacent': enemy_greenery,
+        'ocean_adjacent': ocean, 'empty_adjacent': empty,
+        'self_value': self_value, 'deny_value': deny_value, 'risk_value': risk_value,
+        'total_value': total,
+    }
+
 def _card_cost(card: Dict[str, Any]) -> int:
     try:
         return int(card.get('calculatedCost', card.get('cost', 0)) or 0)
@@ -180,51 +541,14 @@ def _is_engine_or_persistent_card(card: Dict[str, Any]) -> bool:
     return False
 
 
-def _should_offer_sell_patents(
-    cards: List[Dict[str, Any]],
-    waiting_for: Dict[str, Any],
-    player_state: Optional[Dict[str, Any]],
-    allow_mandatory_fallback: bool = True,
-) -> bool:
-    if not cards:
-        return False
-
-    min_cards = max(0, _safe_int(waiting_for.get('min', 1), 1))
-    can_pass = bool(waiting_for.get('canPass', False))
-    if allow_mandatory_fallback and min_cards > 0 and not can_pass:
-        # Mandatory sell flow: must keep action available.
-        return True
-
-    if not isinstance(player_state, dict):
-        return bool(min_cards > 0)
-    player = player_state.get('thisPlayer', {}) or {}
-    if not isinstance(player, dict):
-        return bool(min_cards > 0)
-    hand_cards = player_state.get('cardsInHand', []) or []
-    if not isinstance(hand_cards, list) or not hand_cards:
-        hand_cards = cards
-
-    game = player_state.get('game', {}) if isinstance(player_state.get('game', {}), dict) else {}
-    generation = _safe_int(game.get('generation', 1), 1)
-    sell_cap = min(len(cards), max(1, _sell_patents_cap_for_generation(generation)))
-    max_cards = max(min_cards, _safe_int(waiting_for.get('max', len(cards)), len(cards)))
-    sell_cap = min(sell_cap, max_cards)
-    if sell_cap <= 0:
-        return False
-
-    # Only offer selling when it unlocks at least one meaningful immediate play.
-    for hand_card in hand_cards:
-        if not isinstance(hand_card, dict):
-            continue
-        needed = _extra_mc_needed_to_afford(player, _with_metadata_tags(hand_card), sell_cap)
-        if needed is None or needed <= 0:
-            continue
-        if needed > sell_cap:
-            continue
-        if _is_engine_or_persistent_card(hand_card) or _card_cost(hand_card) >= 15:
-            return True
-
-    return bool(allow_mandatory_fallback and min_cards > 0 and not can_pass)
+def _has_selectable_patents(cards: List[Dict[str, Any]]) -> bool:
+    """The server's Sell Patents option is authoritative when it has a card to select."""
+    return any(
+        isinstance(card, dict)
+        and bool(str(card.get('name', '') or ''))
+        and not bool(card.get('isDisabled', False))
+        for card in (cards or [])
+    )
 
 
 def _select_patents_to_sell(
@@ -320,10 +644,6 @@ def _select_patents_to_sell(
                 best_needed = int(needed)
                 best_target_persistent = bool(target_persistent)
 
-        # If pass is legal, skip selling unless it unlocks a persistent/engine target.
-        if can_pass and (best_target_name is None or not best_target_persistent):
-            return []
-
         if best_target_name is not None and best_needed is not None:
             sell_count = max(min_cards, min(max_cards, best_needed, strategic_sell_cap))
             sell_pool = [c for c in ranked_all if str(c.get('name', '') or '') != best_target_name]
@@ -340,9 +660,11 @@ def _select_patents_to_sell(
             if len(selected_names) >= min_cards:
                 return selected_names[:max_cards]
 
+    # This path is reached only after the caller chose the server-provided
+    # Sell Patents action.  It must therefore produce a real selection even
+    # when passing was also legal; strategic reluctance belongs in the policy,
+    # not in action decoding.
     # Conservative default: sell the cheapest cards first.
-    if can_pass:
-        return []
     default_count = max(min_cards, 1)
     default_count = min(default_count, strategic_sell_cap)
     default_count = max(min_cards, min(default_count, max_cards))
@@ -1458,6 +1780,17 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                         break
                 else:
                     # If no standard projects option found, default to first option
+                    selected_idx = 0
+            elif 300 <= action_index < 400:
+                # A space prompt can be nested directly under the action-menu OR
+                # (notably the convert-plants action).  Preserve the SELECT_SPACE
+                # offset for the nested prompt so it receives the tile selected by
+                # the policy rather than its implicit first-space fallback.
+                for i, option in enumerate(options):
+                    if option.get('type', '') in ['selectSpace', 'space']:
+                        selected_idx = i
+                        break
+                else:
                     selected_idx = 0
             elif action_index == 700:
                 # This is a direct convert plants action
@@ -2656,33 +2989,51 @@ class ActionDecoder:
         action_index: int,
         waiting_for: Dict[str, Any],
         family: str,
+        decoded_action: Optional[Dict[str, Any]] = None,
+        player_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, str]:
-        title_l = _title_text(waiting_for.get('title', ''))
+        title_l = _message_display_text(waiting_for.get('title', ''), player_state)
         payload = self._option_payload_for_action(action_index, waiting_for)
-        label = _title_text(payload.get('title', '')) or title_l
+        label = _message_display_text(payload.get('title', ''), player_state) or title_l
         award_name = ''
         milestone_name = ''
         card_name = ''
         project_name = ''
         if family == 'play_card':
-            cards = waiting_for.get('cards', []) or []
-            card_idx = int(action_index)
-            if str(waiting_for.get('type', '') or '').lower() in ('projectcard', 'selectprojectcardtoplay'):
+            card_name = _card_name_from_action(decoded_action)
+            if not card_name:
+                cards = waiting_for.get('cards', []) or []
                 card_idx = int(action_index)
-            if 0 <= card_idx < 100:
-                if 0 <= card_idx < len(cards):
+                if 0 <= card_idx < 100 and 0 <= card_idx < len(cards):
                     card_name = str((cards[card_idx] or {}).get('name', '') or '')
-            label = card_name or label or 'Play project card'
+            if card_name and _action_contains_type(decoded_action, {'projectcard', 'selectprojectcardtoplay'}):
+                # A card can occur in multiple branches of an OR prompt.  The decoded
+                # response—not the first matching branch—tells us that this one is
+                # being played, rather than sold or used for a blue-card action.
+                label = f"Play project card: {card_name}"
+            elif card_name and str(waiting_for.get('type', '') or '').lower() == 'or':
+                card_prompt = _find_prompt_for_card(waiting_for, card_name)
+                card_prompt_title = _message_display_text(card_prompt.get('title', ''), player_state)
+                label = f"{card_prompt_title or label}: {card_name}"
+            else:
+                label = card_name or label or 'Play project card'
+        elif family == 'card_subset':
+            selected_cards = [
+                str(card).strip()
+                for card in ((decoded_action or {}).get('cards', []) or [])
+                if str(card).strip()
+            ]
+            label = f"Buy: {' + '.join(selected_cards)}" if selected_cards else "Buy: no cards"
         elif family == 'standard_project':
             project_idx = int(action_index) - int(self.action_types['STANDARD_PROJECT'])
             if 0 <= project_idx < len(self.standard_projects):
                 project_name = str(self.standard_projects[project_idx] or '')
             label = project_name or label or 'Standard project'
         elif family == 'fund_award':
-            award_name = _title_text(payload.get('title', '')) or _title_text(payload.get('name', ''))
+            award_name = _message_display_text(payload.get('title', ''), player_state) or _message_display_text(payload.get('name', ''), player_state)
             label = award_name or label or 'Fund award'
         elif family == 'claim_milestone':
-            milestone_name = _title_text(payload.get('title', '')) or _title_text(payload.get('name', ''))
+            milestone_name = _message_display_text(payload.get('title', ''), player_state) or _message_display_text(payload.get('name', ''), player_state)
             label = milestone_name or label or 'Claim milestone'
         elif family == 'select_space':
             label = title_l or 'Select space'
@@ -2701,6 +3052,7 @@ class ActionDecoder:
         family: str,
         label_info: Dict[str, str],
         decoded_action: Optional[Dict[str, Any]],
+        space_features: Optional[Dict[str, Any]] = None,
     ) -> np.ndarray:
         player = player_state.get('thisPlayer', {}) or {}
         game = player_state.get('game', {}) or {}
@@ -2746,10 +3098,8 @@ class ActionDecoder:
         moon_project = 0.0
         if card_name:
             waiting_for = player_state.get('waitingFor', {}) or {}
-            cards = waiting_for.get('cards', []) or []
-            for card in cards:
-                if not isinstance(card, dict) or str(card.get('name', '') or '') != card_name:
-                    continue
+            card = _find_prompt_card(waiting_for, card_name)
+            if card:
                 cost_norm = min(float(_card_cost(card)) / 40.0, 1.0)
                 vp_norm = min(float(_card_vp(card)) / 5.0, 1.0)
                 tags = _card_tags(card)
@@ -2758,7 +3108,6 @@ class ActionDecoder:
                 science_tag = 1.0 if tags.get('Science', 0) > 0 else 0.0
                 plant_tag = 1.0 if tags.get('Plant', 0) > 0 else 0.0
                 moon_project = 1.0 if tags.get('Moon', 0) > 0 else 0.0
-                break
         if project_name:
             name_l = project_name.lower()
             cost_lookup = {
@@ -2826,6 +3175,22 @@ class ActionDecoder:
             1.0 if 'milestone' in label_l else 0.0,
             1.0 if 'pass' in label_l else 0.0,
         ])
+        if family == 'select_space':
+            space = space_features or {}
+            features.extend([
+                min(max(float(space.get('total_value', 0.0) or 0.0), 0.0), 1.0),
+                min(max(float(space.get('self_value', 0.0) or 0.0), 0.0), 1.0),
+                min(max(float(space.get('deny_value', 0.0) or 0.0), 0.0), 1.0),
+                min(max(float(space.get('risk_value', 0.0) or 0.0), 0.0), 1.0),
+                min(max(float(space.get('bonus_value', 0.0) or 0.0) / 6.0, 0.0), 1.0),
+                min(float(space.get('own_city_adjacent', 0) or 0) / 3.0, 1.0),
+                min(float(space.get('enemy_city_adjacent', 0) or 0) / 3.0, 1.0),
+                min(float(space.get('own_greenery_adjacent', 0) or 0) / 4.0, 1.0),
+                min(float(space.get('ocean_adjacent', 0) or 0) / 3.0, 1.0),
+                min(float(space.get('empty_adjacent', 0) or 0) / 6.0, 1.0),
+                min(max(float(space.get('x', 0) or 0) / 10.0, 0.0), 1.0),
+                min(max(float(space.get('y', 0) or 0) / 10.0, 0.0), 1.0),
+            ])
         return token_from_features(type_id=8, features=features, planner_config=self.planner_config)
 
     def _build_action_descriptor(
@@ -2837,8 +3202,9 @@ class ActionDecoder:
         waiting_for = player_state.get('waitingFor', {}) or {}
         decoded_action = self.decode_action(action_index, player_state)
         family = self._semantic_family(action_index, waiting_for, decoded_action)
-        label_info = self._descriptor_labels(action_index, waiting_for, family)
-        return {
+        label_info = self._descriptor_labels(action_index, waiting_for, family, decoded_action, player_state)
+        space_features = _space_candidate_features(player_state, decoded_action) if family == 'select_space' else {}
+        descriptor = {
             "action_index": int(action_index),
             "action_position": int(action_position),
             "family": family,
@@ -2854,8 +3220,12 @@ class ActionDecoder:
                 family=family,
                 label_info=label_info,
                 decoded_action=decoded_action,
+                space_features=space_features,
             ).astype(np.float32),
         }
+        if space_features:
+            descriptor['space_features'] = space_features
+        return descriptor
 
     def get_legal_action_descriptors(self, player_state: Dict[str, Any]) -> List[Dict[str, Any]]:
         descriptors: List[Dict[str, Any]] = []
@@ -3021,6 +3391,16 @@ class ActionDecoder:
                         for j, _ in enumerate(award_options):
                             available_actions.append(600 + j)
                         added_concrete_action = len(award_options) > 0
+                    elif option_type in ['selectSpace', 'space']:
+                        # Nested placement actions must retain the selected-space
+                        # index.  A generic SELECT_OPTION response has no such
+                        # index and therefore always placed on the first legal hex.
+                        spaces = option.get('availableSpaces') or option.get('spaces', [])
+                        for j, space in enumerate(spaces):
+                            if isinstance(space, dict) and space.get('isDisabled', False):
+                                continue
+                            available_actions.append(self.action_types['SELECT_SPACE'] + j)
+                        added_concrete_action = len(spaces) > 0
                     elif option_type in ['selectCard', 'card'] and 'convert plants' in option_title_l:
                         available_actions.append(700)
                         added_concrete_action = True
@@ -3031,12 +3411,7 @@ class ActionDecoder:
                         else:
                             allow_select_option = False
                     elif option_type in ['selectCard', 'card'] and 'sell patents' in option_title_l:
-                        if _should_offer_sell_patents(
-                            option.get('cards', []),
-                            option,
-                            player_state,
-                            allow_mandatory_fallback=False,
-                        ):
+                        if _has_selectable_patents(option.get('cards', [])):
                             available_actions.append(702)
                             added_concrete_action = True
                         else:
@@ -3094,7 +3469,7 @@ class ActionDecoder:
                     if not self._is_convert_heat_wasteful(player_state or {}):
                         available_actions.append(701)
                 elif 'sell patents' in title:
-                    if _should_offer_sell_patents(cards, waiting_for, player_state):
+                    if _has_selectable_patents(cards):
                         available_actions.append(702)
                 elif 'standard project' in title:
                     enabled_cards = [
@@ -3164,7 +3539,7 @@ class ActionDecoder:
                     if not self._is_convert_heat_wasteful(player_state or {}):
                         available_actions.append(701)
                 elif 'sell patents' in title:
-                    if _should_offer_sell_patents(cards, waiting_for, player_state):
+                    if _has_selectable_patents(cards):
                         available_actions.append(702)
                 else:
                     if _is_card_selection_prompt(waiting_for) and max_cards > 1:

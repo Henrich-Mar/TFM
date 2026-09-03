@@ -74,6 +74,31 @@ class StateEncoder:
     _MIN_SPACE_FEATURE_BUDGET = 96
     _AWARDS_MILESTONES_FEATURE_COUNT = (len(_ALL_MILESTONES) * 4) + (len(_ALL_AWARDS) * 4)
 
+    @staticmethod
+    def _is_same_player(candidate: Dict[str, Any], current_player: Dict[str, Any]) -> bool:
+        """Return whether a row from ``players`` represents ``thisPlayer``.
+
+        The game API normally provides player ids, but some server responses
+        omit them from both ``thisPlayer`` and ``players``.  Comparing two
+        empty ids made the encoder treat every player as the current player;
+        comparing an empty current id to populated rows made it include the
+        current player as an opponent.  Colors are unique within a game and
+        names are a final fallback for API variants without colors.
+        """
+        candidate_id = str(candidate.get('id', '') or '').strip()
+        current_id = str(current_player.get('id', '') or '').strip()
+        if candidate_id and current_id:
+            return candidate_id == current_id
+
+        candidate_color = str(candidate.get('color', '') or '').strip().lower()
+        current_color = str(current_player.get('color', '') or '').strip().lower()
+        if candidate_color and current_color:
+            return candidate_color == current_color
+
+        candidate_name = str(candidate.get('name', '') or '').strip()
+        current_name = str(current_player.get('name', '') or '').strip()
+        return bool(candidate_name and current_name and candidate_name == current_name)
+
     def __init__(
         self,
         planner_config: Optional[PlannerConfig] = None,
@@ -431,7 +456,7 @@ class StateEncoder:
 
         opponents = [
             opponent for opponent in players
-            if opponent.get('id') != current_player.get('id')
+            if not self._is_same_player(opponent, current_player)
         ]
         for opponent in opponents[:self.opponent_limit]:
             opp_vp = ((opponent.get('victoryPointsBreakdown', {}) or {}).get('total', 0) or 0)
@@ -2026,11 +2051,9 @@ class StateEncoder:
         """Encode simplified opponent information"""
         encoding = [0.0] * 100
         
-        current_player_id = current_player.get('id', '')
-        
         opponent_idx = 0
         for player in players:
-            if player.get('id') != current_player_id and opponent_idx < 3:  # Max 3 opponents
+            if not self._is_same_player(player, current_player) and opponent_idx < 3:  # Max 3 opponents
                 base_idx = opponent_idx * 20
                 
                 # Basic opponent info

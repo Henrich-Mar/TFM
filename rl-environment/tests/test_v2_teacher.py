@@ -73,6 +73,15 @@ def test_unsupported_teacher_prompt_uses_deterministic_fallback_metric() -> None
     assert teacher.fallbacks == 1
 
 
+def test_teacher_marks_a_one_action_mask_as_forced_not_confident() -> None:
+    result = HeuristicTeacherPolicy(seed=5, sample=False).score_actions(
+        {}, [_descriptor(41, "other", "Resolve effect")]
+    )
+
+    assert result.is_forced
+    assert result.confidence == 0.0
+
+
 def test_real_award_action_range_is_not_misclassified_as_card_subset() -> None:
     decoder = ActionDecoder()
     waiting_for = {

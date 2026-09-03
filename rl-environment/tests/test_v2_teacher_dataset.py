@@ -94,6 +94,7 @@ def test_human_and_low_confidence_weights() -> None:
     assert source_weight("human.annotation.v1", 1.0) == 4.0
     assert source_weight("heuristic-teacher.v1", 0.1) == 0.25
     assert source_weight("heuristic-teacher.v1", 0.9) == 1.0
+    assert source_weight("heuristic-teacher.v1", 1.0, is_forced=True) == 0.25
 
 
 def test_snapshot_annotation_rejects_non_legal_action(monkeypatch, tmp_path: Path) -> None:

@@ -102,6 +102,10 @@ class GameInstance:
         """
         return self._cached_player_state.get(str(player_id))
 
+    def invalidate_cached_player_state(self, player_id: str) -> None:
+        """Discard a post-input response when the next prompt must be authoritative."""
+        self._cached_player_state.pop(str(player_id), None)
+
     @staticmethod
     def _env_flag(name: str, default: bool = False) -> bool:
         value = str(os.getenv(name, "1" if default else "0")).strip().lower()

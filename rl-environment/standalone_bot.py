@@ -2,12 +2,14 @@
 Run a single trained agent against an existing Terraforming Mars player slot.
 
 Examples:
-  python rl-environment/standalone_bot.py --player-url "https://terraforming-mars.herokuapp.com/player?id=<PLAYER_ID>"
-  python rl-environment/standalone_bot.py --base-url "https://terraforming-mars.herokuapp.com" --player-id "<PLAYER_ID>"
+  python rl-environment/standalone_bot.py --player-url "http://localhost:8081/player?id=<PLAYER_ID>"
+  python rl-environment/standalone_bot.py --base-url "http://localhost:8081" --player-id "<PLAYER_ID>"
 """
 import argparse
 import asyncio
+import copy
 import glob
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,6 +22,63 @@ from models.agent import RLAgent
 from models.state_encoder import StateEncoder
 
 logger = logging.getLogger(__name__)
+
+
+def _iter_player_models(player_state: Dict[str, Any]):
+    """Yield the private and public player models contained in an API response."""
+    this_player = player_state.get("thisPlayer")
+    if isinstance(this_player, dict):
+        yield this_player
+    for player in player_state.get("players", []) or []:
+        if isinstance(player, dict):
+            yield player
+
+
+def _normalize_inbound_player_schema(player_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Add current field aliases without discarding the server's original data."""
+    for player in _iter_player_models(player_state):
+        if "megaCredits" not in player and "megacredits" in player:
+            player["megaCredits"] = player["megacredits"]
+        if "megaCreditProduction" not in player and "megacreditProduction" in player:
+            player["megaCreditProduction"] = player["megacreditProduction"]
+    return player_state
+
+
+def _uses_lowercase_payment_mc(player_state: Dict[str, Any]) -> bool:
+    return any(
+        "megacredits" in player and "megaCredits" not in player
+        for player in _iter_player_models(player_state)
+    )
+
+
+def _adapt_outbound_payment_schema(input_data: Dict[str, Any], lowercase_mc: bool) -> Dict[str, Any]:
+    """Use the payment-key spelling advertised by the connected server.
+
+    The older public server serializes player money as ``megacredits`` and
+    validates that same spelling inside every payment payload. The local server
+    uses ``megaCredits``. Only payment objects are rewritten; card/game state
+    is never altered on the wire.
+    """
+    payload = copy.deepcopy(input_data)
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        payment = value.get("payment")
+        if isinstance(payment, dict):
+            if lowercase_mc and "megaCredits" in payment:
+                payment["megacredits"] = payment.pop("megaCredits")
+            elif not lowercase_mc and "megacredits" in payment:
+                payment["megaCredits"] = payment.pop("megacredits")
+        for nested in value.values():
+            visit(nested)
+
+    visit(payload)
+    return payload
 
 
 def _log_agent_metadata(agent: RLAgent):
@@ -209,6 +268,7 @@ class StandaloneGameClient:
         self.player_ids: Dict[str, str] = {}
         self._min_action_interval_sec = max(0.0, float(min_action_interval_sec))
         self._next_allowed_action_monotonic = 0.0
+        self._payment_uses_lowercase_mc = False
 
     def _resolve_public_base(self) -> str:
         return self.base_url
@@ -239,7 +299,11 @@ class StandaloneGameClient:
         ) as response:
             if response.status != 200:
                 raise RuntimeError(f"Failed to get player state: HTTP {response.status}")
-            return await response.json()
+            player_state = await response.json()
+            if isinstance(player_state, dict):
+                self._payment_uses_lowercase_mc = _uses_lowercase_payment_mc(player_state)
+                return _normalize_inbound_player_schema(player_state)
+            return player_state
 
     async def _throttle_action_send(self):
         if self._min_action_interval_sec <= 0.0:
@@ -253,21 +317,23 @@ class StandaloneGameClient:
 
     async def send_player_input(self, player_id: str, input_data: Dict[str, Any]) -> bool:
         await self._throttle_action_send()
+        wire_input = _adapt_outbound_payment_schema(input_data, self._payment_uses_lowercase_mc)
         try:
             async with self.session.post(
                 f"{self.base_url}/player/input",
                 params={"id": player_id},
-                json=input_data,
+                json=wire_input,
                 headers={"Content-Type": "application/json"},
             ) as response:
                 if response.status == 200:
                     return True
                 response_text = await response.text()
                 logger.warning(
-                    "Input rejected. status=%s player=%s response=%s",
+                    "Input rejected. status=%s player=%s response=%s payload=%s",
                     response.status,
                     player_id,
                     response_text[:500],
+                    json.dumps(wire_input, ensure_ascii=False, sort_keys=True)[:4000],
                 )
                 return False
         except Exception as e:
@@ -314,6 +380,11 @@ def _resolve_target(
 
 async def _run(args: argparse.Namespace):
     ensure_card_metadata(quiet=True)
+    if args.no_random_fallback:
+        # Human matches should never progress through an unrelated random move
+        # after a rejected neural action. The next poll may still select a
+        # different policy action, but no random fallback is submitted.
+        os.environ["MAX_FALLBACK_RANDOM_RETRIES_PER_PROMPT"] = "0"
     checkpoint = str(args.checkpoint or "").strip() or _find_best_checkpoint(args.models)
     if not os.path.isfile(checkpoint):
         raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint}")
@@ -338,6 +409,8 @@ async def _run(args: argparse.Namespace):
         print(f"Target game ID: {game_id}")
     print(f"Minimum action interval: {min_action_delay_ms} ms")
     print(f"Poll interval: {int(poll_interval_sec * 1000)} ms")
+    if args.no_random_fallback:
+        print("Random fallback actions: disabled")
 
     timeout = aiohttp.ClientTimeout(total=max(5.0, float(args.request_timeout_sec)))
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -384,13 +457,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--player-url",
         type=str,
         default="",
-        help="Full player URL, e.g. https://terraforming-mars.herokuapp.com/player?id=<PLAYER_ID>",
+        help="Full player URL, e.g. http://localhost:8081/player?id=<PLAYER_ID>",
     )
     parser.add_argument(
         "--base-url",
         type=str,
         default="",
-        help="Base server URL, e.g. https://terraforming-mars.herokuapp.com",
+        help="Base server URL, e.g. http://localhost:8081",
     )
     parser.add_argument(
         "--player-id",
@@ -451,6 +524,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default="INFO",
         help="Python logging level (DEBUG, INFO, WARNING, ERROR).",
+    )
+    parser.add_argument(
+        "--no-random-fallback",
+        action="store_true",
+        help="Do not submit random fallback actions after a rejected policy action (recommended for human games).",
     )
     return parser
 

@@ -29,7 +29,9 @@ class StandaloneBotLauncher(tk.Tk):
         self._after_id: Optional[str] = None
 
         self.player_url_var = tk.StringVar(value="")
-        self.base_url_var = tk.StringVar(value="https://terraforming-mars.herokuapp.com")
+        # Keep this blank: when a private player URL is pasted, its host must
+        # be used. A pre-filled host can silently override that URL.
+        self.base_url_var = tk.StringVar(value="")
         self.player_id_var = tk.StringVar(value="")
         self.game_url_var = tk.StringVar(value="")
         self.game_id_var = tk.StringVar(value="")
@@ -42,6 +44,7 @@ class StandaloneBotLauncher(tk.Tk):
         self.poll_interval_var = tk.StringVar(value="1000")
         self.timeout_var = tk.StringVar(value="60")
         self.log_level_var = tk.StringVar(value="INFO")
+        self.no_random_fallback_var = tk.BooleanVar(value=True)
 
         self._build_ui()
         self._set_running_state(False)
@@ -91,6 +94,13 @@ class StandaloneBotLauncher(tk.Tk):
         row = self._add_entry(top, row, "Min Action Delay (ms)", self.min_delay_var)
         row = self._add_entry(top, row, "Poll Interval (ms)", self.poll_interval_var)
         row = self._add_entry(top, row, "Request Timeout (sec)", self.timeout_var)
+
+        ttk.Checkbutton(
+            top,
+            text="Safe live mode: do not submit random fallback actions after a rejection",
+            variable=self.no_random_fallback_var,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        row += 1
 
         ttk.Label(top, text="Log Level").grid(row=row, column=0, sticky="w", pady=(6, 0))
         level_combo = ttk.Combobox(
@@ -245,6 +255,8 @@ class StandaloneBotLauncher(tk.Tk):
         bot_args.extend(["--poll-interval-ms", poll])
         bot_args.extend(["--request-timeout-sec", timeout])
         bot_args.extend(["--log-level", level])
+        if self.no_random_fallback_var.get():
+            bot_args.append("--no-random-fallback")
 
         if self.runtime_var.get() == "Host Python (local)":
             try:

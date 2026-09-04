@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus, urlsplit, urlunsplit
 
+from tfm_schema import (
+    adapt_outbound_payment_schema,
+    normalize_inbound_player_schema,
+    uses_lowercase_payment_mc,
+)
+
 try:
     import orjson
     _USE_ORJSON = True
@@ -88,6 +94,7 @@ class GameInstance:
         self.player_ids: Dict[str, str] = {}  # player_name -> player_id
         self.base_url = f"http://{server.host}:{server.port}"
         self.spectator_id: Optional[str] = None
+        self._payment_uses_lowercase_mc = False
         self._latest_run_id_by_player: Dict[str, str] = {}
         # Cache: send_player_input stores the response body here so the next
         # get_player_state call can return it without a network round-trip.
@@ -467,6 +474,9 @@ class GameInstance:
                         if debug_timing:
                             t2 = time.perf_counter()
                         player_state = _json_loads_bytes(body)
+                        if isinstance(player_state, dict):
+                            self._payment_uses_lowercase_mc = uses_lowercase_payment_mc(player_state)
+                            player_state = normalize_inbound_player_schema(player_state)
                         if debug_timing:
                             t3 = time.perf_counter()
                             logger.warning(
@@ -536,6 +546,10 @@ class GameInstance:
         call returns instantly without a network round-trip.
         """
         prepared_input_data = self._with_run_id(player_id, input_data)
+        prepared_input_data = adapt_outbound_payment_schema(
+            prepared_input_data,
+            self._payment_uses_lowercase_mc,
+        )
         try:
             payload_full = _json_dumps(prepared_input_data)
         except Exception:
@@ -620,6 +634,8 @@ class GameInstance:
                                     self.server.host, self.server.port,
                                 )
                             if isinstance(body, dict):
+                                self._payment_uses_lowercase_mc = uses_lowercase_payment_mc(body)
+                                body = normalize_inbound_player_schema(body)
                                 run_id = self._extract_run_id_from_state(body)
                                 if run_id:
                                     self._latest_run_id_by_player[str(player_id)] = run_id

@@ -838,7 +838,8 @@ class RLAgent:
         self.policy_temperature_floor = max(1e-3, self._safe_env_float("POLICY_TEMPERATURE_FLOOR", 0.75))
         self.project_card_priority_weight = max(0.1, self._safe_env_float("PLAY_CARD_PRIORITY_WEIGHT", 1.6))
         self.max_fallback_attempts = max(1, self._safe_env_int("MAX_FALLBACK_ACTION_ATTEMPTS", 6))
-        self.max_fallback_random_retries_per_prompt = max(1, self._safe_env_int("MAX_FALLBACK_RANDOM_RETRIES_PER_PROMPT", 10))
+        # A live human match can explicitly disable random fallback moves.
+        self.max_fallback_random_retries_per_prompt = max(0, self._safe_env_int("MAX_FALLBACK_RANDOM_RETRIES_PER_PROMPT", 10))
         self.rejected_action_memory_size = max(64, self._safe_env_int("REJECTED_ACTION_MEMORY_SIZE", 2048))
         self.ppo_hparams = PPOHyperParameters(
             clip_eps=self._safe_env_float("PPO_CLIP_EPS", 0.2),

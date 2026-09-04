@@ -35,6 +35,11 @@ local Python dependencies (`torch`, `numpy`, and `aiohttp`); install them with
 1. Start Docker Desktop and the intended game server. The current local
    servers use `http://localhost:8081` through `http://localhost:8084`.
 2. Create a game containing the human players and a separate bot player seat.
+   The candidate was validated against the local server in this repository
+   (for example `http://localhost:8081`). A remote deployment, including
+   Heroku, can be used after a safe compatibility check; keep Safe live mode
+   enabled and inspect any rejected payload before letting it play a real
+   human match.
    Copy the bot seat's private player URL. It has the form
    `http://localhost:8081/player?id=PLAYER_ID`.
 3. Do not open or submit moves from that bot player URL while the bot is
@@ -54,7 +59,10 @@ Fill in either:
 - **Base URL** and **Player ID**: for example, `http://localhost:8081` and
   the ID after `player?id=`.
 
-Leave **Runtime** set to **Host Python (local)**. The UI defaults to the
+Leave **Runtime** set to **Host Python (local)** and keep **Base URL** blank
+when supplying Player URL. This makes the launcher use the exact host embedded
+in that URL. Keep **Safe live mode** enabled: a rejected neural action will
+not be replaced by a random move. The UI defaults to the
 newest tested candidate:
 
 ```text
@@ -65,9 +73,11 @@ Then press **Start Bot**. The log pane reports the resolved player name,
 checkpoint, target, and submitted actions. Use **Stop Bot** only to detach the
 bot; it does not change or delete the game.
 
-For a remote server, put its real public HTTP(S) address in Base URL or Player
-URL. A local game server can remain `http://localhost:8081`; local Python can
-reach it directly.
+For local games, use `http://localhost:8081` (or the matching 8082–8084
+server). The client detects the server's `megaCredits` versus `megacredits`
+spelling and uses the matching payment field on outgoing requests. It also logs
+the complete rejected action payload, which makes any future mismatch
+diagnosable without guessing.
 
 ## Command-line alternative
 
@@ -79,12 +89,11 @@ python rl-environment/standalone_bot.py `
   --base-url http://localhost:8081 `
   --player-id YOUR_PLAYER_ID `
   --checkpoint rl-v2/checkpoints/candidate_000275219.pth `
-  --min-action-delay-ms 1000 --poll-interval-ms 1000 --log-level INFO
+  --min-action-delay-ms 1000 --poll-interval-ms 1000 --log-level INFO `
+  --no-random-fallback
 ```
 
-For a remote server, replace `http://localhost:8081` with its real public
-address. To run a different candidate, substitute its path below
-`rl-v2/checkpoints/`.
+To run a different candidate, substitute its path below `rl-v2/checkpoints/`.
 
 ## Checkpoint choice and safeguards
 

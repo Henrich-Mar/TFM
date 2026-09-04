@@ -55,7 +55,9 @@ services:
       - ./card_metadata.json:/app/card_metadata.json:ro
     environment:
       - TFM_RL_V2=1
-      - V2_RECYCLE_IDLE_SERVERS=1
+      # Server recycling drops every in-memory game. Keep it disabled for
+      # self-play: cache sweeping already reclaims completed games safely.
+      - V2_RECYCLE_IDLE_SERVERS=0
       - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-rl-v2-local-recycle}
       - TFM_RL_V2_ROOT=/app/v2
       - V2_ALLOW_RESUME=0

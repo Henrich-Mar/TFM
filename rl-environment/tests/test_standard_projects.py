@@ -106,6 +106,52 @@ def test_agent_decodes_extended_standard_project_action() -> None:
     assert chosen == ["Air Scrapping"], f"Expected ['Air Scrapping'], got {chosen}"
 
 
+def test_nested_standard_project_prompt_excludes_disabled_projects() -> None:
+    """A greyed-out project must not be sent back to upstream for validation."""
+    decoder = ActionDecoder()
+    player_state = {
+        "waitingFor": {
+            "type": "or",
+            "options": [{
+                "type": "projectCard",
+                "title": "Standard projects",
+                "cards": [
+                    {"name": "City", "calculatedCost": 25, "isDisabled": True},
+                    {"name": "Power Plant:SP", "calculatedCost": 11},
+                ],
+            }],
+        },
+        "thisPlayer": {"megaCredits": 100},
+        "game": {"temperature": -20, "oceans": 0},
+    }
+
+    assert decoder.get_available_actions(player_state) == [1]
+    action = decoder.decode_action(1, player_state)
+    assert action == {
+        "type": "or",
+        "index": 0,
+        "response": {
+            "type": "projectCard",
+            "card": "Power Plant:SP",
+            "payment": {
+                "megaCredits": 11,
+                "steel": 0,
+                "titanium": 0,
+                "heat": 0,
+                "plants": 0,
+                "microbes": 0,
+                "floaters": 0,
+                "lunaArchivesScience": 0,
+                "spireScience": 0,
+                "seeds": 0,
+                "auroraiData": 0,
+                "graphene": 0,
+                "kuiperAsteroids": 0,
+            },
+        },
+    }
+
+
 def test_agent_keeps_offered_venus_projects_available() -> None:
     """The decoder should trust offered Venus projects instead of locally pruning them."""
     decoder = ActionDecoder()

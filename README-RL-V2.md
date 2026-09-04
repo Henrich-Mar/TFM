@@ -184,8 +184,9 @@ Use these commands in the future:
 docker kill --signal=SIGINT tfm-rl-v2-selfplay
 # Resume in the background
 docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --rm -d --name tfm-rl-v2-selfplay -e V2_ALLOW_RESUME=1 rl-coordinator python -m training.v2_self_play --bc-checkpoint /app/v2/pretrain/bc_best.pth --root /app/v2
-#recycling :
-docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --rm -d --name tfm-rl-v2-selfplay -e V2_ALLOW_RESUME=1 -e V2_RECYCLE_IDLE_SERVERS=1 rl-coordinator python -m training.v2_self_play --bc-checkpoint /app/v2/pretrain/bc_best.pth --root /app/v2
+# Keep server recycling disabled during self-play. The normal game-cache sweeper
+# safely evicts completed games; recycling restarts a server and invalidates
+# every game it still has in memory.
 
 # Follow the output
 docker logs -f --tail 100 tfm-rl-v2-selfplay

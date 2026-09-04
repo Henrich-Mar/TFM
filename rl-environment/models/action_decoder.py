@@ -2227,6 +2227,11 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         if player_state:
             affordable_indices: List[int] = []
             for i, candidate in enumerate(cards):
+                # The upstream model marks a standard project unavailable with
+                # isDisabled when canAct() is false (for example, no legal
+                # city space remains).  It must never enter the policy mask.
+                if candidate.get('isDisabled', False):
+                    continue
                 reserve_units = _merge_reserve_units(waiting_for, candidate)
                 if _can_afford_card_with_payment_options(
                     player_state,
@@ -2326,6 +2331,8 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         if player_state:
             affordable_indices: List[int] = []
             for i, candidate in enumerate(cards):
+                if candidate.get('isDisabled', False):
+                    continue
                 reserve_units = _merge_reserve_units(waiting_for, candidate)
                 if _can_afford_card_with_payment_options(
                     player_state,
@@ -3356,6 +3363,8 @@ class ActionDecoder:
                         payment_options = option.get('paymentOptions', {})
                         affordable_indices = []
                         for j, card in enumerate(cards):
+                            if card.get('isDisabled', False):
+                                continue
                             reserve_units = _merge_reserve_units(option, card)
                             if player_state and _can_afford_card_with_payment_options(
                                 player_state,
@@ -3569,6 +3578,8 @@ class ActionDecoder:
                 # Filter out unaffordable cards
                 affordable_cards = []
                 for i, card in enumerate(cards):
+                    if card.get('isDisabled', False):
+                        continue
                     if player_state:
                         reserve_units = _merge_reserve_units(waiting_for, card)
                         if _can_afford_card_with_payment_options(

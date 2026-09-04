@@ -19,6 +19,12 @@ Normal Terraforming Mars deployments keep random create-game seeds. It also
 disables legacy startup autosubmit so startup choices enter the teacher/BC
 dataset and later PPO rollouts.
 
+The v2 game servers automatically sweep completed games from their in-memory
+cache after two minutes and sweep every minute. Unfinished database games older
+than one day are purged; completed games are already compressed immediately by
+the base RL compose configuration. This avoids periodic server restarts during
+long self-play runs.
+
 ## 2. Collect teacher games
 
 Stage 0 uses beginner corporations and the base Tharsis game:
@@ -141,9 +147,13 @@ docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --r
 
 PPO remains blocked unless `pretrain_report.json` records at least 85% top-1,
 97% top-3 and 80% top-3 on the human annotations.
-Pretraining is deterministic by default (`--seed 20260901`) and refuses to
-overwrite a non-empty output directory. For an intentional clean BC restart,
-set `V2_ALLOW_PRETRAIN_OVERWRITE=1`; this is not a checkpoint resume.
+Pretraining defaults to three epochs. During training, 12.5% of each batch is
+reserved for human decisions (repeated as necessary), so the human labels are
+not drowned out by the much larger teacher dataset. The best checkpoint also
+considers human validation Top-3 alongside the teacher metrics. Pretraining is
+deterministic by default (`--seed 20260901`) and refuses to overwrite a
+non-empty output directory. For an intentional clean BC restart, set
+`V2_ALLOW_PRETRAIN_OVERWRITE=1`; this is not a checkpoint resume.
 
 ## 6. Run the single-learner curriculum
 
@@ -157,10 +167,21 @@ docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --r
 The learner starts at Stage 0, benchmarks every 25,000 decisions, promotes only
 against fixed baselines, then advances to Stage 1. Only the main learner writes
 PPO rollouts; teacher, random and champion opponents are frozen.
-Self-play uses `SELFPLAY_CONCURRENCY` simultaneous games per batch (default `2`
+Each benchmark prints its baseline and per-game progress, including the game
+number out of 120, seed, candidate seat, rank, VP margin and elapsed time.
+`BENCHMARK_CONCURRENCY=8` runs eight benchmark games at once across four
+servers, capped by `MAX_ACTIVE_GAMES_PER_SERVER=2`. Each worker has its own
+baseline agents so random-policy state remains deterministic.
+The v2 Docker configuration uses PPO minibatches of 128 so optimization fits
+the 6 GB laptop GPU. If an optimization attempt fails, accepted rollout
+episodes are returned to the disk queue instead of being discarded.
+Stage 0 samples each opponent seat from 50% frozen BC champion, 25% teacher and
+25% random. This teaches the candidate without allowing it to forget the
+champion gate. The resumed PPO learning rate is capped at `0.00010`.
+Self-play uses `SELFPLAY_CONCURRENCY` simultaneous games per batch (default `8`
 in `docker-compose.rl_v2.yml`). PPO runs only after the entire batch completes,
-so every rollout in that batch came from the same policy. Start at `2`; after a
-stable run, raise it to at most the number of available game-server slots.
+so every rollout in that batch came from the same policy. The four servers are
+limited to two active games each.
 The self-play worker does not serve the FastAPI dashboard; monitor its terminal
 output or `rl-v2/metrics/selfplay_progress.json`. The dashboard URL is for the
 coordinator/API process used during annotation and legacy coordinator runs.

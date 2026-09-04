@@ -157,6 +157,42 @@ class RolloutShardStore:
         self._queued_steps = 0
         return cleared
 
+    def quarantine_incompatible(self, expected_schema_version: str, policy_version: int) -> dict:
+        """Move stale episode shards out of the active FIFO without deleting them."""
+        quarantine_dir = self.agent_dir / "quarantine_incompatible"
+        moved_shards = 0
+        moved_steps = 0
+        for path, meta in self._iter_shards():
+            parsed_count = int(meta[2]) if meta is not None else 0
+            try:
+                payload = list(self._read_payload(path) or [])
+            except Exception:
+                # Leave unreadable shards for the normal reader, which already
+                # reports and handles them explicitly.
+                continue
+            incompatible = any(
+                str(getattr(step, "state_schema_version", "")) != str(expected_schema_version)
+                or int(getattr(step, "policy_version", 0)) != int(policy_version)
+                for step in payload
+            )
+            if not incompatible:
+                continue
+            quarantine_dir.mkdir(parents=True, exist_ok=True)
+            target = quarantine_dir / path.name
+            os.replace(path, target)
+            actual_count = len(payload)
+            self._queued_steps = max(0, self._queued_steps - actual_count)
+            moved_shards += 1
+            moved_steps += actual_count
+            if actual_count != parsed_count:
+                logger.warning(
+                    "Rollout shard count mismatch while quarantining %s: name=%d actual=%d",
+                    path,
+                    parsed_count,
+                    actual_count,
+                )
+        return {"shards": moved_shards, "steps": moved_steps, "path": str(quarantine_dir)}
+
     def _iter_shards(self) -> List[Tuple[Path, Optional[Tuple[int, int, int]]]]:
         items: List[Tuple[Path, Optional[Tuple[int, int, int]]]] = []
         if not self.agent_dir.exists():

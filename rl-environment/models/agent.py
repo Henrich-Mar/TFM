@@ -4037,14 +4037,35 @@ class RLAgent:
         policy_temp = max(float(self._effective_policy_temperature()), 1e-3)
 
         loop = asyncio.get_running_loop()
-        metrics = await loop.run_in_executor(
-            _get_ppo_executor(),
-            _run_ppo_update_sync,
-            self,
-            steps,
-            current_entropy_coef,
-            policy_temp,
-        )
+        try:
+            metrics = await loop.run_in_executor(
+                _get_ppo_executor(),
+                _run_ppo_update_sync,
+                self,
+                steps,
+                current_entropy_coef,
+                policy_temp,
+            )
+        except Exception:
+            # Taking a disk-backed rollout is destructive. Restore accepted
+            # complete episodes if optimization fails so a transient OOM or
+            # process restart does not discard hours of self-play.
+            async with self.training_lock:
+                if self.rollout_shard_store is not None:
+                    episode: List[PPORolloutStep] = []
+                    episode_id = ""
+                    for step in steps:
+                        current_id = str(getattr(step, "episode_id", "") or "")
+                        if episode and current_id != episode_id:
+                            self.rollout_shard_store.append_episode(episode)
+                            episode = []
+                        episode_id = current_id
+                        episode.append(step)
+                    if episode:
+                        self.rollout_shard_store.append_episode(episode)
+                else:
+                    self.rollout_buffer.extendleft(reversed(steps))
+            raise
 
         metrics["rollout/schema_filtered"] = int(schema_filtered)
         if metrics:

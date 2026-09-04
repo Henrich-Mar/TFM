@@ -11,6 +11,7 @@ from models.planner_common import PLANNER_GLOBAL_DIM, PLANNER_TOKEN_DIM, planner
 from models.ppo import (
     PPOHyperParameters,
     PPORolloutStep,
+    _is_cuda_oom,
     _select_restore_device,
     optimize_ppo_policy,
 )
@@ -49,6 +50,12 @@ class _WideAuxNet(_TinyNet):
             device=summary.device,
         )
         return base
+
+
+def test_cuda_driver_oom_message_is_recognized() -> None:
+    assert _is_cuda_oom(RuntimeError("CUDA driver error: out of memory"))
+    assert _is_cuda_oom(RuntimeError("CUDA out of memory"))
+    assert not _is_cuda_oom(RuntimeError("ordinary CPU failure"))
 
 
 def _planner_bundle() -> dict:

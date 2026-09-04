@@ -2,24 +2,42 @@ services:
   tfm-server-1:
     environment:
       - RL_ALLOW_FIXED_SEED=1
+      - RL_RECYCLE_ENABLED=1
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-rl-v2-local-recycle}
+      # Finished games are marked for eviction by the server. Enable the
+      # sweeper so long RL runs do not retain every finished game in memory.
+      - GAME_CACHE=sweep=auto;eviction_age=2m;sweep_freq=1m
+      - MAX_GAME_DAYS=1
       - TFM_HUMAN_LISTENER_URL=${TFM_HUMAN_LISTENER_URL:-}
       - TFM_HUMAN_LISTENER_TOKEN=${TFM_HUMAN_LISTENER_TOKEN:-}
       - TFM_HUMAN_LISTENER_PLAYER_IDS=${TFM_HUMAN_LISTENER_PLAYER_IDS:-}
   tfm-server-2:
     environment:
       - RL_ALLOW_FIXED_SEED=1
+      - RL_RECYCLE_ENABLED=1
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-rl-v2-local-recycle}
+      - GAME_CACHE=sweep=auto;eviction_age=2m;sweep_freq=1m
+      - MAX_GAME_DAYS=1
       - TFM_HUMAN_LISTENER_URL=${TFM_HUMAN_LISTENER_URL:-}
       - TFM_HUMAN_LISTENER_TOKEN=${TFM_HUMAN_LISTENER_TOKEN:-}
       - TFM_HUMAN_LISTENER_PLAYER_IDS=${TFM_HUMAN_LISTENER_PLAYER_IDS:-}
   tfm-server-3:
     environment:
       - RL_ALLOW_FIXED_SEED=1
+      - RL_RECYCLE_ENABLED=1
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-rl-v2-local-recycle}
+      - GAME_CACHE=sweep=auto;eviction_age=2m;sweep_freq=1m
+      - MAX_GAME_DAYS=1
       - TFM_HUMAN_LISTENER_URL=${TFM_HUMAN_LISTENER_URL:-}
       - TFM_HUMAN_LISTENER_TOKEN=${TFM_HUMAN_LISTENER_TOKEN:-}
       - TFM_HUMAN_LISTENER_PLAYER_IDS=${TFM_HUMAN_LISTENER_PLAYER_IDS:-}
   tfm-server-4:
     environment:
       - RL_ALLOW_FIXED_SEED=1
+      - RL_RECYCLE_ENABLED=1
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-rl-v2-local-recycle}
+      - GAME_CACHE=sweep=auto;eviction_age=2m;sweep_freq=1m
+      - MAX_GAME_DAYS=1
       - TFM_HUMAN_LISTENER_URL=${TFM_HUMAN_LISTENER_URL:-}
       - TFM_HUMAN_LISTENER_TOKEN=${TFM_HUMAN_LISTENER_TOKEN:-}
       - TFM_HUMAN_LISTENER_PLAYER_IDS=${TFM_HUMAN_LISTENER_PLAYER_IDS:-}
@@ -37,6 +55,8 @@ services:
       - ./card_metadata.json:/app/card_metadata.json:ro
     environment:
       - TFM_RL_V2=1
+      - V2_RECYCLE_IDLE_SERVERS=1
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-rl-v2-local-recycle}
       - TFM_RL_V2_ROOT=/app/v2
       - V2_ALLOW_RESUME=0
       - RESUME_TRAINING=0
@@ -59,9 +79,17 @@ services:
       - AGENT_STARTUP_AUTOSUBMIT=0
       - AGENT_STARTUP_PLAN_SELECTION=best
       - PPO_STRICT_ON_POLICY=1
+      # The hard-mode default of 512 OOMs during backward on the 6 GB laptop
+      # RTX 3060. Smaller minibatches change memory use, not rollout length.
+      - PPO_MINIBATCH_SIZE=128
+      # Stage 0 resumes at a gentler LR to reduce drift away from the frozen
+      # BC champion. load_model reapplies this value after optimizer restore.
+      - PPO_LEARNING_RATE=0.00010
+      - PPO_LR_MAX=0.00010
       # Complete each self-play batch before PPO changes the learner policy.
-      # Start at 2 on the laptop RTX 3060; increase only after verifying capacity.
+      # Four servers run at most two games each.
       - SELFPLAY_CONCURRENCY=4
+      - BENCHMARK_CONCURRENCY=4
       - MAX_ACTIVE_GAMES_PER_SERVER=1
       - LEAGUE_ENABLE=0
       - EVOLUTION_IMMIGRANT_RATIO=0.0

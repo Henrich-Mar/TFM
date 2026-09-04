@@ -830,6 +830,18 @@ class GameServerCluster:
             5.0,
             min_value=0.5,
         )
+        self.rl_recycle_enabled = GameInstance._env_flag("V2_RECYCLE_IDLE_SERVERS", default=False)
+        self.rl_control_token = str(os.getenv("RL_CONTROL_TOKEN", "")).strip()
+        self.rl_recycle_request_timeout_sec = self._parse_float_env(
+            "V2_IDLE_SERVER_RECYCLE_REQUEST_TIMEOUT_SEC",
+            5.0,
+            min_value=0.5,
+        )
+        self.rl_recycle_ready_timeout_sec = self._parse_float_env(
+            "V2_IDLE_SERVER_RECYCLE_READY_TIMEOUT_SEC",
+            45.0,
+            min_value=5.0,
+        )
         self._server_backoff_until: Dict[str, float] = {}
         self._last_health_check_monotonic: float = 0.0
         self._health_check_lock = asyncio.Lock()
@@ -1251,6 +1263,96 @@ class GameServerCluster:
         logger.info(f"Health check complete: {healthy_count}/{len(self.servers)} servers healthy")
         
         return results
+
+    async def recycle_idle_servers(self) -> bool:
+        """Recycle the dedicated RL servers only after every tracked game ends.
+
+        The game database is a container tmpfs mount, so a Docker-managed
+        process restart removes old games that cache eviction intentionally
+        leaves available for later reload.  The endpoint is opt-in and token
+        protected; normal TM clusters remain unaffected.
+        """
+        if not self.rl_recycle_enabled:
+            return False
+        if not self.rl_control_token:
+            logger.warning("Skipping idle-server recycle: RL_CONTROL_TOKEN is not configured")
+            return False
+
+        session = self.ensure_session(timeout_total=None)
+        headers = {"x-rl-control-token": self.rl_control_token}
+        request_timeout = aiohttp.ClientTimeout(total=float(self.rl_recycle_request_timeout_sec))
+
+        async with self._server_slot_lock:
+            active = {self._server_key(server): int(server.active_games) for server in self.servers}
+            if any(active.values()):
+                logger.info("Skipping idle-server recycle; active games remain: %s", active)
+                return False
+
+        async def _check_capability(server: GameServer) -> bool:
+            endpoint = f"http://{server.host}:{server.port}/api/rl/recycle"
+            try:
+                async with session.get(endpoint, headers=headers, timeout=request_timeout) as response:
+                    await response.read()
+                    if response.status == 200:
+                        return True
+                    logger.warning(
+                        "Idle recycle unavailable on %s (HTTP %s); no servers will restart",
+                        self._server_key(server),
+                        response.status,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Idle recycle capability check failed for %s: %s; no servers will restart",
+                    self._server_key(server),
+                    exc,
+                )
+            return False
+
+        # Do not permit a partial cluster recycle. This preflight is
+        # non-destructive, so older server images safely reject it with 404.
+        capable = await asyncio.gather(*(_check_capability(server) for server in self.servers))
+        if not all(capable):
+            return False
+
+        async with self._server_slot_lock:
+            active = {self._server_key(server): int(server.active_games) for server in self.servers}
+            if any(active.values()):
+                logger.info("Skipping idle-server recycle after capability check; active games remain: %s", active)
+                return False
+            # Prevent a new reservation from racing the accepted recycle requests.
+            for server in self.servers:
+                server.healthy = False
+
+        async def _request_recycle(server: GameServer) -> bool:
+            endpoint = f"http://{server.host}:{server.port}/api/rl/recycle"
+            try:
+                async with session.post(endpoint, headers=headers, timeout=request_timeout) as response:
+                    await response.read()
+                    if response.status == 202:
+                        logger.info("Idle recycle accepted by %s", self._server_key(server))
+                        return True
+                    logger.warning(
+                        "Idle recycle rejected by %s with HTTP %s",
+                        self._server_key(server),
+                        response.status,
+                    )
+            except Exception as exc:
+                logger.warning("Idle recycle request failed for %s: %s", self._server_key(server), exc)
+            return False
+
+        accepted = await asyncio.gather(*(_request_recycle(server) for server in self.servers))
+        # A request can be accepted even if its response gets lost during the
+        # process exit. Always wait for the whole cluster to be healthy again
+        # before allowing the next batch, including on a partial failure.
+        deadline = asyncio.get_running_loop().time() + float(self.rl_recycle_ready_timeout_sec)
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.5)
+            results = await self.health_check()
+            if all(results.values()):
+                logger.info("All %d RL servers are healthy after idle recycle", len(self.servers))
+                return bool(all(accepted))
+        logger.warning("Timed out waiting for RL servers after idle recycle")
+        return False
     
     def _get_best_server(self) -> GameServer:
         """Get the server with the least load"""

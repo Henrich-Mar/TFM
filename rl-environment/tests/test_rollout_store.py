@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -89,3 +90,30 @@ def test_rollout_shard_store_clear_removes_queued_steps(tmp_path: Path) -> None:
     assert cleared == 4
     assert store.queued_step_count() == 0
     assert not list((tmp_path / "rollouts" / "agent_agent-2").glob("rollout_*.pkl.gz"))
+
+
+def test_rollout_store_quarantines_mismatched_policy_without_deleting(tmp_path: Path) -> None:
+    store = RolloutShardStore(str(tmp_path), "learner")
+    current = [
+        SimpleNamespace(
+            episode_id="current", step_index=index, terminal=index == 1,
+            state_schema_version="v1", policy_version=6,
+        )
+        for index in range(2)
+    ]
+    stale = [
+        SimpleNamespace(
+            episode_id="stale", step_index=index, terminal=index == 2,
+            state_schema_version="v1", policy_version=7,
+        )
+        for index in range(3)
+    ]
+    store.append_episode(current)
+    store.append_episode(stale)
+
+    result = store.quarantine_incompatible("v1", policy_version=6)
+
+    assert result["steps"] == 3
+    assert result["shards"] == 1
+    assert store.queued_step_count() == 2
+    assert len(list((store.agent_dir / "quarantine_incompatible").glob("rollout_*.pkl.gz"))) == 1

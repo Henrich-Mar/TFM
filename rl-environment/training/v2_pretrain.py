@@ -21,12 +21,17 @@ from training.teacher_dataset import TeacherDatasetStore, validate_sample
 from v2_runtime import initialize_v2_runtime
 
 
-def _iter_shard_batches(root: Path, split: str, batch_size: int, shuffle: bool) -> Iterable[List[Dict[str, Any]]]:
+def _iter_shard_samples(
+    root: Path,
+    split: str,
+    shuffle: bool,
+    human: bool | None = None,
+) -> Iterable[Dict[str, Any]]:
+    """Yield samples from one split, optionally restricted by their source."""
     paths = sorted((root / split).glob("episode_*.pkl.gz"))
     rng = random.Random(20260901)
     if shuffle:
         rng.shuffle(paths)
-    pending: List[Dict[str, Any]] = []
     for path in paths:
         with gzip.open(path, "rb") as handle:
             items = list(pickle.load(handle) or [])
@@ -34,12 +39,68 @@ def _iter_shard_batches(root: Path, split: str, batch_size: int, shuffle: bool) 
             rng.shuffle(items)
         for item in items:
             validate_sample(item)
+            is_human = str(item.get("source", "")).startswith("human")
+            if human is None or is_human == human:
+                yield item
+
+
+def _iter_shard_batches(
+    root: Path,
+    split: str,
+    batch_size: int,
+    shuffle: bool,
+    human_batch_fraction: float = 0.0,
+    human_only: bool | None = None,
+) -> Iterable[List[Dict[str, Any]]]:
+    """Yield ordinary batches, or source-balanced training batches.
+
+    Human decisions are scarce by design.  A weight alone cannot compensate
+    when fewer than one human row appears in most batches, so training mixes a
+    small, deterministic stream of repeated human rows into every batch.
+    Evaluation always uses the natural dataset distribution.
+    """
+    if not shuffle or human_batch_fraction <= 0.0:
+        pending: List[Dict[str, Any]] = []
+        for item in _iter_shard_samples(root, split, shuffle, human=human_only):
             pending.append(item)
             if len(pending) >= batch_size:
                 yield pending
                 pending = []
+        if pending:
+            yield pending
+        return
+
+    fraction = float(human_batch_fraction)
+    if not 0.0 < fraction < 1.0:
+        raise ValueError("human_batch_fraction must be between 0 and 1")
+    human_samples = list(_iter_shard_samples(root, split, shuffle=True, human=True))
+    if not human_samples:
+        # Keep the standard path for teacher-only datasets (including small
+        # unit-test fixtures).
+        yield from _iter_shard_batches(root, split, batch_size, shuffle, 0.0)
+        return
+    human_per_batch = min(batch_size - 1, max(1, round(batch_size * fraction)))
+    teacher_per_batch = batch_size - human_per_batch
+    if teacher_per_batch <= 0:
+        raise ValueError("batch_size must leave room for teacher samples")
+    rng = random.Random(20260901)
+    human_offset = 0
+    pending = []
+    for item in _iter_shard_samples(root, split, shuffle=True, human=False):
+        pending.append(item)
+        if len(pending) < teacher_per_batch:
+            continue
+        batch = pending
+        pending = []
+        batch.extend(human_samples[(human_offset + index) % len(human_samples)] for index in range(human_per_batch))
+        human_offset += human_per_batch
+        rng.shuffle(batch)
+        yield batch
     if pending:
-        yield pending
+        batch = pending
+        batch.extend(human_samples[(human_offset + index) % len(human_samples)] for index in range(human_per_batch))
+        rng.shuffle(batch)
+        yield batch
 
 
 def _targets(samples: Sequence[Dict[str, Any]], action_dim: int, device: torch.device) -> torch.Tensor:
@@ -58,6 +119,8 @@ def _run_epoch(
     batch_size: int,
     device: torch.device,
     train: bool,
+    human_batch_fraction: float = 0.0,
+    human_only: bool | None = None,
 ) -> Dict[str, float]:
     network.train(mode=train)
     totals = {
@@ -76,7 +139,14 @@ def _run_epoch(
     batch_index = 0
     started_at = time.monotonic()
     planner_config = network.planner_config
-    for samples in _iter_shard_batches(dataset_root, split, batch_size, shuffle=train):
+    for samples in _iter_shard_batches(
+        dataset_root,
+        split,
+        batch_size,
+        shuffle=train,
+        human_batch_fraction=human_batch_fraction if train else 0.0,
+        human_only=human_only,
+    ):
         batch_index += 1
         bundles = pad_bundle_batch([item["planner_bundle"] for item in samples], device=device, planner_config=planner_config)
         phase_indices = torch.tensor([int(item.get("phase_index", 0)) for item in samples], dtype=torch.long, device=device)
@@ -147,11 +217,12 @@ def _run_epoch(
 def pretrain(
     dataset_dir: str,
     output_dir: str,
-    epochs: int = 12,
+    epochs: int = 3,
     batch_size: int = 16,
     learning_rate: float = 3e-4,
     allow_small_dataset: bool = False,
     random_seed: int = 20260901,
+    human_batch_fraction: float = 0.125,
 ) -> Dict[str, Any]:
     runtime_paths = initialize_v2_runtime()
     output = Path(output_dir).expanduser().resolve()
@@ -189,6 +260,10 @@ def pretrain(
         raise RuntimeError(f"v2 pretraining requires at least 100000 teacher samples; found {teacher_total}")
     if not allow_small_dataset and human_total < 100:
         raise RuntimeError(f"v2 pretraining requires at least 100 human labels; found {human_total}")
+    if human_total and not 0.0 < float(human_batch_fraction) < 1.0:
+        raise ValueError("human_batch_fraction must be between 0 and 1 when human labels are present")
+    if human_total and int(batch_size) < 2:
+        raise ValueError("batch_size must be at least 2 when human labels are present")
 
     config = AgentConfig.from_env()
     network = TerraformingMarsNetwork(config)
@@ -205,12 +280,29 @@ def pretrain(
     for epoch in range(1, max(1, int(epochs)) + 1):
         epoch_started_at = time.monotonic()
         print(f"[pretrain] starting epoch {epoch}/{max(1, int(epochs))}", flush=True)
-        train_metrics = _run_epoch(network, optimizer, store.root, "train", batch_size, device, train=True)
+        train_metrics = _run_epoch(
+            network,
+            optimizer,
+            store.root,
+            "train",
+            batch_size,
+            device,
+            train=True,
+            human_batch_fraction=human_batch_fraction,
+        )
         with torch.no_grad():
             validation_metrics = _run_epoch(network, optimizer, store.root, "validation", batch_size, device, train=False)
         row = {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}
         history.append(row)
-        score = float(validation_metrics["top1"] + validation_metrics["top3"])
+        # Treat human validation quality as a first-class selection objective.
+        # The raw aggregate is dominated by teacher rows (often >99% of the
+        # dataset), which previously chose checkpoints that missed the human
+        # gate despite excellent teacher scores.
+        score = float(
+            validation_metrics["teacher_top1"]
+            + validation_metrics["teacher_top3"]
+            + validation_metrics["human_top3"]
+        )
         if score > best_score:
             best_score = score
             torch.save(
@@ -221,6 +313,7 @@ def pretrain(
                     "config": asdict(config),
                     "fresh_weights": True,
                     "validation": validation_metrics,
+                    "selection_score": score,
                     "dataset_counts": counts,
                 },
                 output / "bc_best.pth",
@@ -237,10 +330,14 @@ def pretrain(
     network.load_state_dict(best_checkpoint["network_state_dict"])
     with torch.no_grad():
         test_metrics = _run_epoch(network, optimizer, store.root, "test", batch_size, device, train=False)
-        human_eval_parts = [
-            _run_epoch(network, optimizer, store.root, split, batch_size, device, train=False)
-            for split in ("train", "validation", "test")
-        ]
+        human_eval_parts = (
+            [
+                _run_epoch(network, optimizer, store.root, split, batch_size, device, train=False, human_only=True)
+                for split in ("train", "validation", "test")
+            ]
+            if human_total
+            else []
+        )
     human_eval_count = sum(int(part["human_samples"]) for part in human_eval_parts)
     human_top3_all = (
         sum(float(part["human_top3"]) * int(part["human_samples"]) for part in human_eval_parts) / human_eval_count
@@ -259,6 +356,8 @@ def pretrain(
         "teacher_samples": teacher_total,
         "human_samples": human_total,
         "random_seed": int(random_seed),
+        "epochs": max(1, int(epochs)),
+        "human_batch_fraction": float(human_batch_fraction),
         "history": history,
         "test": test_metrics,
         "human_evaluation": {"samples": human_eval_count, "top3": human_top3_all},
@@ -272,20 +371,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Pretrain a fresh TFM RL v2 policy from teacher data")
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--epochs", type=int, default=12)
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument(
+        "--human-batch-fraction",
+        type=float,
+        default=0.125,
+        help="Training fraction reserved for repeated human examples (default: 0.125)",
+    )
     parser.add_argument("--seed", type=int, default=20260901)
     parser.add_argument("--allow-small-dataset", action="store_true", help="Testing only; bypass 100k/100-label gates")
     args = parser.parse_args()
     report = pretrain(
         args.dataset,
         args.output,
-        args.epochs,
-        args.batch_size,
-        args.learning_rate,
-        args.allow_small_dataset,
-        args.seed,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        allow_small_dataset=args.allow_small_dataset,
+        random_seed=args.seed,
+        human_batch_fraction=args.human_batch_fraction,
     )
     print(json.dumps(report["test"], indent=2), flush=True)
 

@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from training.teacher_dataset import SCHEMA_VERSION, TeacherDatasetStore, split_for_episode
-from training.v2_pretrain import pretrain
+from training.v2_pretrain import _iter_shard_batches, pretrain
 
 
 def _bundle() -> dict:
@@ -52,6 +52,31 @@ def _sample(seed: int, game_id: str) -> dict:
         "vp": 100.0,
         "vp_mean": 80.0,
     }
+
+
+def test_training_batches_repeat_human_rows_without_dropping_teacher_rows(tmp_path: Path) -> None:
+    store = TeacherDatasetStore(str(tmp_path / "dataset"))
+    split_keys = {}
+    for idx in range(100):
+        key = f"balanced:{idx}"
+        split_keys.setdefault(split_for_episode(key), key)
+        if "train" in split_keys:
+            break
+    train_key = split_keys["train"]
+    teacher_rows = [_sample(2000, "teacher-game") for _ in range(6)]
+    for index, row in enumerate(teacher_rows):
+        row["sample_id"] = f"teacher-{index}"
+    human_row = _sample(2001, "human-game")
+    human_row.update({"sample_id": "human-0", "source": "human.listener.v1", "sample_weight": 4.0})
+    store.append_episode("teacher-batch", teacher_rows, split_key=train_key)
+    store.append_episode("human-batch", [human_row], split_key=train_key)
+
+    batches = list(_iter_shard_batches(store.root, "train", batch_size=4, shuffle=True, human_batch_fraction=0.25))
+
+    assert len(batches) == 2
+    assert all(len(batch) == 4 for batch in batches)
+    assert all(sum(str(row["source"]).startswith("human") for row in batch) == 1 for batch in batches)
+    assert sum(not str(row["source"]).startswith("human") for batch in batches for row in batch) == 6
 
 
 def test_small_pretrain_writes_v2_checkpoint_and_refuses_implicit_overwrite(

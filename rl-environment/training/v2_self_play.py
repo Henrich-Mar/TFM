@@ -91,6 +91,17 @@ class V2SelfPlayRunner:
         self.learner.config.train_from_self_play = True
         self.learner.ppo_enable = True
         self.learner.deterministic_actions = False
+        if resume_state and self.learner.rollout_shard_store is not None:
+            quarantine = self.learner.rollout_shard_store.quarantine_incompatible(
+                expected_schema_version=str(self.learner.state_schema_version or "v1"),
+                policy_version=int(self.learner.policy_version),
+            )
+            if int(quarantine["steps"]) > 0:
+                print(
+                    f"[selfplay] quarantined stale rollouts steps={quarantine['steps']} "
+                    f"shards={quarantine['shards']} policy_version={self.learner.policy_version}",
+                    flush=True,
+                )
         self.stage = int(resume_state.get("stage", 0) or 0)
         self.seed_cursor = int(resume_state.get("seed_cursor", seed) or seed)
         benchmark_seed_payload = json.loads(
@@ -121,14 +132,23 @@ class V2SelfPlayRunner:
         self.cluster = GameServerCluster(servers)
         self.cluster.base_game_options = _load_stage_options(self.stage)
         self.manager = TournamentManager(self.cluster)
-        if self.stage >= 1:
-            self._refresh_frozen_pools()
+        # Stage 0 also trains against the protected BC champion. This prevents
+        # the learner from specializing against random/teacher opponents while
+        # regressing on the champion gate.
+        self._refresh_frozen_pools()
         self._write_progress("started")
         print(
             f"[selfplay] started stage={self.stage} decisions={self._total_decisions()} "
-            f"next_benchmark={self.next_benchmark_decision} concurrency={self.selfplay_concurrency}",
+            f"next_benchmark={self.next_benchmark_decision} concurrency={self.selfplay_concurrency} "
+            f"server_slots={len(self.cluster.servers) * max(1, self.cluster.max_active_games_per_server)} "
+            f"ppo_lr={self.learner.optimizer.param_groups[0]['lr']:.6g}",
             flush=True,
         )
+        if self.stage == 0:
+            print(
+                "[selfplay] stage=0 opponent_mix=champion:50%,teacher:25%,random:25%",
+                flush=True,
+            )
 
     def _refresh_frozen_pools(self) -> None:
         self.champion_pool = [
@@ -172,13 +192,37 @@ class V2SelfPlayRunner:
         temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(temporary, self.progress_path)
 
+    def _save_resume_state(self, reports: List[Dict]) -> None:
+        """Atomically refresh the durable learner and self-play state."""
+        learner_temporary = self.latest_learner_path.with_name(self.latest_learner_path.name + ".tmp")
+        self.learner.save_model(str(learner_temporary))
+        os.replace(learner_temporary, self.latest_learner_path)
+        state = {
+            "schema_version": "tfm_rl_v2.selfplay_state.v1",
+            "stage": self.stage,
+            "decisions": self._total_decisions(),
+            "seed_cursor": self.seed_cursor,
+            "policy_version": self.learner.policy_version,
+            "champion": str(self.champion_path),
+            "history": self.history,
+            "reports": reports,
+        }
+        state_temporary = self.state_path.with_name(self.state_path.name + ".tmp")
+        state_temporary.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        os.replace(state_temporary, self.state_path)
+
     def _opponents(self, game_seed: int) -> List[RLAgent]:
         opponents: List[RLAgent] = []
         rng = random.Random(int(game_seed) ^ 0x5F3759DF)
         for seat in range(3):
             draw = rng.random()
             if self.stage == 0:
-                opponent = self.teacher_pool[seat] if draw < 0.5 else self.random_pool[seat]
+                if draw < 0.25:
+                    opponent = self.random_pool[seat]
+                elif draw < 0.50:
+                    opponent = self.teacher_pool[seat]
+                else:
+                    opponent = self.champion_pool[seat]
                 if isinstance(opponent.decision_policy, RandomLegalPolicy):
                     opponent.decision_policy.rng.seed(int(game_seed) + seat)
                 opponents.append(opponent)
@@ -296,6 +340,15 @@ class V2SelfPlayRunner:
             while self._total_decisions() < max_decisions:
                 self._write_progress("batch_running")
                 results = await self._run_selfplay_batch()
+                # A completed batch has released every cluster slot. Rebooting
+                # the tmpfs-backed dedicated servers here purges all retained
+                # remote games while PPO work proceeds on the GPU.
+                recycle_task = None
+                if self.cluster.rl_recycle_enabled:
+                    recycle_task = asyncio.create_task(
+                        self.cluster.recycle_idle_servers(),
+                        name="v2-idle-server-recycle",
+                    )
                 decisions = self._total_decisions()
                 rollout_size = self.learner.get_rollout_buffer_size()
                 last_game, last_game_elapsed = results[-1]
@@ -323,6 +376,7 @@ class V2SelfPlayRunner:
                         game_seed=last_game.seed,
                         game_elapsed=last_game_elapsed,
                     )
+                    self._save_resume_state(reports)
                 if decisions >= self.next_benchmark_decision:
                     print(
                         f"[selfplay] benchmark starting decisions={decisions} stage={self.stage}",
@@ -331,17 +385,7 @@ class V2SelfPlayRunner:
                     report = await self._evaluate_and_promote(decisions)
                     reports.append(report)
                     self.next_benchmark_decision += self.benchmark_interval
-                    state = {
-                        "schema_version": "tfm_rl_v2.selfplay_state.v1",
-                        "stage": self.stage,
-                        "decisions": decisions,
-                        "seed_cursor": self.seed_cursor,
-                        "policy_version": self.learner.policy_version,
-                        "champion": str(self.champion_path),
-                        "history": self.history,
-                        "reports": reports,
-                    }
-                    self.state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+                    self._save_resume_state(reports)
                     self._write_progress(
                         "benchmark_completed",
                         game_seed=last_game.seed,
@@ -352,13 +396,26 @@ class V2SelfPlayRunner:
                         f"promoted={report['promoted']}",
                         flush=True,
                     )
+                if recycle_task is not None:
+                    await recycle_task
             self._write_progress("completed")
             print(f"[selfplay] completed target decisions={self._total_decisions()}", flush=True)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self._write_progress("cancelled")
+            raise
         except Exception as exc:
             self._write_progress("failed", error=f"{type(exc).__name__}: {exc}")
             print(f"[selfplay] failed: {type(exc).__name__}: {exc}", flush=True)
             raise
         finally:
+            self._save_resume_state(reports)
+            # Covers a graceful stop between batches. The cluster refuses the
+            # request if any cancellation path has not yet released its slot.
+            if self.cluster.rl_recycle_enabled:
+                try:
+                    await self.cluster.recycle_idle_servers()
+                except Exception as exc:
+                    print(f"[selfplay] idle server recycle during shutdown failed: {exc}", flush=True)
             await self.cluster.close()
 
 

@@ -67,7 +67,11 @@ def _get_training_device() -> torch.device:
 def _is_cuda_oom(exc: BaseException) -> bool:
     if isinstance(exc, torch.cuda.OutOfMemoryError):
         return True
-    return "cuda out of memory" in str(exc).strip().lower()
+    message = str(exc).strip().lower()
+    # Depending on the CUDA/PyTorch/driver combination, allocation failures
+    # are reported either as "CUDA out of memory" or as the driver-level
+    # "CUDA driver error: out of memory".
+    return "out of memory" in message and ("cuda" in message or "cublas" in message)
 
 
 def _move_network_and_optimizer_to(

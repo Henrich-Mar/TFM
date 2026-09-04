@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 import os
+import time
 from pathlib import Path
 from statistics import mean, stdev
 from typing import Any, Dict, List, Optional
@@ -90,6 +91,13 @@ async def benchmark(
     candidate = _frozen_neural(checkpoint, "v2-candidate")
     seeds = _load_seeds(seeds_path)
     cluster = GameServerCluster([item.strip() for item in os.getenv("GAME_SERVERS", "localhost:8080").split(",") if item.strip()])
+    try:
+        requested_concurrency = int(os.getenv("BENCHMARK_CONCURRENCY", str(len(cluster.servers))))
+    except (TypeError, ValueError):
+        requested_concurrency = len(cluster.servers)
+    per_server_capacity = max(1, int(getattr(cluster, "max_active_games_per_server", 0) or 1))
+    available_server_slots = len(cluster.servers) * per_server_capacity
+    concurrency = max(1, min(len(seeds) * 4, available_server_slots, requested_concurrency))
     options_path = Path(__file__).resolve().parents[1] / f"game_options.v2_stage{int(stage)}.json"
     cluster.base_game_options = json.loads(options_path.read_text(encoding="utf-8"))
     manager = TournamentManager(cluster)
@@ -98,14 +106,41 @@ async def benchmark(
     pairwise_points = 0.0
     pairwise_trials = 0
     completed = 0
-    opponents = _baseline_agents(baseline, seeds[0], champion=champion)
-    all_agents = [candidate, *opponents]
+    # Each worker owns its baseline agents. This keeps RandomLegalPolicy RNG
+    # state deterministic while games run concurrently. The frozen candidate
+    # is safely shared, just like the learner in concurrent self-play.
+    opponent_pools = [
+        _baseline_agents(baseline, seeds[0] + worker_index, champion=champion)
+        for worker_index in range(concurrency)
+    ]
+    all_agents = [candidate, *(agent for pool in opponent_pools for agent in pool)]
+    total = len(seeds) * 4
+    benchmark_started_at = time.monotonic()
+    print(
+        f"[benchmark] started baseline={baseline} stage={stage} "
+        f"games={total} concurrency={concurrency} checkpoint={Path(checkpoint).name}",
+        flush=True,
+    )
     rejection_count_before = sum(
         int(agent.get_behavior_stats().get("policy_rejections", 0)) for agent in all_agents
     )
     try:
-        for seed in seeds:
-            for candidate_seat in range(4):
+        jobs = [
+            ((seed_index * 4) + candidate_seat + 1, seed, candidate_seat)
+            for seed_index, seed in enumerate(seeds)
+            for candidate_seat in range(4)
+        ]
+
+        async def _run_worker(worker_index: int) -> None:
+            nonlocal completed, pairwise_points, pairwise_trials
+            opponents = opponent_pools[worker_index]
+            for game_number, seed, candidate_seat in jobs[worker_index::concurrency]:
+                game_started_at = time.monotonic()
+                print(
+                    f"[benchmark] starting baseline={baseline} game={game_number}/{total} "
+                    f"seed={seed} candidate_seat={candidate_seat} worker={worker_index + 1}/{concurrency}",
+                    flush=True,
+                )
                 # Keep stochastic RandomLegal baselines reproducible across complete
                 # benchmark reruns instead of depending on prior games in this process.
                 for opponent_index, opponent in enumerate(opponents):
@@ -121,6 +156,11 @@ async def benchmark(
                     players_beginner=(int(stage) == 0),
                 )
                 if not bool(result.completed):
+                    print(
+                        f"[benchmark] incomplete baseline={baseline} game={game_number}/{total} "
+                        f"seed={seed} elapsed={time.monotonic() - game_started_at:.1f}s",
+                        flush=True,
+                    )
                     continue
                 completed += 1
                 candidate_row = next(row for row in result.players if str(row.get("agent_id")) == candidate.id)
@@ -135,9 +175,17 @@ async def benchmark(
                     opponent_rank = int(opponent_row.get("rank", 4) or 4)
                     pairwise_points += 1.0 if rank < opponent_rank else (0.5 if rank == opponent_rank else 0.0)
                     pairwise_trials += 1
+                running_wins = sum(1 for item in ranks if item == 1)
+                print(
+                    f"[benchmark] completed baseline={baseline} game={game_number}/{total} "
+                    f"seed={seed} rank={rank} vp={vp:.1f} margin={vp - table_mean:+.1f} "
+                    f"wins={running_wins}/{completed} elapsed={time.monotonic() - game_started_at:.1f}s "
+                    f"total_elapsed={time.monotonic() - benchmark_started_at:.1f}s",
+                    flush=True,
+                )
+        await asyncio.gather(*(_run_worker(worker_index) for worker_index in range(concurrency)))
     finally:
         await cluster.close()
-    total = len(seeds) * 4
     wins = sum(1 for rank in ranks if rank == 1)
     first_place_rate = wins / completed if completed else 0.0
     rejection_count = sum(
@@ -174,12 +222,20 @@ async def benchmark(
         "gate_passed": bool(gate_passed),
         "seeds": seeds,
         "seat_rotations": 4,
+        "concurrency": concurrency,
     }
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     checkpoint_token = Path(checkpoint).stem.replace(" ", "_")
     target = output / f"benchmark_{checkpoint_token}_stage{stage}_{baseline}.json"
     target.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(
+        f"[benchmark] complete baseline={baseline} stage={stage} "
+        f"completed={completed}/{total} first_place_rate={first_place_rate:.3f} "
+        f"pairwise_score={report['pairwise_score']:.3f} rejections={rejection_count} "
+        f"gate_passed={bool(gate_passed)} elapsed={time.monotonic() - benchmark_started_at:.1f}s",
+        flush=True,
+    )
     return report
 
 

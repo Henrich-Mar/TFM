@@ -66,7 +66,21 @@ def can_generate_card_metadata(root: Optional[Path] = None) -> bool:
 
 def ensure_card_metadata(root: Optional[Path] = None, quiet: bool = False) -> Path:
     base = Path(root) if root is not None else repo_root()
+    configured_path = str(os.getenv("TM_CARD_METADATA_PATH", "") or "").strip()
+    if configured_path:
+        configured_metadata_path = Path(configured_path).expanduser()
+        if metadata_has_requirements(configured_metadata_path):
+            if not quiet:
+                logger.info("Using metadata configured by TM_CARD_METADATA_PATH: %s", configured_metadata_path)
+            return configured_metadata_path
     metadata_path = card_metadata_path(base)
+    # A validated local snapshot is sufficient for inference. Prefer it to a
+    # refresh so standalone runs do not require a particular TypeScript export
+    # layout merely because a checkout is present.
+    if metadata_has_requirements(metadata_path):
+        if not quiet:
+            logger.info("Using existing card metadata with requirements: %s", metadata_path)
+        return metadata_path
     tm_root = terraforming_mars_root(base)
     generator_path = generator_script_path(base)
 
@@ -77,11 +91,6 @@ def ensure_card_metadata(root: Optional[Path] = None, quiet: bool = False) -> Pa
         subprocess.run(command, cwd=str(base), check=True)
         if not metadata_has_requirements(metadata_path):
             raise RuntimeError(f"Generated metadata at {metadata_path} does not include requirements")
-        return metadata_path
-
-    if metadata_has_requirements(metadata_path):
-        if not quiet:
-            logger.info("Using existing card metadata with requirements: %s", metadata_path)
         return metadata_path
 
     missing_bits = []

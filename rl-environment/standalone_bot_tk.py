@@ -3,6 +3,7 @@ Tkinter launcher for standalone_bot.py.
 """
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -10,6 +11,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 
 class StandaloneBotLauncher(tk.Tk):
@@ -20,6 +22,7 @@ class StandaloneBotLauncher(tk.Tk):
         self.minsize(860, 620)
 
         self._script_dir = os.path.abspath(os.path.dirname(__file__))
+        self._repo_root = os.path.abspath(os.path.join(self._script_dir, ".."))
         self._bot_script = os.path.join(self._script_dir, "standalone_bot.py")
         self._proc: Optional[subprocess.Popen] = None
         self._line_queue: "queue.Queue[str]" = queue.Queue()
@@ -31,8 +34,10 @@ class StandaloneBotLauncher(tk.Tk):
         self.game_url_var = tk.StringVar(value="")
         self.game_id_var = tk.StringVar(value="")
         self.player_name_var = tk.StringVar(value="")
-        self.checkpoint_var = tk.StringVar(value="")
-        self.models_var = tk.StringVar(value=os.path.abspath(os.path.join(self._script_dir, "..", "rl-models")))
+        default_checkpoint = os.path.join(self._repo_root, "rl-v2", "checkpoints", "candidate_000275219.pth")
+        self.checkpoint_var = tk.StringVar(value=default_checkpoint if os.path.isfile(default_checkpoint) else "")
+        self.models_var = tk.StringVar(value=os.path.join(self._repo_root, "rl-v2", "checkpoints"))
+        self.runtime_var = tk.StringVar(value="Host Python (local)")
         self.min_delay_var = tk.StringVar(value="1000")
         self.poll_interval_var = tk.StringVar(value="1000")
         self.timeout_var = tk.StringVar(value="60")
@@ -57,10 +62,19 @@ class StandaloneBotLauncher(tk.Tk):
         row = self._add_entry(top, row, "Game URL (optional)", self.game_url_var)
         row = self._add_entry(top, row, "Game ID (optional)", self.game_id_var)
         row = self._add_entry(top, row, "Player Name (optional)", self.player_name_var)
+        ttk.Label(top, text="Runtime").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        runtime_combo = ttk.Combobox(
+            top,
+            textvariable=self.runtime_var,
+            values=["Host Python (local)", "Docker (optional)"],
+            state="readonly",
+        )
+        runtime_combo.grid(row=row, column=1, columnspan=2, sticky="ew", pady=(6, 0))
+        row += 1
         row = self._add_entry_with_button(
             top,
             row,
-            "Checkpoint (optional)",
+            "Checkpoint",
             self.checkpoint_var,
             "Browse",
             self._pick_checkpoint,
@@ -159,6 +173,32 @@ class StandaloneBotLauncher(tk.Tk):
         self.min_delay_var.set(str(delay_ms))
         return delay_ms
 
+    def _container_path(self, host_path: str) -> str:
+        """Map a project file to its location in the rl-coordinator container."""
+        absolute = os.path.abspath(host_path)
+        relative = os.path.relpath(absolute, self._repo_root)
+        if relative == ".." or relative.startswith(f"..{os.sep}"):
+            raise ValueError("Docker runtime can only use checkpoints inside this project.")
+        parts = relative.split(os.sep)
+        if parts[0].lower() == "rl-v2":
+            return "/app/v2/" + "/".join(parts[1:])
+        if parts[0].lower() == "rl-environment":
+            return "/app/" + "/".join(parts[1:])
+        raise ValueError("Docker runtime checkpoint must be under rl-v2 or rl-environment.")
+
+    @staticmethod
+    def _docker_host_url(value: str) -> str:
+        """Make a host-local game-server URL reachable from Docker Desktop."""
+        raw = value.strip()
+        if not raw:
+            return raw
+        parsed = urlsplit(raw)
+        if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return raw
+        hostname = "host.docker.internal"
+        netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
     def _build_command(self):
         if not os.path.isfile(self._bot_script):
             raise FileNotFoundError(f"Cannot find bot script: {self._bot_script}")
@@ -170,42 +210,78 @@ class StandaloneBotLauncher(tk.Tk):
             raise ValueError("Provide Player URL, or Base URL + Player ID.")
 
         delay_ms = self._validate_rate_limit()
-        cmd = [sys.executable, self._bot_script]
+        bot_args = []
 
         if player_url:
-            cmd.extend(["--player-url", player_url])
+            bot_args.extend(["--player-url", player_url])
         if base_url:
-            cmd.extend(["--base-url", base_url])
+            bot_args.extend(["--base-url", base_url])
         if player_id:
-            cmd.extend(["--player-id", player_id])
+            bot_args.extend(["--player-id", player_id])
 
         game_url = self.game_url_var.get().strip()
         if game_url:
-            cmd.extend(["--game-url", game_url])
+            bot_args.extend(["--game-url", game_url])
         game_id = self.game_id_var.get().strip()
         if game_id:
-            cmd.extend(["--game-id", game_id])
+            bot_args.extend(["--game-id", game_id])
         player_name = self.player_name_var.get().strip()
         if player_name:
-            cmd.extend(["--player-name", player_name])
+            bot_args.extend(["--player-name", player_name])
 
         checkpoint = self.checkpoint_var.get().strip()
         if checkpoint:
-            cmd.extend(["--checkpoint", checkpoint])
+            bot_args.extend(["--checkpoint", checkpoint])
 
         models = self.models_var.get().strip()
         if models:
-            cmd.extend(["--models", models])
+            bot_args.extend(["--models", models])
 
         poll = self.poll_interval_var.get().strip() or "1000"
         timeout = self.timeout_var.get().strip() or "60"
         level = self.log_level_var.get().strip() or "INFO"
 
-        cmd.extend(["--min-action-delay-ms", str(delay_ms)])
-        cmd.extend(["--poll-interval-ms", poll])
-        cmd.extend(["--request-timeout-sec", timeout])
-        cmd.extend(["--log-level", level])
-        return cmd
+        bot_args.extend(["--min-action-delay-ms", str(delay_ms)])
+        bot_args.extend(["--poll-interval-ms", poll])
+        bot_args.extend(["--request-timeout-sec", timeout])
+        bot_args.extend(["--log-level", level])
+
+        if self.runtime_var.get() == "Host Python (local)":
+            try:
+                __import__("rust_tfm_rl")
+            except Exception as exc:
+                raise RuntimeError(
+                    "Local inference needs the rust_tfm_rl extension. "
+                    "Follow RL-V2-LIVE-INFERENCE.md section 'One-time local setup', "
+                    "then restart this launcher."
+                ) from exc
+            return [sys.executable, self._bot_script, *bot_args]
+
+        if not checkpoint:
+            raise ValueError("Choose an RL-v2 checkpoint when using the Docker runtime.")
+        if not os.path.isfile(checkpoint):
+            raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint}")
+        docker = shutil.which("docker") or "docker"
+        hard_compose = os.path.join(self._repo_root, "docker-compose.rl_hard.yml")
+        v2_compose = os.path.join(self._repo_root, "docker-compose.rl_v2.yml")
+        for compose_file in (hard_compose, v2_compose):
+            if not os.path.isfile(compose_file):
+                raise FileNotFoundError(f"Cannot find compose file: {compose_file}")
+
+        translated_args = list(bot_args)
+        for flag in ("--player-url", "--base-url", "--game-url"):
+            if flag in translated_args:
+                index = translated_args.index(flag) + 1
+                translated_args[index] = self._docker_host_url(translated_args[index])
+        for flag in ("--checkpoint", "--models"):
+            if flag in translated_args:
+                index = translated_args.index(flag) + 1
+                translated_args[index] = self._container_path(translated_args[index])
+        return [
+            docker, "compose", "-f", hard_compose, "-f", v2_compose,
+            "run", "--rm", "--no-deps", "-e", "TFM_RL_V2=1",
+            "rl-coordinator", "python", "standalone_bot.py", *translated_args,
+        ]
 
     def _start_bot(self):
         if self._proc and self._proc.poll() is None:

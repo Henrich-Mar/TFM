@@ -3,6 +3,7 @@
 /rl-v2
 /rl-v3
 /rl-v3.1
+/rl-v3.2
 __pycache__
 *.log
 /docker-compose.rl_cloud.generated.yml

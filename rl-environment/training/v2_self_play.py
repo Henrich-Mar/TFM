@@ -20,6 +20,14 @@ from training.v2_benchmark import benchmark
 from v2_runtime import initialize_v2_runtime
 
 
+def _pretrain_report_allows_ppo(report_path: Path) -> bool:
+    """Read reports written by either Python or Windows PowerShell."""
+    if not report_path.is_file():
+        return False
+    payload = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    return bool(payload.get("ppo_gate_passed", False))
+
+
 def _frozen_checkpoint_agent(path: str, agent_id: str) -> RLAgent:
     agent = RLAgent(agent_id=agent_id)
     agent.load_model(path)
@@ -83,7 +91,7 @@ class V2SelfPlayRunner:
         for path in (self.checkpoints, self.benchmarks, self.metrics):
             path.mkdir(parents=True, exist_ok=True)
         report_path = Path(bc_checkpoint).with_name("pretrain_report.json")
-        if not report_path.is_file() or not bool(json.loads(report_path.read_text(encoding="utf-8")).get("ppo_gate_passed", False)):
+        if not _pretrain_report_allows_ppo(report_path):
             raise RuntimeError("PPO is blocked until the BC pretrain_report.json has ppo_gate_passed=true")
         self.state_path = self.metrics / "selfplay_state.json"
         self.latest_learner_path = self.checkpoints / "latest_learner.pth"

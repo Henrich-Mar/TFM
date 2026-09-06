@@ -693,6 +693,81 @@ def _hand_quality(cards: List[Dict[str, Any]], player: Dict[str, Any]) -> float:
     return float(sum(top_k) / max(1, len(top_k)))
 
 
+def _card_purchase_prompt(prompt: Dict[str, Any]) -> bool:
+    """Whether this prompt commits MC to keep/buy project cards."""
+    if not isinstance(prompt, dict):
+        return False
+    title = _title_text(prompt.get("title", "")).lower()
+    button = str(prompt.get("buttonLabel", "") or "").lower()
+    if "sell patent" in title or "discard" in title:
+        return False
+    return (
+        "cards to buy" in title
+        or "card(s) to buy" in title
+        or ("buy" in title and "card" in title)
+        or ("keep" in title and "card" in title and button in ("keep", "buy", "confirm", "save"))
+    )
+
+
+def _selected_cards_from_names(cards: List[Dict[str, Any]], selected_names: Any) -> List[Dict[str, Any]]:
+    names = selected_names if isinstance(selected_names, list) else [selected_names]
+    by_name = {
+        _normalize_token(card.get("name")): card
+        for card in cards
+        if isinstance(card, dict) and _normalize_token(card.get("name"))
+    }
+    selected: List[Dict[str, Any]] = []
+    for raw_name in names:
+        name = _normalize_token(raw_name.get("name") if isinstance(raw_name, dict) else raw_name)
+        card = by_name.get(name)
+        if card is not None:
+            selected.append(card)
+    return selected
+
+
+def _card_purchase_selection(
+    prompt: Dict[str, Any],
+    response: Dict[str, Any],
+    before_player: Dict[str, Any],
+    after_player: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], float]:
+    """Extract cards paid for by a keep/buy response, including nested prompts."""
+    if not isinstance(prompt, dict) or not isinstance(response, dict):
+        return [], 0.0
+    prompt_type = _normalize_token(prompt.get("type"))
+    response_type = _normalize_token(response.get("type"))
+    if prompt_type == "or" and response_type == "or":
+        options = prompt.get("options", []) or []
+        try:
+            index = int(response.get("index", -1))
+        except (TypeError, ValueError):
+            index = -1
+        if 0 <= index < len(options) and isinstance(options[index], dict):
+            nested = response.get("response", {})
+            return _card_purchase_selection(options[index], nested, before_player, after_player)
+        return [], 0.0
+    if prompt_type == "and" and response_type == "and":
+        selected: List[Dict[str, Any]] = []
+        for nested_prompt, nested_response in zip(prompt.get("options", []) or [], response.get("responses", []) or []):
+            cards, _ = _card_purchase_selection(nested_prompt, nested_response, before_player, after_player)
+            selected.extend(cards)
+        fee = _safe_float(after_player.get("cardCost", before_player.get("cardCost", 3)), 3.0)
+        return selected, max(1.0, fee)
+    if prompt_type in ("initialcards", "selectinitialcards") and response_type == "initialcards":
+        selected: List[Dict[str, Any]] = []
+        for option, nested_response in zip(prompt.get("options", []) or [], response.get("responses", []) or []):
+            if not isinstance(option, dict) or not isinstance(nested_response, dict) or not _card_purchase_prompt(option):
+                continue
+            selected.extend(_selected_cards_from_names(option.get("cards", []) or [], nested_response.get("cards", [])))
+        fee = _safe_float(after_player.get("cardCost", before_player.get("cardCost", 3)), 3.0)
+        return selected, max(1.0, fee)
+    if prompt_type in ("card", "selectcard") and response_type == "card" and _card_purchase_prompt(prompt):
+        cards = _selected_cards_from_names(prompt.get("cards", []) or [], response.get("cards", []))
+        fee = _safe_float(before_player.get("cardCost", after_player.get("cardCost", 3)), 3.0)
+        return cards, max(1.0, fee)
+    return [], 0.0
+
+
 def _can_afford_card_now(card: Dict[str, Any], player: Dict[str, Any]) -> bool:
     cost = _safe_float(card.get('calculatedCost', card.get('cost', 0)), 0.0)
     if cost <= 0.0:
@@ -1500,6 +1575,14 @@ def calculate_step_reward_decomposition(
     persistent_sold = 0
     vp_cards_sold = 0
 
+    before_waiting_for_purchase = before_state.get("waitingFor", {}) if isinstance(before_state, dict) else {}
+    purchased_cards, purchase_card_cost = _card_purchase_selection(
+        before_waiting_for_purchase,
+        action_input if isinstance(action_input, dict) else {},
+        before_player,
+        after_player,
+    )
+
     # Reward tangible engine growth.
     before_tableau = before_player.get('tableau', []) or []
     after_tableau = after_player.get('tableau', []) or []
@@ -1527,7 +1610,12 @@ def calculate_step_reward_decomposition(
     milestones_awards_component += max(-0.12, min(0.35, 0.08 * milestone_delta))    # 0.035 â†’ 0.08 (2.3x)
 
     award_delta = _vp_component(after_player, 'awards') - _vp_component(before_player, 'awards')
-    milestones_awards_component += max(-0.15, min(0.40, 0.06 * award_delta))        # 0.030 â†’ 0.06 (2x)
+    # Funding can make the server's provisional award VP component jump even when
+    # the funder is currently outside the paid places.  The selected-award EV
+    # calculation below is the only dense signal for a funding decision.
+    funded_award_now = len(_owned_funded_awards(after_game, after_player)) > len(_owned_funded_awards(before_game, before_player))
+    if not funded_award_now:
+        milestones_awards_component += max(-0.15, min(0.40, 0.06 * award_delta))
 
     city_combo_delta = _vp_component(after_player, 'city') - _vp_component(before_player, 'city')
     greenery_delta = _vp_component(after_player, 'greenery') - _vp_component(before_player, 'greenery')
@@ -1540,7 +1628,10 @@ def calculate_step_reward_decomposition(
     before_hand = _extract_hand(before_state, before_player)
     after_hand = _extract_hand(after_state, after_player)
     hand_delta = _hand_quality(after_hand, after_player) - _hand_quality(before_hand, before_player)
-    other_component += max(-0.12, min(0.12, 0.20 * hand_delta))
+    # A bought card must not receive the generic hand-quality windfall.  Score
+    # each selected card against its actual acquisition fee instead.
+    if not purchased_cards:
+        other_component += max(-0.12, min(0.12, 0.20 * hand_delta))
 
     # Reward productive resource utilization pressure conversion.
     before_steel = _safe_float(before_player.get('steel', 0), 0.0)
@@ -1554,7 +1645,19 @@ def calculate_step_reward_decomposition(
     titanium_spent = max(0.0, before_titanium - after_titanium)
     mc_spent = max(0.0, before_mc - after_mc)
     utilization_reward = (0.015 * steel_spent) + (0.02 * titanium_spent) + (0.002 * min(mc_spent, 25.0))
+    if purchased_cards:
+        # Paying 3+ MC merely to keep a card is a commitment, not productive
+        # resource conversion.  Its value is handled by the selection signal.
+        utilization_reward = 0.0
     other_component += max(0.0, min(0.14, utilization_reward))
+
+    if purchased_cards:
+        # A selection should earn reward only when every extra card clears the
+        # opportunity cost of its 3/4/5-MC keep fee.  This deliberately has no
+        # count bonus: four mediocre cards are worse than one strong card.
+        quality_threshold = min(0.90, 0.60 + (0.05 * purchase_card_cost))
+        purchase_net_value = sum(_card_quality(card, before_player) - quality_threshold for card in purchased_cards)
+        other_component += max(-0.22, min(0.18, 0.14 * purchase_net_value))
 
     action_type = ''
     if isinstance(action_input, dict):

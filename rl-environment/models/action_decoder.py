@@ -10,7 +10,7 @@ import json
 import itertools
 
 from .rust_backend import get_rust_module
-from .planner_common import PlannerConfig, token_from_features
+from .planner_common import PlannerConfig, stable_identity_features, token_from_features
 
 logger = logging.getLogger(__name__)
 
@@ -726,6 +726,20 @@ def _is_card_selection_prompt(waiting_for: Dict[str, Any]) -> bool:
         or ('min' in waiting_for and 'max' in waiting_for)
     )
 
+
+def _is_paid_card_purchase_prompt(waiting_for: Dict[str, Any]) -> bool:
+    """True only for prompts that charge the player to keep project cards."""
+    title = _title_text(waiting_for.get('title', '')).lower()
+    button_label = str(waiting_for.get('buttonLabel', '') or '').lower()
+    if 'sell patent' in title or 'discard' in title:
+        return False
+    return (
+        'cards to buy' in title
+        or 'card(s) to buy' in title
+        or ('buy' in title and 'card' in title)
+        or ('keep' in title and 'card' in title and button_label in ('keep', 'buy', 'confirm', 'save'))
+    )
+
 def _score_card_for_selection(card: Dict[str, Any], player_state: Optional[Dict[str, Any]]) -> float:
     cost = float(_card_cost(card))
     vp = float(_card_vp(card))
@@ -768,6 +782,7 @@ def _enumerate_card_selection_masks(
     max_cards: int,
     player_state: Optional[Dict[str, Any]],
     limit: int = _CARD_SELECTION_MASK_LIMIT,
+    purchase_card_cost: float = 0.0,
 ) -> List[int]:
     if not cards:
         return []
@@ -788,6 +803,7 @@ def _enumerate_card_selection_masks(
         'minCards': _safe_int(min_cards, 0),
         'maxCards': _safe_int(max_cards, len(cards)),
         'playerState': player_state or {},
+        'purchaseCardCost': max(0.0, float(purchase_card_cost)),
     }
     combos = _rust_backend().enumerate_card_selection_combos(json.dumps(payload), max(1, int(limit)))
     masks: List[int] = []
@@ -816,7 +832,11 @@ def _decode_card_selection_mask_action(
     cards = waiting_for.get('cards', []) or []
     min_cards = _safe_int(waiting_for.get('min', 1), 1)
     max_cards = _safe_int(waiting_for.get('max', len(cards)), len(cards))
-    masks = _enumerate_card_selection_masks(cards, min_cards, max_cards, player_state, _CARD_SELECTION_MASK_LIMIT)
+    player = (player_state or {}).get('thisPlayer', {}) if isinstance(player_state, dict) else {}
+    purchase_card_cost = float(player.get('cardCost', 3) or 3) if _is_paid_card_purchase_prompt(waiting_for) else 0.0
+    masks = _enumerate_card_selection_masks(
+        cards, min_cards, max_cards, player_state, _CARD_SELECTION_MASK_LIMIT, purchase_card_cost,
+    )
     if 0 <= offset < len(masks):
         return int(masks[offset])
     return None
@@ -983,6 +1003,7 @@ def _startup_project_subset_scores(
     project_tag_counts: Dict[str, int],
     corp_tags: Dict[str, int],
     prelude_tags: Dict[str, int],
+    purchase_card_cost: float,
     limit: int,
 ) -> List[Tuple[float, List[str]]]:
     if not project_cards:
@@ -1025,8 +1046,11 @@ def _startup_project_subset_scores(
                 synergy_bonus += float(count) * (0.08 + (0.04 * corp_pull) + (0.02 * prelude_pull))
 
             diversity_bonus = 0.04 * float(len(combo_tag_counts))
-            keep_count_bonus = 0.03 * float(pick_count)
-            total = float(score_base + (0.70 * cheap_bonus) + synergy_bonus + diversity_bonus + keep_count_bonus)
+            # Initial project cards cost 3/4/5 MC each to keep.  Summing their
+            # individual upside without this commitment cost always selects the
+            # largest legal subset, even when it empties the corporation's cash.
+            commitment_penalty = 1.15 * max(1.0, float(purchase_card_cost)) * float(pick_count)
+            total = float(score_base + (0.70 * cheap_bonus) + synergy_bonus + diversity_bonus - commitment_penalty)
             signature = '|'.join(sorted(names))
             top_scored.append((total, names, signature))
 
@@ -1149,6 +1173,7 @@ def _enumerate_startup_plan_payloads(
                 project_tag_counts=project_tag_counts,
                 corp_tags=corp_tags,
                 prelude_tags=prelude_tags,
+                purchase_card_cost=float(corp_card_cost),
                 limit=64,
             )
             if not project_choices:
@@ -2855,6 +2880,12 @@ def _can_afford_card(player: Dict[str, Any], card: Dict[str, Any]) -> bool:
 class ActionDecoder:
     def __init__(self, planner_config: Optional[PlannerConfig] = None):
         self.planner_config = planner_config or PlannerConfig()
+        self.v3_enabled = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            configured_scale = float(os.getenv("V3_FEATURE_SCALE", "1"))
+        except (TypeError, ValueError):
+            configured_scale = 1.0
+        self.v3_feature_scale = max(0.0, min(configured_scale, 1.0)) if self.v3_enabled else 0.0
         # Action space mapping
         self.action_types = {
             'PLAY_CARD': 0,
@@ -3052,6 +3083,82 @@ class ActionDecoder:
             "project_name": str(project_name or '').strip(),
         }
 
+    def set_v3_feature_scale(self, value: float) -> None:
+        self.v3_feature_scale = max(0.0, min(float(value), 1.0)) if self.v3_enabled else 0.0
+
+    def _v3_named_action_features(
+        self,
+        player_state: Dict[str, Any],
+        family: str,
+        name: str,
+    ) -> List[float]:
+        if family not in ('fund_award', 'claim_milestone'):
+            return []
+        scale = self.v3_feature_scale
+        identity = stable_identity_features(name, width=6)
+        metrics = [0.0] * 8
+        if family == 'fund_award':
+            game = player_state.get('game', {}) or {}
+            player = player_state.get('thisPlayer', {}) or {}
+            own_color = str(player.get('color', '') or '').strip().lower()
+            award = next(
+                (
+                    item for item in (game.get('awards', []) or [])
+                    if isinstance(item, dict)
+                    and str(item.get('name', item.get('title', '')) or '').strip().lower() == str(name or '').strip().lower()
+                ),
+                None,
+            )
+            scores = [row for row in ((award or {}).get('scores', []) or []) if isinstance(row, dict)]
+            normalized: List[Tuple[str, float]] = []
+            own_score = 0.0
+            opp_best = 0.0
+            for row in scores:
+                color = str(row.get('playerColor', '') or '').strip().lower()
+                try:
+                    score = float(row.get('playerScore', row.get('score', 0)) or 0)
+                except (TypeError, ValueError):
+                    score = 0.0
+                if color:
+                    normalized.append((color, score))
+                if own_color and color == own_color:
+                    own_score = score
+                else:
+                    opp_best = max(opp_best, score)
+            projected = 0.0
+            if normalized and own_color:
+                normalized.sort(key=lambda pair: pair[1], reverse=True)
+                top_score = normalized[0][1]
+                top = [color for color, score in normalized if score == top_score]
+                if own_color in top:
+                    projected = 5.0
+                elif len(top) == 1:
+                    remaining = normalized[len(top):]
+                    if remaining:
+                        second_score = remaining[0][1]
+                        if own_color in [color for color, score in remaining if score == second_score]:
+                            projected = 2.0
+            funded_count = sum(
+                1 for item in (game.get('awards', []) or [])
+                if isinstance(item, dict) and (item.get('playerName') or item.get('playerColor'))
+            )
+            cost = [8.0, 14.0, 20.0][min(funded_count, 2)]
+            mc = max(0.0, float(player.get('megaCredits', 0) or 0))
+            generation = max(1.0, float(game.get('generation', 1) or 1))
+            timing = max(0.0, min((generation - 6.0) / 6.0, 1.0))
+            lead_confidence = max(0.0, min((own_score - opp_best + 2.0) / 6.0, 1.0))
+            metrics = [
+                min(max(own_score, 0.0) / 20.0, 1.0),
+                min(max(opp_best, 0.0) / 20.0, 1.0),
+                max(-1.0, min((own_score - opp_best) / 10.0, 1.0)),
+                min(projected / 5.0, 1.0),
+                min(cost / 20.0, 1.0),
+                min(mc / cost, 1.0),
+                timing,
+                max(0.0, min((1.0 - timing) * (1.0 - lead_confidence), 1.0)),
+            ]
+        return [scale * item for item in (identity + metrics)]
+
     def _build_action_token(
         self,
         player_state: Dict[str, Any],
@@ -3182,6 +3289,8 @@ class ActionDecoder:
             1.0 if 'milestone' in label_l else 0.0,
             1.0 if 'pass' in label_l else 0.0,
         ])
+        named_concept = award_name if family == 'fund_award' else milestone_name
+        features.extend(self._v3_named_action_features(player_state, family, named_concept))
         if family == 'select_space':
             space = space_features or {}
             features.extend([
@@ -3305,6 +3414,21 @@ class ActionDecoder:
 
         return False
 
+    def _is_standard_project_wasteful(self, project: Dict[str, Any], player_state: Dict[str, Any]) -> bool:
+        """Exclude standard projects that cannot advance their global parameter."""
+        game = (player_state or {}).get('game', {}) or {}
+        name = str((project or {}).get('name', '') or '').strip().lower()
+        if not name:
+            return False
+        # These are pure global-parameter standard projects.  The server can
+        # still expose them after their parameter is capped, which lets a policy
+        # spend actions forever instead of passing for production.
+        if 'asteroid' in name and _safe_int(game.get('temperature', -30), -30) >= 8:
+            return True
+        if 'aquifer' in name and _safe_int(game.get('oceans', 0), 0) >= 9:
+            return True
+        return False
+
     def build_initial_setup_response(self, player_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         waiting_for = player_state.get('waitingFor', {}) if player_state else {}
         input_type = waiting_for.get('type', '')
@@ -3387,6 +3511,7 @@ class ActionDecoder:
                         enabled_indices = [
                             j for j, card in enumerate(cards) 
                             if not card.get('isDisabled', False)
+                            and not self._is_standard_project_wasteful(card, player_state)
                         ]
                         if enabled_indices:
                             for j in enabled_indices:
@@ -3436,6 +3561,7 @@ class ActionDecoder:
                                 max_cards,
                                 player_state,
                                 _CARD_SELECTION_MASK_LIMIT,
+                                float(player.get('cardCost', 3) or 3) if _is_paid_card_purchase_prompt(option) else 0.0,
                             )
                             for j, _ in enumerate(masks):
                                 available_actions.append(self.action_types['SELECT_CARD_MASK'] + j)
@@ -3484,6 +3610,7 @@ class ActionDecoder:
                     enabled_cards = [
                         (i, card) for i, card in enumerate(cards)
                         if not card.get('isDisabled', False)
+                        and not self._is_standard_project_wasteful(card, player_state or {})
                     ]
                     for i, _ in enabled_cards:
                         available_actions.append(self.action_types['STANDARD_PROJECT'] + i)
@@ -3517,6 +3644,8 @@ class ActionDecoder:
                             max_cards,
                             player_state,
                             _CARD_SELECTION_MASK_LIMIT,
+                            float((player_state or {}).get('thisPlayer', {}).get('cardCost', 3) or 3)
+                            if _is_paid_card_purchase_prompt(waiting_for) else 0.0,
                         )
                         for i, _ in enumerate(masks):
                             available_actions.append(self.action_types['SELECT_CARD_MASK'] + i)
@@ -3539,6 +3668,7 @@ class ActionDecoder:
                     enabled_cards = [
                         (i, card) for i, card in enumerate(cards)
                         if not card.get('isDisabled', False)
+                        and not self._is_standard_project_wasteful(card, player_state or {})
                     ]
                     for i, _ in enabled_cards:
                         available_actions.append(self.action_types['STANDARD_PROJECT'] + i)
@@ -3558,6 +3688,8 @@ class ActionDecoder:
                             max_cards,
                             player_state,
                             _CARD_SELECTION_MASK_LIMIT,
+                            float((player_state or {}).get('thisPlayer', {}).get('cardCost', 3) or 3)
+                            if _is_paid_card_purchase_prompt(waiting_for) else 0.0,
                         )
                         for i, _ in enumerate(masks):
                             available_actions.append(self.action_types['SELECT_CARD_MASK'] + i)

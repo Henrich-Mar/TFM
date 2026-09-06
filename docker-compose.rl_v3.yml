@@ -1,0 +1,72 @@
+services:
+  tfm-server-1: &v3_server
+    environment:
+      - RL_ALLOW_FIXED_SEED=1
+      - RL_RECYCLE_ENABLED=1
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-rl-v3-local-recycle}
+      - GAME_CACHE=sweep=auto;eviction_age=2m;sweep_freq=1m
+      - MAX_GAME_DAYS=1
+  tfm-server-2: *v3_server
+  tfm-server-3: *v3_server
+  tfm-server-4: *v3_server
+
+  postgres:
+    environment:
+      - POSTGRES_DB=tfm_rl_v3
+    volumes:
+      - postgres_data_v3:/var/lib/postgresql/data
+
+  rl-coordinator:
+    restart: "no"
+    command: ["python", "-m", "training.v3_entrypoint"]
+    volumes:
+      - ./rl-environment:/app
+      - ./rl-v3:/app/v3
+      - ./rl-v2:/app/v2:ro
+      - ./card_metadata.json:/app/card_metadata.json:ro
+    environment:
+      - TFM_RL_V2=0
+      - TFM_RL_V3=1
+      - V3_RECYCLE_IDLE_SERVERS=0
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-rl-v3-local-recycle}
+      - TFM_RL_V3_ROOT=/app/v3
+      - V3_ALLOW_RESUME=0
+      - V3_ALLOW_V2_WARMSTART=0
+      - V3_FEATURE_SCALE=1.0
+      - V3_FEATURE_RAMP_DECISIONS=25000
+      - RESUME_TRAINING=0
+      - BOOTSTRAP_CHECKPOINT_PATH=
+      - RL_MODELS_DIR=/app/v3/models
+      - RL_CHECKPOINT_DIR=/app/v3/checkpoints
+      - PPO_ROLLOUT_SHARD_DIR=/app/v3/rollouts
+      - V3_TEACHER_DATASET_DIR=/app/v3/teacher-dataset
+      - V3_BENCHMARK_DIR=/app/v3/benchmarks
+      - V3_METRICS_DIR=/app/v3/metrics
+      - RL_LOG_DIR=/app/v3/logs
+      - POSTGRES_URL=postgresql://tfm:tfm_password@postgres:5432/tfm_rl_v3
+      - GAME_OPTIONS_FILE=/app/game_options.v3_stage1.json
+      - STATE_SCHEMA_VERSION=v3
+      - PPO_GAMMA=1.0
+      - PPO_GAE_LAMBDA=1.0
+      - PPO_SHAPING_INITIAL_COEF=0.0
+      - PPO_SHAPING_FINAL_COEF=0.0
+      - AGENT_MAX_EPISODE_STEPS=10000
+      - AGENT_STARTUP_AUTOSUBMIT=0
+      - AGENT_STARTUP_PLAN_SELECTION=best
+      - PPO_STRICT_ON_POLICY=1
+      - PPO_MINIBATCH_SIZE=128
+      - PPO_LEARNING_RATE=0.00005
+      - PPO_LR_MAX=0.00005
+      - SELFPLAY_CONCURRENCY=4
+      - BENCHMARK_CONCURRENCY=4
+      - MAX_ACTIVE_GAMES_PER_SERVER=1
+      - LEAGUE_ENABLE=0
+      - EVOLUTION_IMMIGRANT_RATIO=0.0
+      - FIXED_BENCHMARK_ENABLED=0
+      - AGENT_HIDDEN_SIZE=256
+      - AGENT_RECURRENT_SIZE=128
+      - AGENT_TRANSFORMER_HEADS=4
+      - AGENT_TRANSFORMER_LAYERS=2
+
+volumes:
+  postgres_data_v3:

@@ -995,6 +995,12 @@ class RLAgent:
             'timing_log_events': 0,
         }
 
+    def set_v3_feature_scale(self, value: float) -> None:
+        """Ramp V3-only observation features without changing network shapes."""
+        scale = max(0.0, min(float(value), 1.0))
+        self.state_encoder.set_v3_feature_scale(scale)
+        self.action_decoder.set_v3_feature_scale(scale)
+
     @staticmethod
     def build_env_config(base: Optional[AgentConfig] = None) -> AgentConfig:
         return AgentConfig.from_env(base=base)
@@ -2651,7 +2657,11 @@ class RLAgent:
             # teacher data claim a legal action family does not exist.
             return filtered if filtered else available_actions
 
-        return non_pass_actions
+        # Passing is a strategic choice, especially when capped global
+        # parameters require a production cycle before the remaining parameter
+        # can advance.  Do not remove a server-legal pass merely because a
+        # standard project or other non-pass action is present.
+        return available_actions
 
     def _bump_decision_stat(self, key: str, amount: int = 1):
         self.decision_stats[key] = int(self.decision_stats.get(key, 0)) + int(amount)
@@ -3096,6 +3106,7 @@ class RLAgent:
             "prompt_title": _title_text(waiting_for.get("title", "")),
             "turn_action_count": int(turn_action_count),
         }
+
         mismatches = {
             key: {"expected": expected.get(key), "actual": actual.get(key)}
             for key in actual
@@ -3914,7 +3925,7 @@ class RLAgent:
         vp_mean: Optional[float] = None,
     ) -> float:
         """Convert game outcome into a bounded terminal reward for policy updates."""
-        if _safe_env_bool("TFM_RL_V2", False):
+        if _safe_env_bool("TFM_RL_V2", False) or _safe_env_bool("TFM_RL_V3", False):
             return calculate_v2_terminal_reward(
                 rank=rank,
                 victory_points=vp,
@@ -4446,8 +4457,14 @@ class RLAgent:
     
     def save_model(self, path: str):
         """Save model to disk"""
+        if _safe_env_bool('TFM_RL_V3', False):
+            experiment_version = 'tfm-rl-v3'
+        elif _safe_env_bool('TFM_RL_V2', False):
+            experiment_version = 'tfm-rl-v2'
+        else:
+            experiment_version = 'legacy'
         torch.save({
-            'experiment_version': 'tfm-rl-v2' if _safe_env_bool('TFM_RL_V2', False) else 'legacy',
+            'experiment_version': experiment_version,
             'network_state_dict': self.network.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'config': asdict(self.config),
@@ -4467,7 +4484,14 @@ class RLAgent:
         except TypeError:
             # Backward compatibility for torch versions without weights_only argument.
             checkpoint = torch.load(path, map_location='cpu')
-        if _safe_env_bool('TFM_RL_V2', False) and checkpoint.get('experiment_version') != 'tfm-rl-v2':
+        checkpoint_version = checkpoint.get('experiment_version')
+        if _safe_env_bool('TFM_RL_V3', False):
+            allowed_versions = {'tfm-rl-v3'}
+            if _safe_env_bool('V3_ALLOW_V2_WARMSTART', False):
+                allowed_versions.add('tfm-rl-v2')
+            if checkpoint_version not in allowed_versions:
+                raise RuntimeError(f"TFM RL v3 refuses incompatible checkpoint marker {checkpoint_version!r}: {path}")
+        elif _safe_env_bool('TFM_RL_V2', False) and checkpoint_version != 'tfm-rl-v2':
             raise RuntimeError(f"TFM RL v2 refuses a checkpoint without the v2 marker: {path}")
         self.policy_version = int(checkpoint.get('policy_version', 0) or 0)
 

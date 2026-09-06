@@ -1,11 +1,29 @@
 from __future__ import annotations
 
 import os
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
+
+
+def stable_identity_features(value: Any, width: int = 6) -> List[float]:
+    """Return deterministic, process-stable identity features in [-1, 1].
+
+    Python's built-in hash is intentionally randomized per process.  These
+    compact digest features let a fixed-width token distinguish named board
+    concepts (awards, milestones, player colours) across training workers.
+    """
+    count = max(0, int(width))
+    if count == 0:
+        return []
+    normalized = str(value or "").strip().lower().encode("utf-8")
+    if not normalized:
+        return [0.0] * count
+    digest = hashlib.sha256(normalized).digest()
+    return [((float(digest[index % len(digest)]) / 127.5) - 1.0) for index in range(count)]
 
 
 def _safe_env_int(name: str, default: int) -> int:

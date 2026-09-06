@@ -136,3 +136,37 @@ def test_award_projection_accepts_player_score_field() -> None:
     )
     assert reward["milestones_awards_component"] > 0.0
 
+
+def test_projected_zero_award_funding_is_negative_at_every_cost() -> None:
+    for prior_funded_count, expected_cost in enumerate((8, 14, 20)):
+        before_awards = [
+            {
+                "name": f"Previously Funded {idx}",
+                "playerName": "Agent A",
+                "playerColor": "red",
+                "scores": [],
+            }
+            for idx in range(prior_funded_count)
+        ]
+        before_awards.append(
+            {
+                "name": "Thermalist",
+                "scores": [
+                    {"playerName": "Agent A", "playerColor": "red", "score": 2},
+                    {"playerName": "Agent B", "playerColor": "blue", "score": 8},
+                    {"playerName": "Agent C", "playerColor": "green", "score": 6},
+                ],
+            }
+        )
+        after_awards = [dict(award) for award in before_awards]
+        after_awards[-1].update({"playerName": "Agent A", "playerColor": "red"})
+        before_state = _build_state(generation=10, awards=before_awards)
+        after_state = _build_state(generation=10, awards=after_awards)
+        # Simulate the server's provisional award-VP jump that previously
+        # overwhelmed the selected-award penalty.
+        after_state["thisPlayer"]["victoryPointsBreakdown"]["awards"] = 5
+
+        reward = calculate_step_reward_decomposition(before_state, after_state, {"type": "option"})
+
+        assert expected_cost in (8, 14, 20)
+        assert reward["milestones_awards_component"] < 0.0

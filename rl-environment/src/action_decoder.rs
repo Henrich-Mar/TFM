@@ -14,6 +14,7 @@ pub struct CardSelectionPayload {
     pub max_cards: Option<usize>,
     pub player: Option<Value>,
     pub player_state: Option<Value>,
+    pub purchase_card_cost: Option<f32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -274,7 +275,13 @@ pub fn enumerate_card_selection_combos(payload: &CardSelectionPayload, limit: us
             for idx in &combo {
                 combo_score += *score_map.get(idx).unwrap_or(&0.0);
             }
-            combo_score += 0.03 * (pick_count as f32);
+            // Keeping a card has a 3/4/5-MC commitment cost.  Without this
+            // term, all individual card scores are positive and every top
+            // subset simply contains the maximum allowed number of cards.
+            let purchase_cost = payload.purchase_card_cost.unwrap_or(0.0).max(0.0);
+            if purchase_cost > 0.0 {
+                combo_score -= 1.15 * purchase_cost * (pick_count as f32);
+            }
             ranked.push((combo_score, pick_count, combo));
         }
     }

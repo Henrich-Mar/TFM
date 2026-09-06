@@ -47,7 +47,8 @@ def _random(agent_id: str, seed: int) -> RLAgent:
 
 
 def _load_stage_options(stage: int) -> Dict:
-    path = Path(__file__).resolve().parents[1] / f"game_options.v2_stage{int(stage)}.json"
+    version = "v3" if str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"} else "v2"
+    path = Path(__file__).resolve().parents[1] / f"game_options.{version}_stage{int(stage)}.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -60,13 +61,22 @@ class _SelfPlayGame:
 
 
 class V2SelfPlayRunner:
-    def __init__(self, bc_checkpoint: str, root: str, benchmark_interval: int = 25_000, seed: int = 100_000) -> None:
+    def __init__(
+        self,
+        bc_checkpoint: str,
+        root: str,
+        benchmark_interval: int = 25_000,
+        seed: int = 100_000,
+        initial_stage: Optional[int] = None,
+    ) -> None:
         self.paths = initialize_v2_runtime()
-        # Subsequent benchmark subprocess-equivalent calls are intentional v2 resumes.
-        os.environ["V2_ALLOW_RESUME"] = "1"
+        self.is_v3 = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        self.version = "v3" if self.is_v3 else "v2"
+        # Subsequent benchmark subprocess-equivalent calls are intentional resumes.
+        os.environ["V3_ALLOW_RESUME" if self.is_v3 else "V2_ALLOW_RESUME"] = "1"
         self.root = Path(root).expanduser().resolve()
         if self.root != Path(self.paths["root"]).resolve():
-            raise RuntimeError("--root must exactly match TFM_RL_V2_ROOT")
+            raise RuntimeError(f"--root must exactly match TFM_RL_{self.version.upper()}_ROOT")
         self.checkpoints = self.root / "checkpoints"
         self.benchmarks = self.root / "benchmarks"
         self.metrics = self.root / "metrics"
@@ -80,12 +90,12 @@ class V2SelfPlayRunner:
         resume_state: Dict = {}
         if self.state_path.is_file() != self.latest_learner_path.is_file():
             raise RuntimeError(
-                "incomplete v2 resume state: selfplay_state.json and latest_learner.pth must both exist"
+                f"incomplete {self.version} resume state: selfplay_state.json and latest_learner.pth must both exist"
             )
         if self.state_path.is_file() and self.latest_learner_path.is_file():
             resume_state = json.loads(self.state_path.read_text(encoding="utf-8"))
         learner_source = str(self.latest_learner_path) if resume_state else bc_checkpoint
-        self.learner = RLAgent(agent_id="v2-main-learner")
+        self.learner = RLAgent(agent_id=f"{self.version}-main-learner")
         self.learner.load_model(learner_source)
         self.learner.train_from_self_play = True
         self.learner.config.train_from_self_play = True
@@ -102,7 +112,10 @@ class V2SelfPlayRunner:
                     f"shards={quarantine['shards']} policy_version={self.learner.policy_version}",
                     flush=True,
                 )
-        self.stage = int(resume_state.get("stage", 0) or 0)
+        configured_initial_stage = 0 if initial_stage is None else int(initial_stage)
+        self.stage = int(resume_state.get("stage", configured_initial_stage) or 0)
+        if self.stage not in (0, 1):
+            raise ValueError(f"unsupported self-play stage: {self.stage}")
         self.seed_cursor = int(resume_state.get("seed_cursor", seed) or seed)
         benchmark_seed_payload = json.loads(
             (Path(__file__).resolve().parents[1] / "benchmark_seeds.v1.json").read_text(encoding="utf-8")
@@ -136,6 +149,7 @@ class V2SelfPlayRunner:
         # the learner from specializing against random/teacher opponents while
         # regressing on the champion gate.
         self._refresh_frozen_pools()
+        self._apply_v3_feature_scale()
         self._write_progress("started")
         print(
             f"[selfplay] started stage={self.stage} decisions={self._total_decisions()} "
@@ -163,6 +177,23 @@ class V2SelfPlayRunner:
             for idx in range(3)
         ] if self.history else []
 
+    def _current_v3_feature_scale(self) -> float:
+        if not getattr(self, "is_v3", False):
+            return 0.0
+        try:
+            ramp_decisions = max(1, int(os.getenv("V3_FEATURE_RAMP_DECISIONS", "25000")))
+        except (TypeError, ValueError):
+            ramp_decisions = 25_000
+        return max(0.0, min(float(self._total_decisions()) / float(ramp_decisions), 1.0))
+
+    def _apply_v3_feature_scale(self) -> None:
+        if not getattr(self, "is_v3", False):
+            return
+        scale = self._current_v3_feature_scale()
+        self.learner.set_v3_feature_scale(scale)
+        for agent in [*self.champion_pool, *self.historical_pool]:
+            agent.set_v3_feature_scale(scale)
+
     def _total_decisions(self) -> int:
         current_run = int(self.learner.get_behavior_stats().get("total_decisions", 0))
         return int(self.decision_offset + current_run)
@@ -175,7 +206,7 @@ class V2SelfPlayRunner:
         error: Optional[str] = None,
     ) -> None:
         payload = {
-            "schema_version": "tfm_rl_v2.selfplay_progress.v1",
+            "schema_version": f"tfm_rl_{self.version}.selfplay_progress.v1",
             "status": str(status),
             "stage": int(self.stage),
             "games": int(self.game_count),
@@ -188,6 +219,8 @@ class V2SelfPlayRunner:
             "error": error,
             "updated_at": time.time(),
         }
+        if self.is_v3:
+            payload["v3_feature_scale"] = self._current_v3_feature_scale()
         temporary = self.progress_path.with_name(self.progress_path.name + ".tmp")
         temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(temporary, self.progress_path)
@@ -198,7 +231,7 @@ class V2SelfPlayRunner:
         self.learner.save_model(str(learner_temporary))
         os.replace(learner_temporary, self.latest_learner_path)
         state = {
-            "schema_version": "tfm_rl_v2.selfplay_state.v1",
+            "schema_version": f"tfm_rl_{self.version}.selfplay_state.v1",
             "stage": self.stage,
             "decisions": self._total_decisions(),
             "seed_cursor": self.seed_cursor,
@@ -253,7 +286,7 @@ class V2SelfPlayRunner:
         started_at = time.monotonic()
         await self.manager._run_single_game(
             game.lineup,
-            tournament_id=f"v2_selfplay_stage{game.stage}_{game.seed}",
+            tournament_id=f"{getattr(self, 'version', 'v2')}_selfplay_stage{game.stage}_{game.seed}",
             game_seed=game.seed,
             players_beginner=(game.stage == 0),
         )
@@ -261,6 +294,7 @@ class V2SelfPlayRunner:
 
     async def _run_selfplay_batch(self) -> List[Tuple[_SelfPlayGame, float]]:
         """Run a bounded set of games against one frozen learner-policy version."""
+        self._apply_v3_feature_scale()
         games = [self._reserve_selfplay_game() for _ in range(self.selfplay_concurrency)]
         for game in games:
             print(

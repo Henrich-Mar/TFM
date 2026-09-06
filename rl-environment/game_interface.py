@@ -846,7 +846,8 @@ class GameServerCluster:
             5.0,
             min_value=0.5,
         )
-        self.rl_recycle_enabled = GameInstance._env_flag("V2_RECYCLE_IDLE_SERVERS", default=False)
+        recycle_env = "V3_RECYCLE_IDLE_SERVERS" if GameInstance._env_flag("TFM_RL_V3", default=False) else "V2_RECYCLE_IDLE_SERVERS"
+        self.rl_recycle_enabled = GameInstance._env_flag(recycle_env, default=False)
         self.rl_control_token = str(os.getenv("RL_CONTROL_TOKEN", "")).strip()
         self.rl_recycle_request_timeout_sec = self._parse_float_env(
             "V2_IDLE_SERVER_RECYCLE_REQUEST_TIMEOUT_SEC",

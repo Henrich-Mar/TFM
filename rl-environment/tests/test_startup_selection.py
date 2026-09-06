@@ -172,7 +172,7 @@ def test_startup_bundle_generator_respects_project_keep_legality(monkeypatch) ->
         assert set(project_cards).issubset(offered_project_names)
 
 
-def test_startup_decode_keeps_more_than_one_card_when_legal(monkeypatch) -> None:
+def test_startup_decode_selects_a_cost_aware_project_subset(monkeypatch) -> None:
     monkeypatch.setattr(action_decoder_module, "_CARD_META_CACHE", _corp_economics_metadata())
     waiting_for = _startup_waiting_for()
     player_state = _player_state(waiting_for)
@@ -188,4 +188,19 @@ def test_startup_decode_keeps_more_than_one_card_when_legal(monkeypatch) -> None
     assert startup_response.get("type") == "initialCards"
     assert len(_response_cards(startup_response, 0)) == 1
     assert len(_response_cards(startup_response, 1)) == 2
-    assert len(_response_cards(startup_response, 2)) > 1
+    selected_projects = _response_cards(startup_response, 2)
+    assert selected_projects
+    assert len(selected_projects) < len(waiting_for["options"][2]["cards"])
+
+
+def test_startup_plan_does_not_fill_the_full_keep_limit_with_mediocre_cards(monkeypatch) -> None:
+    monkeypatch.setattr(action_decoder_module, "_CARD_META_CACHE", _corp_economics_metadata())
+    waiting_for = _startup_waiting_for()
+    waiting_for["options"][2]["cards"] = [
+        {"name": f"Mediocre {idx}", "calculatedCost": 24}
+        for idx in range(10)
+    ]
+    plans = _enumerate_startup_plan_payloads(waiting_for, _player_state(waiting_for), max_plans=8)
+
+    assert plans
+    assert len(_response_cards(plans[0], 2)) == 0

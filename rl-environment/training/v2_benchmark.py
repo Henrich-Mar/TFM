@@ -88,7 +88,11 @@ async def benchmark(
     champion: Optional[str] = None,
 ) -> Dict[str, Any]:
     initialize_v2_runtime()
-    candidate = _frozen_neural(checkpoint, "v2-candidate")
+    is_v3 = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    version = "v3" if is_v3 else "v2"
+    candidate = _frozen_neural(checkpoint, f"{version}-candidate")
+    if is_v3:
+        candidate.set_v3_feature_scale(1.0)
     seeds = _load_seeds(seeds_path)
     cluster = GameServerCluster([item.strip() for item in os.getenv("GAME_SERVERS", "localhost:8080").split(",") if item.strip()])
     try:
@@ -98,7 +102,7 @@ async def benchmark(
     per_server_capacity = max(1, int(getattr(cluster, "max_active_games_per_server", 0) or 1))
     available_server_slots = len(cluster.servers) * per_server_capacity
     concurrency = max(1, min(len(seeds) * 4, available_server_slots, requested_concurrency))
-    options_path = Path(__file__).resolve().parents[1] / f"game_options.v2_stage{int(stage)}.json"
+    options_path = Path(__file__).resolve().parents[1] / f"game_options.{version}_stage{int(stage)}.json"
     cluster.base_game_options = json.loads(options_path.read_text(encoding="utf-8"))
     manager = TournamentManager(cluster)
     ranks: List[int] = []
@@ -151,7 +155,7 @@ async def benchmark(
                 lineup.insert(candidate_seat, candidate)
                 result = await manager._run_single_game(
                     lineup,
-                    tournament_id=f"v2_benchmark_{baseline}_{seed}_{candidate_seat}",
+                    tournament_id=f"{version}_benchmark_{baseline}_{seed}_{candidate_seat}",
                     game_seed=seed,
                     players_beginner=(int(stage) == 0),
                 )
@@ -201,7 +205,7 @@ async def benchmark(
     else:
         gate_passed = completed >= math.ceil(0.99 * total) and rejection_count == 0 and (pairwise_points / max(1, pairwise_trials)) >= 0.50
     report = {
-        "schema_version": "tfm_rl_v2.benchmark.v1",
+        "schema_version": f"tfm_rl_{version}.benchmark.v1",
         "checkpoint": str(Path(checkpoint).resolve()),
         "baseline": baseline,
         "stage": int(stage),

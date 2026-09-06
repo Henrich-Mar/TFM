@@ -16,6 +16,7 @@ from .planner_common import (
     empty_int_vector,
     empty_token_matrix,
     token_from_features,
+    stable_identity_features,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,12 +111,21 @@ class StateEncoder:
         self.tableau_limit = int(self.planner_config.tableau_limit)
         self.hand_limit = int(self.planner_config.hand_limit)
         self.opponent_limit = int(self.planner_config.opponent_limit)
+        self.v3_enabled = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            configured_scale = float(os.getenv("V3_FEATURE_SCALE", "1"))
+        except (TypeError, ValueError):
+            configured_scale = 1.0
+        self.v3_feature_scale = max(0.0, min(configured_scale, 1.0)) if self.v3_enabled else 0.0
 
         # Load authoritative card metadata first; derive common_cards from it when available
         self.card_metadata_by_name: Dict[str, Dict[str, Any]] = self._load_card_metadata()
         self.requirement_planner = RequirementPlanner(self.card_metadata_by_name)
         self.common_cards = self._get_common_cards(self.card_metadata_by_name)
         self.card_to_index = {card: i for i, card in enumerate(self.common_cards)}
+
+    def set_v3_feature_scale(self, value: float) -> None:
+        self.v3_feature_scale = max(0.0, min(float(value), 1.0)) if self.v3_enabled else 0.0
 
     def _space_type_lower(self, value: Any) -> str:
         return str(value or '').strip().lower()
@@ -458,12 +468,21 @@ class StateEncoder:
             opponent for opponent in players
             if not self._is_same_player(opponent, current_player)
         ]
+        own_public_vp = (
+            self.estimate_public_vp(player_state, current_player)
+            if self.v3_feature_scale > 0.0
+            else {}
+        )
         for opponent in opponents[:self.opponent_limit]:
             opp_vp = ((opponent.get('victoryPointsBreakdown', {}) or {}).get('total', 0) or 0)
-            add_world(4, self._encode_player_resources(opponent) + self._encode_player_production(opponent) + [
+            opponent_features = self._encode_player_resources(opponent) + self._encode_player_production(opponent) + [
                 min(len(opponent.get('tableau', []) or []) / 20.0, 1.0),
                 min(float(opp_vp) / 50.0, 1.0),
-            ])
+            ]
+            opponent_features.extend(
+                self._v3_opponent_features(game_state, opponent, own_public_vp)
+            )
+            add_world(4, opponent_features)
 
         for milestone_name in self._ALL_MILESTONES:
             add_world(5, self._milestone_token_features(game_state, current_player, milestone_name))
@@ -581,6 +600,180 @@ class StateEncoder:
             return 1.0
         return max(0.0, min(mc / cost, 1.0))
 
+    def estimate_public_vp(
+        self,
+        player_state: Dict[str, Any],
+        player: Dict[str, Any],
+    ) -> Dict[str, float]:
+        """Estimate a player's score only from information visible at the table.
+
+        This deliberately does not read an opponent's hidden VP breakdown.  It
+        reconstructs deterministic public points and reports unresolved dynamic
+        cards separately, so the policy can learn how trustworthy the estimate is.
+        """
+        game_state = player_state.get('game', {}) or {}
+        color = str(player.get('color', '') or '').strip().lower()
+        try:
+            terraform_rating = float(player.get('terraformRating', 20) or 20)
+        except Exception:
+            terraform_rating = 20.0
+
+        milestone_points = 0.0
+        for milestone in (game_state.get('milestones', []) or []):
+            if not isinstance(milestone, dict):
+                continue
+            owner = str(milestone.get('playerColor', '') or '').strip().lower()
+            if color and owner == color:
+                milestone_points += 5.0
+
+        spaces = self._all_board_spaces(game_state)
+        board_by_id = {
+            self._space_id(space): space
+            for space in spaces
+            if isinstance(space, dict) and self._space_id(space)
+        }
+        adjacency, _, _ = self._build_board_adjacency_index(spaces)
+        greenery_points = 0.0
+        city_points = 0.0
+        owned_cities = 0.0
+        owned_special = 0.0
+        for space in spaces:
+            if not isinstance(space, dict):
+                continue
+            owner = self._space_owner_color(space)
+            if not color or owner != color:
+                continue
+            is_city, is_greenery, is_ocean = self._tile_flags(space)
+            if is_greenery:
+                greenery_points += 1.0
+            if is_city:
+                owned_cities += 1.0
+                for neighbor_id in adjacency.get(self._space_id(space), set()):
+                    neighbor = board_by_id.get(neighbor_id, {})
+                    if self._tile_flags(neighbor)[1]:
+                        city_points += 1.0
+            if not is_city and not is_greenery and not is_ocean and space.get('tileType') is not None:
+                owned_special += 1.0
+
+        static_card_points = 0.0
+        resource_card_points = 0.0
+        unresolved_dynamic_cards = 0.0
+        tableau = [card for card in (player.get('tableau', []) or []) if isinstance(card, dict)]
+        for card in tableau:
+            meta = self._get_card_metadata(card)
+            raw_vp = card.get('victoryPoints', meta.get('victoryPoints'))
+            numeric_static = False
+            try:
+                if raw_vp is not None and not isinstance(raw_vp, bool):
+                    static_card_points += float(raw_vp)
+                    numeric_static = True
+            except (TypeError, ValueError):
+                numeric_static = False
+
+            vp_per_resource = self._extract_vp_per_resource(card)
+            dynamic = card.get('dynamicVictoryPoints', meta.get('dynamicVictoryPoints'))
+            if vp_per_resource > 0.0:
+                resource_card_points += float(int(self._get_numeric_resource_count(card) * vp_per_resource + 1e-9))
+            elif isinstance(dynamic, dict) or (raw_vp is not None and not numeric_static):
+                unresolved_dynamic_cards += 1.0
+
+        projected_award_points = 0.0
+        for award in (game_state.get('awards', []) or []):
+            if not isinstance(award, dict) or not (award.get('playerName') or award.get('playerColor')):
+                continue
+            scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
+            projected_award_points += self._project_award_points_for_color(scores, color)
+
+        certain_points = (
+            terraform_rating
+            + milestone_points
+            + greenery_points
+            + city_points
+            + static_card_points
+            + resource_card_points
+        )
+        uncertainty = unresolved_dynamic_cards * 2.0
+        return {
+            'terraforming': terraform_rating,
+            'milestones': milestone_points,
+            'greenery': greenery_points,
+            'city': city_points,
+            'cards_static': static_card_points,
+            'cards_resource': resource_card_points,
+            'awards_projected': projected_award_points,
+            'certain': certain_points,
+            'estimate': certain_points + projected_award_points,
+            'uncertainty': uncertainty,
+            'unresolved_dynamic_cards': unresolved_dynamic_cards,
+            'owned_cities': owned_cities,
+            'owned_special_tiles': owned_special,
+        }
+
+    def _v3_opponent_features(
+        self,
+        game_state: Dict[str, Any],
+        opponent: Dict[str, Any],
+        own_public_vp: Dict[str, float],
+    ) -> List[float]:
+        if self.v3_feature_scale <= 0.0:
+            return [0.0] * 30
+
+        opponent_state = {'game': game_state}
+        public_vp = self.estimate_public_vp(opponent_state, opponent)
+        color = str(opponent.get('color', '') or '').strip().lower()
+        tableau = [card for card in (opponent.get('tableau', []) or []) if isinstance(card, dict)]
+        tag_totals: Dict[str, float] = {}
+        total_resources = 0.0
+        max_resource_stack = 0.0
+        resource_holders = 0.0
+        for card in tableau:
+            for tag, present in self._get_card_tags(str(card.get('name', '') or ''), fallback=card.get('tags', {})).items():
+                if present:
+                    tag_totals[tag] = tag_totals.get(tag, 0.0) + 1.0
+            resources = self._get_numeric_resource_count(card)
+            if resources > 0.0:
+                resource_holders += 1.0
+                total_resources += resources
+                max_resource_stack = max(max_resource_stack, resources)
+
+        spaces = self._all_board_spaces(game_state)
+        owned_tiles = [space for space in spaces if isinstance(space, dict) and self._space_owner_color(space) == color]
+        owned_greenery = sum(1 for space in owned_tiles if self._tile_flags(space)[1])
+        owned_cities = sum(1 for space in owned_tiles if self._tile_flags(space)[0])
+
+        estimate = float(public_vp['estimate'])
+        own_estimate = float(own_public_vp.get('estimate', 0.0))
+        values = [
+            min(float(public_vp['certain']) / 80.0, 1.0),
+            min(estimate / 80.0, 1.0),
+            min(float(public_vp['uncertainty']) / 20.0, 1.0),
+            max(-1.0, min((estimate - own_estimate) / 30.0, 1.0)),
+            min(float(public_vp['awards_projected']) / 15.0, 1.0),
+            min(float(public_vp['cards_static'] + public_vp['cards_resource']) / 30.0, 1.0),
+            min(float(public_vp['city']) / 20.0, 1.0),
+            min(float(public_vp['greenery']) / 15.0, 1.0),
+            *stable_identity_features(color, width=4),
+            min(tag_totals.get('Building', 0.0) / 12.0, 1.0),
+            min(tag_totals.get('Space', 0.0) / 12.0, 1.0),
+            min(tag_totals.get('Science', 0.0) / 10.0, 1.0),
+            min(tag_totals.get('Plant', 0.0) / 10.0, 1.0),
+            min(tag_totals.get('Earth', 0.0) / 10.0, 1.0),
+            min(tag_totals.get('Jovian', 0.0) / 8.0, 1.0),
+            min(tag_totals.get('Microbe', 0.0) / 8.0, 1.0),
+            min(tag_totals.get('Animal', 0.0) / 8.0, 1.0),
+            min(total_resources / 30.0, 1.0),
+            min(max_resource_stack / 15.0, 1.0),
+            min(resource_holders / 8.0, 1.0),
+            min(len(owned_tiles) / 20.0, 1.0),
+            min(owned_cities / 8.0, 1.0),
+            min(owned_greenery / 12.0, 1.0),
+            min(float(public_vp['owned_special_tiles']) / 8.0, 1.0),
+            min(float(public_vp['unresolved_dynamic_cards']) / 8.0, 1.0),
+            min(len(tableau) / 40.0, 1.0),
+            1.0,
+        ]
+        return [self.v3_feature_scale * item for item in values]
+
     def _milestone_token_features(
         self,
         game_state: Dict[str, Any],
@@ -592,8 +785,9 @@ class StateEncoder:
             if isinstance(item, dict) and str(item.get('name', '') or '').strip() == milestone_name:
                 milestone = item
                 break
+        identity = [self.v3_feature_scale * item for item in stable_identity_features(milestone_name)]
         if not milestone:
-            return [0.0] * 12
+            return ([0.0] * 12) + identity
         own_color = str((current_player or {}).get('color', '') or '').strip().lower()
         owner_color = str(milestone.get('playerColor', '') or '').strip().lower()
         owner_name = str(milestone.get('playerName', '') or '').strip()
@@ -603,7 +797,7 @@ class StateEncoder:
         opp_best = 0.0
         for row in scores:
             try:
-                score = float(row.get('playerScore', 0) or 0)
+                score = float(row.get('playerScore', row.get('score', 0)) or 0)
             except Exception:
                 score = 0.0
             best_score = max(best_score, score)
@@ -631,7 +825,7 @@ class StateEncoder:
             1.0 if 'builder' in milestone_name.lower() or 'architect' in milestone_name.lower() else 0.0,
             1.0 if 'moon' in milestone_name.lower() or 'luna' in milestone_name.lower() else 0.0,
             min(abs(own_score - opp_best) / 5.0, 1.0),
-        ]
+        ] + identity
 
     def _award_token_features(
         self,
@@ -644,8 +838,9 @@ class StateEncoder:
             if isinstance(item, dict) and str(item.get('name', item.get('title', '')) or '').strip() == award_name:
                 award = item
                 break
+        identity = [self.v3_feature_scale * item for item in stable_identity_features(award_name)]
         if not award:
-            return [0.0] * 12
+            return ([0.0] * 12) + identity + ([0.0] * 8)
         own_color = str((current_player or {}).get('color', '') or '').strip().lower()
         funder_color = str(award.get('playerColor', '') or '').strip().lower()
         scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
@@ -655,7 +850,7 @@ class StateEncoder:
         own_rank_points = self._project_award_points_for_color(scores, own_color)
         for row in scores:
             try:
-                score = float(row.get('playerScore', 0) or 0)
+                score = float(row.get('playerScore', row.get('score', 0)) or 0)
             except Exception:
                 score = 0.0
             best_score = max(best_score, score)
@@ -669,9 +864,26 @@ class StateEncoder:
         opp_progress = min(opp_best / denominator, 1.0)
         funded_count = sum(1 for item in (game_state.get('awards', []) or []) if isinstance(item, dict) and (item.get('playerName') or item.get('playerColor')))
         estimated_cost = [8.0, 14.0, 20.0][min(funded_count, 2)]
-        fund_now_ev = max(0.0, min((own_rank_points - (estimated_cost / 5.0) + 3.0) / 6.0, 1.0))
+        legacy_fund_now_ev = max(0.0, min((own_rank_points - (estimated_cost / 5.0) + 3.0) / 6.0, 1.0))
+        generation = max(1.0, float(game_state.get('generation', 1) or 1))
+        affordability = min(max(float(current_player.get('megaCredits', 0) or 0) / estimated_cost, 0.0), 1.0)
+        score_gap = own_score - opp_best
+        lead_confidence = max(0.0, min((score_gap + 2.0) / 6.0, 1.0))
+        timing = max(0.0, min((generation - 6.0) / 6.0, 1.0))
+        v3_fund_now_ev = max(
+            0.0,
+            min(
+                (own_rank_points / 5.0) * 0.45
+                + lead_confidence * 0.25
+                + timing * 0.20
+                + affordability * 0.10
+                - (estimated_cost / 20.0) * (1.0 - timing) * 0.35,
+                1.0,
+            ),
+        )
+        fund_now_ev = legacy_fund_now_ev + self.v3_feature_scale * (v3_fund_now_ev - legacy_fund_now_ev)
         contestability = max(0.0, min(1.0 - abs(progress - opp_progress), 1.0))
-        return [
+        base = [
             1.0,
             1.0 if funder_color == own_color and funder_color else 0.0,
             1.0 if funder_color and funder_color != own_color else 0.0,
@@ -685,6 +897,17 @@ class StateEncoder:
             1.0 if 'moon' in award_name.lower() or 'lunar' in award_name.lower() else 0.0,
             min(abs(own_score - opp_best) / 8.0, 1.0),
         ]
+        v3_metrics = [
+            min(max(own_score, 0.0) / 20.0, 1.0),
+            min(max(opp_best, 0.0) / 20.0, 1.0),
+            max(-1.0, min(score_gap / 10.0, 1.0)),
+            min(estimated_cost / 20.0, 1.0),
+            affordability,
+            timing,
+            lead_confidence,
+            max(0.0, min((1.0 - timing) * (1.0 - lead_confidence), 1.0)),
+        ]
+        return base + identity + [self.v3_feature_scale * item for item in v3_metrics]
 
     def _collect_board_opportunity_rows(self, player_state: Dict[str, Any]) -> List[Tuple[float, ...]]:
         game_state = player_state.get('game', {}) or {}
@@ -2284,7 +2507,7 @@ class StateEncoder:
             if not color:
                 continue
             try:
-                score = float(row.get('playerScore', 0) or 0)
+                score = float(row.get('playerScore', row.get('score', 0)) or 0)
             except Exception:
                 score = 0.0
             normalized.append((color, score))

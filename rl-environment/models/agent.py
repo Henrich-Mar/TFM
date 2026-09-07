@@ -2489,7 +2489,7 @@ class RLAgent:
                     ]
             if not raw_available_actions:
                 raw_available_actions = self.action_decoder.get_available_actions(player_state)
-            can_legally_pass = any(int(a) >= pass_base for a in raw_available_actions)
+            raw_pass_actions = self._legal_pass_actions(raw_available_actions, player_state)
 
             available_actions = self._filter_pass_actions(raw_available_actions, player_state)
             available_actions = [a for a in available_actions if int(a) not in tried_action_indices]
@@ -2500,6 +2500,14 @@ class RLAgent:
                 if blocked_count > 0:
                     self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
                 available_actions = candidate_actions
+            # Pass may appear either as a PASS-family action (>= pass_base) or as a
+            # "Pass for this generation" SELECT_OPTION inside an "or" prompt (e.g. 202).
+            pass_actions = [
+                int(a)
+                for a in raw_pass_actions
+                if int(a) not in tried_action_indices and int(a) not in prompt_rejected_actions
+            ]
+            can_legally_pass = bool(pass_actions)
             if not available_actions and not can_legally_pass:
                 # In mandatory selection flows we cannot pass; retry non-pass actions even if tried.
                 available_actions = [
@@ -2515,12 +2523,18 @@ class RLAgent:
                 self._bump_decision_stat('no_available_actions')
                 if can_legally_pass:
                     self._bump_decision_stat('fallback_passes')
-                    self._record_action_choice(pass_base)
+                    pass_index = pass_actions[0]
+                    pass_payload = (
+                        self.action_decoder.decode_action(pass_index, player_state)
+                        if pass_index < pass_base
+                        else self.action_decoder._create_pass_action()
+                    )
+                    self._record_action_choice(pass_index)
                     self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions_pass")
                     sent_pass = await self._timed_send_player_input(
                         game_instance,
                         player_id,
-                        self.action_decoder._create_pass_action(),
+                        pass_payload,
                     )
                     if sent_pass:
                         self._clear_fallback_retry_count_for_prompt(player_id, player_state)
@@ -2567,12 +2581,18 @@ class RLAgent:
             if can_legally_pass:
                 logger.warning(f"All random actions failed for agent {self.id[:8]}. Passing.")
                 self._bump_decision_stat('fallback_passes')
-                self._record_action_choice(pass_base)
+                pass_index = pass_actions[0]
+                pass_payload = (
+                    self.action_decoder.decode_action(pass_index, player_state)
+                    if pass_index < pass_base
+                    else self.action_decoder._create_pass_action()
+                )
+                self._record_action_choice(pass_index)
                 self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_pass")
                 sent_pass = await self._timed_send_player_input(
                     game_instance,
                     player_id,
-                    self.action_decoder._create_pass_action(),
+                    pass_payload,
                 )
                 if sent_pass:
                     self._clear_fallback_retry_count_for_prompt(player_id, player_state)
@@ -2590,78 +2610,32 @@ class RLAgent:
             logger.error(f"Error making move for agent {self.id[:8]}: {e}", exc_info=True)
             return False
 
-    def _filter_pass_actions(self, available_actions: List[int], player_state: Dict[str, Any]) -> List[int]:
-        if not available_actions:
-            return available_actions
-        pass_base = self.action_decoder.action_types.get('PASS', 900)
-        non_pass_actions = [a for a in available_actions if a < pass_base]
-        if not non_pass_actions:
-            return available_actions
-
-        waiting_for = player_state.get('waitingFor', {}) if player_state else {}
-        waiting_type = str(waiting_for.get('type', ''))
-        sell_option_actions = set()
-
-        def _is_sell_patents_action(action_idx: int) -> bool:
-            return int(action_idx) == 702 or int(action_idx) in sell_option_actions
-
-        # Keep pass available during explicit selection flows (draft/research/buy/keep).
-        if waiting_type in ['card', 'selectCard', 'projectCard', 'selectProjectCardToPlay', 'initialCards']:
-            title = waiting_for.get('title', '')
-            if isinstance(title, dict):
-                title = title.get('message', '')
-            title_l = str(title).lower()
-            button_label = str(waiting_for.get('buttonLabel', '') or '').lower()
-            if (
-                waiting_for.get('showOnlyInLearnerMode', False)
-                or waiting_for.get('selectBlueCardAction', False)
-                or 'prelude' in title_l
-                or 'research' in title_l
-                or 'draft' in title_l
-                or 'select' in title_l
-                or button_label in ['keep', 'buy', 'select', 'choose', 'discard', 'confirm', 'ok', 'save']
-                or (
-                    'min' in waiting_for
-                    and 'max' in waiting_for
-                    and button_label in ['keep', 'buy', 'select', 'choose', 'confirm', 'ok', 'save', 'research']
-                )
-            ):
-                return available_actions
-
-        if waiting_for.get('type') == 'or':
-            options = waiting_for.get('options', [])
-            select_option_base = self.action_decoder.action_types.get('SELECT_OPTION', 200)
-            filtered = list(non_pass_actions)
-            pass_option_actions = set()
-            for i, option in enumerate(options):
+    def _legal_pass_actions(self, available_actions: List[int], player_state: Dict[str, Any]) -> List[int]:
+        pass_base = int(self.action_decoder.action_types.get('PASS', 900))
+        pass_actions = [int(a) for a in available_actions if int(a) >= pass_base]
+        waiting_for = player_state.get('waitingFor', {}) or {}
+        if str(waiting_for.get('type', '')) == 'or':
+            select_option_base = int(self.action_decoder.action_types.get('SELECT_OPTION', 200))
+            available_set = {int(a) for a in available_actions}
+            for i, option in enumerate(waiting_for.get('options', []) or []):
+                if not isinstance(option, dict):
+                    continue
                 title = option.get('title', '')
                 if isinstance(title, dict):
                     title = title.get('message', '')
-                title_l = str(title).lower()
-                if 'pass' in title_l:
-                    pass_action = select_option_base + i
-                    if pass_action in filtered:
-                        filtered.remove(pass_action)
-                    pass_option_actions.add(pass_action)
-                if 'sell patents' in title_l:
-                    sell_option_actions.add(select_option_base + i)
+                pass_option_index = select_option_base + i
+                if 'pass' in str(title).lower() and pass_option_index in available_set:
+                    pass_actions.append(pass_option_index)
+        return pass_actions
 
-            non_pass_non_pass_option = [a for a in non_pass_actions if int(a) not in pass_option_actions]
-            productive_actions = [a for a in non_pass_non_pass_option if not _is_sell_patents_action(int(a))]
-
-            # If the only alternative to pass is sell patents, keep pass.
-            if not productive_actions:
-                return available_actions
-            # Keep every server-legal non-pass action in the mask.  The policy
-            # may score selling poorly, but hiding it here makes diagnostics and
-            # teacher data claim a legal action family does not exist.
-            return filtered if filtered else available_actions
-
-        # Passing is a strategic choice, especially when capped global
-        # parameters require a production cycle before the remaining parameter
-        # can advance.  Do not remove a server-legal pass merely because a
-        # standard project or other non-pass action is present.
-        return available_actions
+    def _filter_pass_actions(self, available_actions: List[int], player_state: Dict[str, Any]) -> List[int]:
+        # Deliberate identity: the mask must contain exactly the server-legal
+        # action set.  Previously pass (and sell patents) options were stripped
+        # from "or" prompts and card-selection flows, which corrupted teacher
+        # snapshots and PPO data by hiding legal actions.  Passing is a
+        # strategic choice and must stay available wherever the server allows
+        # it.  See fusion-response 2026-09-07.md, Phase 3.
+        return list(available_actions)
 
     def _bump_decision_stat(self, key: str, amount: int = 1):
         self.decision_stats[key] = int(self.decision_stats.get(key, 0)) + int(amount)

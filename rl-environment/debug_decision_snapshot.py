@@ -20,6 +20,36 @@ except Exception:
 _REQUEST_LOCK = threading.Lock()
 _PENDING_CAPTURE_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
+_CARD_TAG_RESOLVER: Any = None
+
+
+def _resolve_card_tags(card: Any) -> List[str]:
+    raw = card.get("tags", []) or [] if isinstance(card, dict) else []
+    if isinstance(raw, dict):
+        resolved = [str(tag).strip() for tag, present in raw.items() if present]
+    elif isinstance(raw, list):
+        resolved = [str(tag).strip() for tag in raw if str(tag or "").strip()]
+    else:
+        resolved = []
+    if resolved:
+        return resolved
+    name = str(card.get("name", "") or "").strip() if isinstance(card, dict) else ""
+    if not name or StateEncoder is None:
+        return []
+    global _CARD_TAG_RESOLVER
+    if _CARD_TAG_RESOLVER is None:
+        try:
+            _CARD_TAG_RESOLVER = StateEncoder()
+        except Exception:
+            _CARD_TAG_RESOLVER = object()
+    if not _card_tag_resolver_ready():
+        return []
+    try:
+        tag_map = _CARD_TAG_RESOLVER._get_card_tags(name, fallback={}) or {}
+    except Exception:
+        return []
+    return sorted(str(tag) for tag, present in tag_map.items() if present)
+
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _SPACE_BONUS_LABELS = {
     0: "Titanium", 1: "Steel", 2: "Plant", 3: "Card", 4: "Heat", 5: "Ocean",
@@ -255,10 +285,39 @@ def reset_capture_state() -> None:
         _PENDING_CAPTURE_REQUESTS.clear()
 
 
+def _card_tag_resolver_ready() -> bool:
+    return StateEncoder is not None and isinstance(_CARD_TAG_RESOLVER, StateEncoder)
+
+
+def _resolve_card_victory_points(card: Dict[str, Any]) -> float:
+    direct = _safe_float(card.get("victoryPoints", 0.0))
+    if direct:
+        return direct
+    name = str(card.get("name", "") or "").strip()
+    if not name or not _card_tag_resolver_ready():
+        return 0.0
+    meta = (_CARD_TAG_RESOLVER.card_metadata_by_name or {}).get(name, {}) or {}
+    try:
+        return float(meta.get("victoryPoints", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _resolve_card_type(card: Dict[str, Any]) -> str:
+    direct = str(card.get("type", "") or "").strip()
+    if direct:
+        return direct
+    name = str(card.get("name", "") or "").strip()
+    if not name or not _card_tag_resolver_ready():
+        return ""
+    meta = (_CARD_TAG_RESOLVER.card_metadata_by_name or {}).get(name, {}) or {}
+    return str(meta.get("type", "") or "").strip()
+
+
 def _card_summary(card: Any) -> Dict[str, Any]:
     if not isinstance(card, dict):
         return {"label": _message_text(card)}
-    tags = card.get("tags", []) or []
+    tags = _resolve_card_tags(card)
     calculated_cost = _safe_float(card.get("calculatedCost", card.get("cost", 0.0)))
     base_cost = _safe_float(card.get("cost", calculated_cost))
     summary = {
@@ -267,8 +326,8 @@ def _card_summary(card: Any) -> Dict[str, Any]:
         "calculated_cost": calculated_cost,
         "base_cost": base_cost,
         "tags": [str(tag or "").strip() for tag in tags if str(tag or "").strip()],
-        "victory_points": _safe_float(card.get("victoryPoints", 0.0)),
-        "type": str(card.get("type", "") or "").strip(),
+        "victory_points": _resolve_card_victory_points(card),
+        "type": _resolve_card_type(card),
         "has_action": bool(card.get("hasAction", False)),
         "disabled": bool(card.get("isDisabled", False)),
         "label": str(card.get("name", "") or card.get("type", "") or "card").strip(),

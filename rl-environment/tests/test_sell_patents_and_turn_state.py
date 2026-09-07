@@ -56,7 +56,7 @@ def test_sell_patents_is_kept_when_the_server_exposes_enabled_cards(monkeypatch)
     assert response["response"] == {"type": "card", "cards": ["Discardable One"]}
 
 
-def test_agent_filter_does_not_remove_server_legal_sell_patents() -> None:
+def test_agent_filter_does_not_remove_server_legal_pass_or_sell_patents() -> None:
     agent = RLAgent.__new__(RLAgent)
     agent.action_decoder = ActionDecoder()
     player_state = {
@@ -70,7 +70,34 @@ def test_agent_filter_does_not_remove_server_legal_sell_patents() -> None:
         },
     }
 
-    assert agent._filter_pass_actions([0, 702, 202], player_state) == [0, 702]
+    assert agent._filter_pass_actions([0, 702, 202], player_state) == [0, 702, 202]
+
+
+def test_legal_pass_actions_include_or_prompt_pass_options() -> None:
+    agent = RLAgent.__new__(RLAgent)
+    agent.action_decoder = ActionDecoder()
+    player_state = {
+        "waitingFor": {
+            "type": "or",
+            "title": "Take your first action",
+            "options": [
+                {"type": "or", "title": "Fund an award (8 MC)"},
+                {"type": "card", "title": "Sell patents"},
+                {"type": "option", "title": "Pass for this generation"},
+            ],
+        },
+    }
+
+    pass_actions = agent._legal_pass_actions([600, 702, 202], player_state)
+
+    assert pass_actions == [202]
+
+    response = agent.action_decoder.decode_action(202, player_state)
+    assert response == {
+        "type": "or",
+        "index": 2,
+        "response": {"type": "option"},
+    }
 
 
 def test_turn_action_count_uses_server_actions_taken_this_round() -> None:

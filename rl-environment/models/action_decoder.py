@@ -11,16 +11,22 @@ import itertools
 
 from .rust_backend import get_rust_module
 from .planner_common import PlannerConfig, stable_identity_features, token_from_features
+from .action_contract import (
+    ACTION_BASES,
+    CARD_SELECTION_MASK_LIMIT,
+    PAYMENT_ACTION_VARIANTS,
+    STARTUP_PLAN_LIMIT,
+)
 
 logger = logging.getLogger(__name__)
 
-_CARD_SELECTION_MASK_BASE = 520
-_CARD_SELECTION_MASK_LIMIT = 80
+_CARD_SELECTION_MASK_BASE = ACTION_BASES['card_selection']
+_CARD_SELECTION_MASK_LIMIT = CARD_SELECTION_MASK_LIMIT
 _CARD_SELECTION_CANDIDATE_LIMIT = 12
-_STARTUP_PLAN_BASE = 850
-_STARTUP_PLAN_LIMIT = 32
-_PAYMENT_ACTION_BASE = 400
-_PAYMENT_ACTION_VARIANTS = 8
+_STARTUP_PLAN_BASE = ACTION_BASES['startup_selection']
+_STARTUP_PLAN_LIMIT = STARTUP_PLAN_LIMIT
+_PAYMENT_ACTION_BASE = ACTION_BASES['select_payment']
+_PAYMENT_ACTION_VARIANTS = PAYMENT_ACTION_VARIANTS
 _PAYMENT_ALL_KEYS = [
     'megaCredits', 'steel', 'titanium', 'heat', 'plants',
     'microbes', 'floaters', 'lunaArchivesScience', 'spireScience',
@@ -2888,16 +2894,16 @@ class ActionDecoder:
         self.v3_feature_scale = max(0.0, min(configured_scale, 1.0)) if self.v3_enabled else 0.0
         # Action space mapping
         self.action_types = {
-            'PLAY_CARD': 0,
-            'STANDARD_PROJECT': 100,
-            'SELECT_OPTION': 200,
+            'PLAY_CARD': ACTION_BASES['play_card'],
+            'STANDARD_PROJECT': ACTION_BASES['standard_project'],
+            'SELECT_OPTION': ACTION_BASES['select_option'],
             'SELECT_CARD_MASK': _CARD_SELECTION_MASK_BASE,
             'STARTUP_PLAN': _STARTUP_PLAN_BASE,
-            'SELECT_SPACE': 300,
+            'SELECT_SPACE': ACTION_BASES['select_space'],
             'SELECT_PAYMENT': _PAYMENT_ACTION_BASE,
-            'SELECT_AMOUNT': 500,
-            'PASS': 900,
-            'END_TURN': 950
+            'SELECT_AMOUNT': ACTION_BASES['select_amount'],
+            'PASS': ACTION_BASES['pass'],
+            'END_TURN': ACTION_BASES['end_turn']
         }
         
         # Performance caches

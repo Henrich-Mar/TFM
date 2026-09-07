@@ -133,11 +133,11 @@ class HeuristicTeacherPolicy:
         vp = self._safe_float(card.get("victoryPoints", 0))
         generation = max(1.0, self._safe_float((state.get("game", {}) or {}).get("generation", 1), 1.0))
         mc = self._safe_float(player.get("megaCredits", 0))
-        tags_raw = card.get("tags", []) or []
-        if isinstance(tags_raw, dict):
-            tags = {str(key).lower() for key, value in tags_raw.items() if value}
-        else:
-            tags = {str(item).lower() for item in tags_raw}
+        # The server card payload does not carry tags; resolve them from the
+        # card metadata cache so the teacher scores the same tag information
+        # the state encoder feeds to the policy network.
+        tags_map = self._card_ranker._get_card_tags(name, fallback=card.get("tags", {}))
+        tags = {str(tag).lower() for tag, present in tags_map.items() if present}
         affordability = 1.1 if cost <= mc else -1.5 - min(1.0, (cost - mc) / 15.0)
         phase = max(0.0, min(1.0, generation / 14.0))
         engine_tags = len(tags.intersection({"science", "earth", "building", "space", "plant"}))

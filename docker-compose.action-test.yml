@@ -1,0 +1,82 @@
+services:
+  tfm-server:
+    build:
+      context: ./terraforming-mars
+      dockerfile: ../Dockerfile.rl
+    ports:
+      - "8081:8080"
+    environment:
+      NODE_ENV: production
+      SERVER_ID: tfm-action-test
+      COMPRESS_COMPLETED_GAMES_DAYS: "0"
+      NODE_OPTIONS: --max-old-space-size=640
+      # Allow deterministic game creation while testing action payloads.
+      RL_ALLOW_FIXED_SEED: "1"
+      # Avoid requiring the optional sqlite3 native module in the disposable test image.
+      LOCAL_FS_DB: /usr/src/app/db/files
+    tmpfs:
+      - /usr/src/app/db:uid=100,gid=65533,mode=0775
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "require('http').get('http://127.0.0.1:8080/',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    restart: unless-stopped
+
+  decision-explainer:
+    build:
+      context: ./rl-environment
+      dockerfile: Dockerfile.training
+    # Run the teacher collector with the Decision Explainer API. This starts
+    # four teacher agents (one per seat) and pauses the annotated seat before
+    # every decision until it is labelled in the UI.
+    command:
+      - python
+      - -m
+      - training.v2_collect_teacher
+      - --stage
+      - "0"
+      - --games
+      - "${TFM_TEST_GAMES:-1}"
+      - --seed-start
+      - "${TFM_TEST_SEED_START:-10000}"
+      - --serve-api
+      - --annotate-seat
+      - "${TFM_TEST_ANNOTATE_SEAT:-0}"
+    ports:
+      - "5000:5000"
+    environment:
+      DECISION_SNAPSHOT_DIR: /app/debug_snapshots
+      V2_TEACHER_ANNOTATION_DIR: /app/debug_snapshots/annotations
+      GAME_SERVERS: tfm-server:8080
+      GAME_OPTIONS_FILE: /app/game_options.v2_stage0.json
+      TFM_RL_V2: "1"
+      TFM_RL_V2_ROOT: /app/v2
+      V2_ALLOW_RESUME: "0"
+      RESUME_TRAINING: "0"
+      BOOTSTRAP_CHECKPOINT_PATH: ""
+      RL_MODELS_DIR: /app/v2/models
+      RL_CHECKPOINT_DIR: /app/v2/checkpoints
+      V2_TEACHER_DATASET_DIR: /app/v2/teacher-dataset
+      RL_LOG_DIR: /app/v2/logs
+      AGENT_INFERENCE_DEVICE: cpu
+    volumes:
+      - ./rl-environment/debug_snapshots:/app/debug_snapshots
+      - ./card_metadata.json:/app/card_metadata.json:ro
+    depends_on:
+      tfm-server:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/decision-explainer', timeout=5)"
+      interval: 10s
+      timeout: 8s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped

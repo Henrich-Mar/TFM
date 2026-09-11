@@ -56,6 +56,29 @@ def test_sell_patents_is_kept_when_the_server_exposes_enabled_cards(monkeypatch)
     assert response["response"] == {"type": "card", "cards": ["Discardable One"]}
 
 
+def test_plant_production_reduction_does_not_target_the_acting_player() -> None:
+    decoder = ActionDecoder()
+    player_state = {
+        "thisPlayer": {"name": "red", "color": "red"},
+        "waitingFor": {
+            "type": "selectPlayer",
+            "title": "Select player to decrease plants production by 1 step(s)",
+            "players": ["red", "blue", "green", "yellow"],
+        },
+    }
+
+    assert decoder.get_available_actions(player_state) == [601, 602, 603]
+    labels = [
+        descriptor["label"]
+        for descriptor in decoder.get_legal_action_descriptors(player_state)
+    ]
+    assert labels == [
+        "Select player to decrease plants production by 1 step(s): blue",
+        "Select player to decrease plants production by 1 step(s): green",
+        "Select player to decrease plants production by 1 step(s): yellow",
+    ]
+
+
 def test_agent_filter_does_not_remove_server_legal_pass_or_sell_patents() -> None:
     agent = RLAgent.__new__(RLAgent)
     agent.action_decoder = ActionDecoder()

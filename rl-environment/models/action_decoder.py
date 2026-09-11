@@ -3081,6 +3081,14 @@ class ActionDecoder:
             label = milestone_name or label or 'Claim milestone'
         elif family == 'select_space':
             label = title_l or 'Select space'
+        elif family == 'select_option' and isinstance(decoded_action, dict):
+            if str(decoded_action.get('type', '') or '').lower() == 'player':
+                target = decoded_action.get('player', '')
+                if isinstance(target, dict):
+                    target = target.get('name') or target.get('color') or target.get('id') or ''
+                target = str(target or '').strip()
+                if target:
+                    label = f"{label}: {target}"
         return {
             "label": str(label or family).strip(),
             "award_name": str(award_name or '').strip(),
@@ -3419,6 +3427,41 @@ class ActionDecoder:
             return True
 
         return False
+
+    def _is_self_plant_production_reduction(
+        self,
+        target: Any,
+        waiting_for: Dict[str, Any],
+        player_state: Dict[str, Any],
+    ) -> bool:
+        """Avoid targeting the acting player when an option lowers plant production."""
+        if not isinstance(waiting_for, dict) or not isinstance(player_state, dict):
+            return False
+
+        prompt_text = " ".join(
+            _title_text(waiting_for.get(key, '')).strip().lower()
+            for key in ('title', 'buttonLabel', 'description')
+        )
+        lowers_production = (
+            'plant' in prompt_text
+            and 'production' in prompt_text
+            and any(word in prompt_text for word in ('decrease', 'decreases', 'reduce', 'reduces', 'lose', 'loses', 'lower'))
+        )
+        if not lowers_production:
+            return False
+
+        def identities(value: Any) -> set[str]:
+            if isinstance(value, dict):
+                values = (value.get('id'), value.get('name'), value.get('color'))
+            else:
+                values = (value,)
+            return {
+                str(item).strip().lower()
+                for item in values
+                if str(item or '').strip()
+            }
+
+        return bool(identities(target) & identities(player_state.get('thisPlayer', {})))
 
     def _is_standard_project_wasteful(self, project: Dict[str, Any], player_state: Dict[str, Any]) -> bool:
         """Exclude standard projects that cannot advance their global parameter."""
@@ -3766,7 +3809,9 @@ class ActionDecoder:
                     available_actions.append(self.action_types['SELECT_OPTION'] + i)
             elif input_type == 'selectPlayer' or input_type == 'player':
                 players = waiting_for.get('players', [])
-                for i, _ in enumerate(players):
+                for i, target in enumerate(players):
+                    if self._is_self_plant_production_reduction(target, waiting_for, player_state or {}):
+                        continue
                     available_actions.append(600 + i)
             elif input_type == 'selectResources' or input_type == 'resources':
                 available_actions.append(700)

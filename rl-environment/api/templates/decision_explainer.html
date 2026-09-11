@@ -71,6 +71,7 @@
       font-weight: 700;
       border: none;
     }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
     button.secondary {
       background: #efe2c3;
       color: var(--text);
@@ -253,6 +254,11 @@
       <textarea id="annotationNote" placeholder="Short strategic reason"></textarea>
       <label><input id="annotationSkip" type="checkbox" style="width:auto; margin-right:8px;">Skip this position</label>
       <button id="saveAnnotation" type="button">Save Teacher Choice &amp; Continue</button>
+      <div class="grid two">
+        <button id="autonomousContinue" type="button">Autoplay Model Until Error</button>
+        <button id="stopAutonomous" type="button" class="secondary" disabled>Stop Autonomous Run</button>
+      </div>
+      <div id="autonomousStatus" class="status subtle"></div>
       <div id="annotationStatus" class="status subtle"></div>
     </section>
 
@@ -333,6 +339,7 @@
   <script>
     const initialSnapshotId = {{ snapshot_id|tojson }};
     let currentSnapshot = null;
+    const autonomousRun = { active: false, token: 0 };
 
     const esc = (value) => {
       const div = document.createElement("div");
@@ -815,29 +822,39 @@
       await loadSnapshotList();
     }
 
-    async function saveAnnotation() {
-      if (!currentSnapshot || !currentSnapshot.snapshot_id) throw new Error("No snapshot selected");
-      const annotatedSnapshot = currentSnapshot;
-      const accepted = Array.from(document.getElementById("acceptedActions").selectedOptions).map((option) => Number(option.value));
-      const payload = {
-        accepted_action_indices: accepted,
-        note: document.getElementById("annotationNote").value || "",
-        skip: document.getElementById("annotationSkip").checked,
-      };
-      const resp = await fetch(`/debug/decision-snapshots/${encodeURIComponent(currentSnapshot.snapshot_id)}/annotation`, {
+    async function submitAnnotation(snapshot, accepted, note, skip = false) {
+      if (!snapshot || !snapshot.snapshot_id) throw new Error("No snapshot selected");
+      const resp = await fetch(`/debug/decision-snapshots/${encodeURIComponent(snapshot.snapshot_id)}/annotation`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          accepted_action_indices: accepted,
+          note: note || "",
+          skip: Boolean(skip),
+        }),
       });
       if (!resp.ok) {
         const error = await resp.text();
         throw new Error(`HTTP ${resp.status}: ${error}`);
       }
+      return resp.json();
+    }
+
+    async function saveAnnotation() {
+      if (!currentSnapshot || !currentSnapshot.snapshot_id) throw new Error("No snapshot selected");
+      const annotatedSnapshot = currentSnapshot;
+      const accepted = Array.from(document.getElementById("acceptedActions").selectedOptions).map((option) => Number(option.value));
+      await submitAnnotation(
+        annotatedSnapshot,
+        accepted,
+        document.getElementById("annotationNote").value || "",
+        document.getElementById("annotationSkip").checked,
+      );
       document.getElementById("annotationStatus").textContent = "Teacher choice saved. The agent will now send the selected action.";
       await loadNextGuidedSnapshot(annotatedSnapshot);
     }
 
-    async function loadNextGuidedSnapshot(annotatedSnapshot) {
+    async function loadNextGuidedSnapshot(annotatedSnapshot, shouldStop = null) {
       const baseline = String((annotatedSnapshot || {}).captured_at || "");
       const prompt = (annotatedSnapshot || {}).prompt || {};
       const sameGuidedSeat = (item) =>
@@ -848,19 +865,106 @@
       const deadline = Date.now() + 120000;
 
       while (Date.now() < deadline) {
+        if (shouldStop && shouldStop()) return null;
         await new Promise((resolve) => window.setTimeout(resolve, 750));
+        if (shouldStop && shouldStop()) return null;
         const payload = await loadSnapshotList();
+        const baselineSummary = (payload.snapshots || []).find(
+          (item) => item && item.snapshot_id === annotatedSnapshot.snapshot_id,
+        );
+        const baselineSavedAt = Number(
+          annotatedSnapshot.saved_at_ms || (baselineSummary || {}).saved_at_ms || 0,
+        );
         const next = (payload.snapshots || [])
-          .filter((item) => sameGuidedSeat(item) && String(item.captured_at || "") > baseline)
-          .sort((left, right) => String(right.captured_at || "").localeCompare(String(left.captured_at || "")))[0];
+          .filter((item) => {
+            if (!sameGuidedSeat(item)) return false;
+            const savedAt = Number(item.saved_at_ms || 0);
+            if (baselineSavedAt > 0 && savedAt > 0) return savedAt > baselineSavedAt;
+            return String(item.captured_at || "") > baseline;
+          })
+          .sort((left, right) => {
+            const savedDelta = Number(right.saved_at_ms || 0) - Number(left.saved_at_ms || 0);
+            if (savedDelta) return savedDelta;
+            return String(right.captured_at || "").localeCompare(String(left.captured_at || ""));
+          })[0];
         if (next) {
           document.getElementById("snapshotSelect").value = next.snapshot_id;
           await loadSnapshot(next.snapshot_id);
           document.getElementById("annotationStatus").textContent = "Loaded the next teacher decision.";
-          return;
+          // loadSnapshot stores the complete payload in currentSnapshot. The
+          // list entry above only contains summary fields and has no policy.
+          return currentSnapshot;
         }
       }
       document.getElementById("annotationStatus").textContent = "Teacher choice saved. Waiting for the next decision timed out; refresh when it is ready.";
+      return null;
+    }
+
+    function setAutonomousUi(running) {
+      document.getElementById("autonomousContinue").disabled = running;
+      document.getElementById("stopAutonomous").disabled = !running;
+      document.getElementById("saveAnnotation").disabled = running;
+      document.getElementById("acceptedActions").disabled = running;
+      document.getElementById("annotationNote").disabled = running;
+      document.getElementById("annotationSkip").disabled = running;
+    }
+
+    async function runAutonomousUntilError() {
+      if (autonomousRun.active) return;
+      if (!currentSnapshot || !currentSnapshot.snapshot_id) {
+        throw new Error("Load a guided decision snapshot first");
+      }
+
+      const runToken = ++autonomousRun.token;
+      autonomousRun.active = true;
+      setAutonomousUi(true);
+      let snapshot = currentSnapshot;
+      let decisions = 0;
+
+      try {
+        while (autonomousRun.active && autonomousRun.token === runToken) {
+          const policy = snapshot.policy || {};
+          const descriptor = policy.chosen_action_descriptor || {};
+          const proposed = Number(policy.chosen_action_index ?? descriptor.action_index);
+          const legal = new Set((policy.action_descriptors || []).map((row) => Number(row.action_index)));
+          if (!Number.isInteger(proposed) || !legal.has(proposed)) {
+            throw new Error(`Model proposal ${String(proposed)} is not legal for snapshot ${snapshot.snapshot_id}`);
+          }
+
+          document.getElementById("autonomousStatus").textContent =
+            `Autonomous run: sending decision ${decisions + 1}, action ${proposed}.`;
+          await submitAnnotation(snapshot, [proposed], "Autonomous model proposal", false);
+          decisions += 1;
+
+          const next = await loadNextGuidedSnapshot(
+            snapshot,
+            () => !autonomousRun.active || autonomousRun.token !== runToken,
+          );
+          if (!autonomousRun.active || autonomousRun.token !== runToken) return;
+          if (!next) {
+            throw new Error("No next decision appeared; the agent may have stopped on an error");
+          }
+          snapshot = next;
+        }
+      } catch (err) {
+        document.getElementById("autonomousStatus").textContent =
+          `Autonomous run stopped after ${decisions} decision(s): ${err.message || err}`;
+        document.getElementById("autonomousStatus").className = "status bad";
+      } finally {
+        if (autonomousRun.token === runToken) {
+          autonomousRun.active = false;
+          setAutonomousUi(false);
+        }
+      }
+    }
+
+    function stopAutonomousRun() {
+      if (!autonomousRun.active) return;
+      autonomousRun.active = false;
+      autonomousRun.token += 1;
+      document.getElementById("autonomousStatus").textContent = "Autonomous run stopped by user.";
+      document.getElementById("autonomousStatus").className = "status subtle";
+      setAutonomousUi(false);
     }
 
     async function init() {
@@ -937,6 +1041,20 @@
         document.getElementById("annotationStatus").textContent = `Save failed: ${err}`;
       }
     });
+
+    document.getElementById("autonomousContinue").addEventListener("click", async () => {
+      document.getElementById("autonomousStatus").className = "status subtle";
+      try {
+        await runAutonomousUntilError();
+      } catch (err) {
+        document.getElementById("autonomousStatus").textContent = `Autonomous run failed: ${err}`;
+        document.getElementById("autonomousStatus").className = "status bad";
+        autonomousRun.active = false;
+        setAutonomousUi(false);
+      }
+    });
+
+    document.getElementById("stopAutonomous").addEventListener("click", stopAutonomousRun);
 
     init();
   </script>

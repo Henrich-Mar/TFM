@@ -73,7 +73,7 @@ _TILE_TYPE_LABELS = {
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1142,6 +1142,10 @@ def list_saved_snapshots() -> List[Dict[str, Any]]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
+        try:
+            saved_at_ms = int(path.stat().st_mtime_ns // 1_000_000)
+        except OSError:
+            saved_at_ms = 0
         prompt = dict(payload.get("prompt", {}) or {})
         agent = dict(payload.get("agent", {}) or {})
         review = dict((payload.get("diagnostics", {}) or {}).get("review_priority", {}) or {})
@@ -1156,6 +1160,7 @@ def list_saved_snapshots() -> List[Dict[str, Any]]:
                 "phase": str(prompt.get("phase", "") or ""),
                 "prompt_type": str(prompt.get("prompt_type", "") or ""),
                 "send_outcome": str(prompt.get("send_outcome", "") or ""),
+                "saved_at_ms": saved_at_ms,
                 "review_priority": _safe_float(review.get("priority_score", 0.0)),
                 "path": str(path),
             }

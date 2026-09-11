@@ -5,11 +5,12 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+import torch
 
 # Add the rl-environment directory to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.agent import AgentConfig, RLAgent
+from models.agent import ActionExecutionError, ActionSamplingError, AgentConfig, RLAgent
 from models.planner_common import PLANNER_GLOBAL_DIM, PLANNER_OPPORTUNITY_LIMIT, PLANNER_TOKEN_DIM, planner_aux_layout
 from models.state_encoder import StateEncoder
 
@@ -110,7 +111,7 @@ class TestAgentPollingAndFallback(unittest.TestCase):
 
         self.assertFalse(agent.startup_autosubmit)
 
-    def test_fallback_reuses_cached_raw_actions_without_recomputing(self):
+    def test_rejected_policy_action_raises_without_random_fallback(self):
         with patch(
             "models.agent.require_backend_info",
             return_value={"module": "rust_tfm_rl", "api_version": "1.0", "crate_version": "test"},
@@ -143,12 +144,49 @@ class TestAgentPollingAndFallback(unittest.TestCase):
         game = _GameStub()
         player_state = {"waitingFor": {"type": "or", "options": [{"title": "Take action"}]}}
 
-        result = asyncio.run(agent._make_move(game, "player-1", player_state, []))
+        with self.assertRaises(ActionExecutionError):
+            asyncio.run(agent._make_move(game, "player-1", player_state, []))
 
-        self.assertTrue(result)
-        self.assertEqual(len(game.sent_actions), 2)
+        self.assertEqual(len(game.sent_actions), 1)
         self.assertEqual(str(game.sent_actions[0].get("type", "")), "policyAction")
-        self.assertEqual(int(game.sent_actions[1].get("index", -1)), 5)
+
+    def test_zero_policy_probabilities_raise_instead_of_becoming_uniform(self):
+        with patch(
+            "models.agent.require_backend_info",
+            return_value={"module": "rust_tfm_rl", "api_version": "1.0", "crate_version": "test"},
+        ):
+            agent = RLAgent(AgentConfig())
+
+        with self.assertRaises(ActionSamplingError):
+            agent._sample_action(torch.zeros(2), [5, 6])
+
+    def test_random_sampling_request_raises(self):
+        with patch(
+            "models.agent.require_backend_info",
+            return_value={"module": "rust_tfm_rl", "api_version": "1.0", "crate_version": "test"},
+        ):
+            agent = RLAgent(AgentConfig())
+
+        agent.deterministic_actions = False
+        with patch.object(agent, "_effective_policy_epsilon", return_value=1.0), patch(
+            "models.agent.np.random.random", return_value=0.0
+        ):
+            with self.assertRaises(ActionSamplingError):
+                agent._sample_action(torch.tensor([0.5, 0.5]), [5, 6])
+
+    def test_sampling_runtime_error_is_not_replaced_with_random_action(self):
+        with patch(
+            "models.agent.require_backend_info",
+            return_value={"module": "rust_tfm_rl", "api_version": "1.0", "crate_version": "test"},
+        ):
+            agent = RLAgent(AgentConfig())
+
+        agent.deterministic_actions = False
+        with patch.object(agent, "_effective_policy_epsilon", return_value=0.0), patch(
+            "models.agent.np.random.random", return_value=1.0
+        ), patch("models.agent.torch.multinomial", side_effect=RuntimeError("invalid distribution")):
+            with self.assertRaises(ActionSamplingError):
+                agent._sample_action(torch.tensor([0.5, 0.5]), [5, 6])
 
     def test_compute_aux_targets_uses_or_project_card_options(self):
         with patch(

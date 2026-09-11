@@ -59,6 +59,18 @@ from debug_decision_snapshot import (
 logger = logging.getLogger(__name__)
 
 
+class ActionPipelineError(RuntimeError):
+    """Base error for failures that must not be repaired with another action."""
+
+
+class ActionSamplingError(ActionPipelineError):
+    """The policy could not produce a valid action sample."""
+
+
+class ActionExecutionError(ActionPipelineError):
+    """The selected policy action could not be executed by the game server."""
+
+
 class _DeferredAsyncLock:
     """An asyncio lock that binds to the loop on first use, not construction."""
 
@@ -2140,7 +2152,7 @@ class RLAgent:
         player_state: Dict[str, Any],
         episode_steps: List[Dict[str, Any]],
     ) -> bool:
-        """Make a single move in the game, with robust fallbacks."""
+        """Make one policy move and raise if it cannot be executed."""
         try:
             # Update turn-action counter (resets automatically on phase change)
             self._maybe_reset_turn_action_count(player_id, player_state)
@@ -2169,8 +2181,10 @@ class RLAgent:
             if not filtered_action_descriptors:
                 filtered_action_descriptors = list(raw_action_descriptors)
             if not filtered_action_descriptors:
-                logger.warning("Agent %s found no legal action descriptors for player %s", self.id[:8], player_id)
-                return False
+                raise ActionPipelineError(
+                    f"No legal action descriptors for agent={self.id[:8]} player={player_id} "
+                    f"waitingFor={player_state.get('waitingFor')!r}"
+                )
             self._record_pipeline_timing("action_availability_sec", time.perf_counter() - availability_started)
 
             loop = asyncio.get_running_loop()
@@ -2218,7 +2232,6 @@ class RLAgent:
                 player_id=player_id,
                 force_random=False,
             )
-            tried_action_indices = set()
             if policy_action:
                 self._bump_decision_stat('policy_attempts')
                 if sampled_from_policy:
@@ -2451,7 +2464,6 @@ class RLAgent:
                     self._bump_decision_stat('action_rejected_by_server')
                     if policy_action_idx is not None:
                         action_idx = int(policy_action_idx)
-                        tried_action_indices.add(action_idx)
                         self._remember_rejected_action(player_id, player_state, action_idx)
                     logger.warning(f"Agent {self.id[:8]} policy action was rejected by game")
                     self._log_stuck_context(game_instance, player_id, player_state, "policy_action_rejected")
@@ -2472,143 +2484,18 @@ class RLAgent:
                         pause_after_reject = max(pause_after_reject, self.initial_cards_reject_pause_sec)
                     await self._sleep_if_needed(pause_after_reject)
 
-            logger.warning(f"Policy action failed for agent {self.id[:8]}. Trying random actions.")
-            self._bump_decision_stat('fallback_decisions')
-
-            # 2. Try a broader set of alternative actions, excluding already-rejected choices.
-            pass_base = int(self.action_decoder.action_types.get('PASS', 900))
-            raw_available_actions: List[int] = []
-            if isinstance(action_meta, dict):
-                cached_raw_actions = action_meta.get("available_actions_raw", [])
-                if isinstance(cached_raw_actions, list):
-                    raw_available_actions = [
-                        int(action_idx)
-                        for action_idx in cached_raw_actions
-                        if isinstance(action_idx, (int, np.integer))
-                        or (isinstance(action_idx, str) and str(action_idx).isdigit())
-                    ]
-            if not raw_available_actions:
-                raw_available_actions = self.action_decoder.get_available_actions(player_state)
-            raw_pass_actions = self._legal_pass_actions(raw_available_actions, player_state)
-
-            available_actions = self._filter_pass_actions(raw_available_actions, player_state)
-            available_actions = [a for a in available_actions if int(a) not in tried_action_indices]
-            prompt_rejected_actions = self._get_rejected_actions_for_prompt(player_id, player_state)
-            if prompt_rejected_actions:
-                candidate_actions = [a for a in available_actions if int(a) not in prompt_rejected_actions]
-                blocked_count = max(0, int(len(available_actions) - len(candidate_actions)))
-                if blocked_count > 0:
-                    self._bump_decision_stat('policy_actions_blocked_by_reject_cache', blocked_count)
-                available_actions = candidate_actions
-            # Pass may appear either as a PASS-family action (>= pass_base) or as a
-            # "Pass for this generation" SELECT_OPTION inside an "or" prompt (e.g. 202).
-            pass_actions = [
-                int(a)
-                for a in raw_pass_actions
-                if int(a) not in tried_action_indices and int(a) not in prompt_rejected_actions
-            ]
-            can_legally_pass = bool(pass_actions)
-            if not available_actions and not can_legally_pass:
-                # In mandatory selection flows we cannot pass; retry non-pass actions even if tried.
-                available_actions = [
-                    a
-                    for a in self._filter_pass_actions(raw_available_actions, player_state)
-                    if int(a) < pass_base
-                    and int(a) not in tried_action_indices
-                    and int(a) not in prompt_rejected_actions
-                ]
-
-            if not available_actions:
-                # If no actions are available, pass only when pass is legal.
-                self._bump_decision_stat('no_available_actions')
-                if can_legally_pass:
-                    self._bump_decision_stat('fallback_passes')
-                    pass_index = pass_actions[0]
-                    pass_payload = (
-                        self.action_decoder.decode_action(pass_index, player_state)
-                        if pass_index < pass_base
-                        else self.action_decoder._create_pass_action()
-                    )
-                    self._record_action_choice(pass_index)
-                    self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions_pass")
-                    sent_pass = await self._timed_send_player_input(
-                        game_instance,
-                        player_id,
-                        pass_payload,
-                    )
-                    if sent_pass:
-                        self._clear_fallback_retry_count_for_prompt(player_id, player_state)
-                    await self._sleep_if_needed(self.post_move_sleep_sec)
-                    return bool(sent_pass)
-                else:
-                    self._log_stuck_context(game_instance, player_id, player_state, "no_available_actions_no_pass")
-                    await self._sleep_if_needed(self.failure_pause_sec or self.poll_interval_sec)
-                    return False
-                 
-            random.shuffle(available_actions)
-            prompt_retry_budget = int(self.max_fallback_random_retries_per_prompt)
-            prompt_retry_used = self._get_fallback_retry_count_for_prompt(player_id, player_state)
-            remaining_prompt_budget = max(0, int(prompt_retry_budget - prompt_retry_used))
-            max_attempts = min(len(available_actions), int(self.max_fallback_attempts), int(remaining_prompt_budget))
-            if is_initial_cards_prompt:
-                max_attempts = min(max_attempts, int(self.initial_cards_fallback_max_attempts))
-
-            if max_attempts <= 0 and remaining_prompt_budget <= 0:
-                logger.warning(
-                    "Fallback retry budget exhausted for agent %s on current prompt (budget=%d).",
-                    self.id[:8],
-                    prompt_retry_budget,
-                )
-
-            for i in range(max_attempts):
-                random_action_idx = available_actions[i]
-                random_action = self.action_decoder.decode_action(random_action_idx, player_state)
-                 
-                if random_action:
-                    self._bump_decision_stat('fallback_random_attempts')
-                    self._bump_fallback_retry_count_for_prompt(player_id, player_state, 1)
-                    if await self._timed_send_player_input(game_instance, player_id, random_action):
-                        self._bump_decision_stat('fallback_random_successes')
-                        self._record_action_choice(int(random_action_idx), random_action, player_state)
-                        self._clear_rejected_action(player_id, player_state, int(random_action_idx))
-                        self._clear_fallback_retry_count_for_prompt(player_id, player_state)
-                        logger.info(f"Random action succeeded for agent {self.id[:8]}.")
-                        await self._sleep_if_needed(self.post_move_sleep_sec)
-                        return True
-                    self._remember_rejected_action(player_id, player_state, int(random_action_idx))
-                    prompt_rejected_actions.add(int(random_action_idx))
-
-            if can_legally_pass:
-                logger.warning(f"All random actions failed for agent {self.id[:8]}. Passing.")
-                self._bump_decision_stat('fallback_passes')
-                pass_index = pass_actions[0]
-                pass_payload = (
-                    self.action_decoder.decode_action(pass_index, player_state)
-                    if pass_index < pass_base
-                    else self.action_decoder._create_pass_action()
-                )
-                self._record_action_choice(pass_index)
-                self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_pass")
-                sent_pass = await self._timed_send_player_input(
-                    game_instance,
-                    player_id,
-                    pass_payload,
-                )
-                if sent_pass:
-                    self._clear_fallback_retry_count_for_prompt(player_id, player_state)
-                await self._sleep_if_needed(self.post_move_sleep_sec)
-                return bool(sent_pass)
-
-            # Mandatory prompt and no legal pass: do not resend blacklisted actions.
-            self._log_stuck_context(game_instance, player_id, player_state, "all_random_actions_failed_no_pass")
-            await self._sleep_if_needed(self.failure_pause_sec or self.poll_interval_sec)
-            return False
+            raise ActionExecutionError(
+                f"Policy action was not accepted for agent={self.id[:8]} "
+                f"player={player_id} action_index={policy_action_idx!r} "
+                f"action={policy_action!r} waitingFor={player_state.get('waitingFor')!r} "
+                f"legal_actions={raw_available_actions!r}"
+            )
 
         except Exception as e:
             if isinstance(e, ServerTransportError):
                 raise
             logger.error(f"Error making move for agent {self.id[:8]}: {e}", exc_info=True)
-            return False
+            raise
 
     def _legal_pass_actions(self, available_actions: List[int], player_state: Dict[str, Any]) -> List[int]:
         pass_base = int(self.action_decoder.action_types.get('PASS', 900))
@@ -3738,9 +3625,14 @@ class RLAgent:
 
             return action_input, action_index, sampled_from_policy, action_meta
              
+        except ActionPipelineError:
+            raise
         except Exception as e:
-            logger.error(f"Error getting action from network: {e}")
-            return None, None, False, None
+            logger.error(f"Error getting action from network: {e}", exc_info=True)
+            raise ActionPipelineError(
+                f"Policy action generation failed for agent={self.id[:8]} "
+                f"waitingFor={player_state.get('waitingFor')!r}"
+            ) from e
     
     def _sample_action(
         self,
@@ -3758,25 +3650,30 @@ class RLAgent:
         to the log of the old multipliers so initial behaviour is unchanged but
         gradients can adjust the values over time.
 
-        What remains here:
-          1. ε-greedy random exploration.
-          2. Legal-action masking (zero out unavailable actions).
-          3. Contextual OR-menu title adjustments (action_weight_adjustments).
-          4. Mild prefer_project_cards boost (kept small; network learns the rest).
+        Random exploration and fallback sampling are intentionally disabled.
+        Invalid distributions raise so the prompt and policy state can be fixed.
+        Legal-action masking and contextual probability adjustments remain here.
         """
         masked_probs = torch.clamp(policy_probs.reshape(-1).float(), min=0.0)
         valid_positions = list(range(min(int(masked_probs.numel()), len(available_actions))))
         if not valid_positions:
-            fallback_idx = int(np.random.choice(available_actions))
-            return 0, fallback_idx, False, None
+            raise ActionSamplingError(
+                f"Cannot sample an action: no valid positions for available_actions={available_actions!r}"
+            )
         if int(masked_probs.numel()) > len(available_actions):
             masked_probs = masked_probs[:len(available_actions)]
+        if not bool(torch.isfinite(masked_probs).all().item()):
+            raise ActionSamplingError(
+                f"Cannot sample an action: policy probabilities are non-finite for "
+                f"available_actions={available_actions!r}"
+            )
         total = float(masked_probs.sum().item())
-        if total > 0:
-            masked_probs = masked_probs / total
-        else:
-            masked_probs = torch.ones((len(valid_positions),), dtype=torch.float32, device=policy_probs.device)
-            masked_probs = masked_probs / masked_probs.sum()
+        if total <= 0.0:
+            raise ActionSamplingError(
+                f"Cannot sample an action: policy probabilities sum to zero for "
+                f"available_actions={available_actions!r}"
+            )
+        masked_probs = masked_probs / total
 
         # Small residual boost when the prompt is explicitly a project-card play
         # (prefer_project_cards=True means the server is asking to pick a card).
@@ -3793,35 +3690,35 @@ class RLAgent:
                 if int(action_idx) in action_weight_adjustments:
                     masked_probs[pos] *= float(action_weight_adjustments[int(action_idx)])
 
-        # Numerical stability
-        masked_probs = masked_probs + 1e-8
-
         total_prob = float(masked_probs.sum().item())
-        if total_prob <= 0:
-            random_pos = int(np.random.choice(valid_positions))
-            return random_pos, int(available_actions[random_pos]), False, None
+        if not np.isfinite(total_prob) or total_prob <= 0.0:
+            raise ActionSamplingError(
+                f"Cannot sample an action after probability adjustments for "
+                f"available_actions={available_actions!r}"
+            )
         masked_probs = masked_probs / total_prob
 
         effective_epsilon = self._effective_policy_epsilon(force_random=force_random)
+        if force_random:
+            raise ActionSamplingError(
+                f"Random action was explicitly requested for available_actions={available_actions!r}"
+            )
         if self.deterministic_actions:
             chosen_pos = int(torch.argmax(masked_probs).item())
             return chosen_pos, int(available_actions[chosen_pos]), True, masked_probs
         if np.random.random() < float(effective_epsilon):
-            random_pos = int(np.random.choice(valid_positions))
-            return random_pos, int(available_actions[random_pos]), False, masked_probs
+            raise ActionSamplingError(
+                f"Epsilon-random action requested (epsilon={effective_epsilon:.6g}) for "
+                f"available_actions={available_actions!r}"
+            )
 
         try:
             chosen_pos = int(torch.multinomial(masked_probs, 1).item())
             return chosen_pos, int(available_actions[chosen_pos]), True, masked_probs
-        except RuntimeError:
-            pass_action_base = int(self.action_decoder.action_types.get('PASS', 900))
-            non_pass_actions = [a for a in available_actions if a < pass_action_base]
-            if non_pass_actions:
-                fallback_idx = int(np.random.choice(non_pass_actions))
-                fallback_pos = max(0, available_actions.index(fallback_idx))
-                return fallback_pos, fallback_idx, False, None
-            fallback_pos = int(np.random.choice(valid_positions))
-            return fallback_pos, int(available_actions[fallback_pos]), False, None
+        except RuntimeError as e:
+            raise ActionSamplingError(
+                f"Policy sampling failed for available_actions={available_actions!r}"
+            ) from e
     
     async def _record_game_result(self, final_state: Dict[str, Any], player_name: str, game_instance: GameInstance) -> Dict[str, Any]:
         """Record the result of a completed game"""

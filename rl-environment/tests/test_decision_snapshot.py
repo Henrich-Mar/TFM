@@ -513,9 +513,13 @@ def test_snapshot_routes_and_page_render(monkeypatch, tmp_path: Path) -> None:
     assert "const middleY = (minY + maxY) / 2;" in page_resp.text
     assert "actionDisplayLabel" in page_resp.text
     assert "loadNextGuidedSnapshot" in page_resp.text
+    assert "Autoplay Model Until Error" in page_resp.text
+    assert "runAutonomousUntilError" in page_resp.text
+    assert "return currentSnapshot;" in page_resp.text
 
     listed = list_saved_snapshots()
     assert listed[0]["snapshot_id"] == saved["snapshot_id"]
+    assert listed[0]["saved_at_ms"] > 0
     loaded = load_snapshot(saved["snapshot_id"])
     assert loaded["policy"]["chosen_action_label"] == "PLAY_CARD(Asteroid Mining)"
     assert loaded["policy"]["chosen_action_descriptor"]["family"] == "play_card"

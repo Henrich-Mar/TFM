@@ -124,6 +124,9 @@ class V2SelfPlayRunner:
         self.stage = int(resume_state.get("stage", configured_initial_stage) or 0)
         if self.stage not in (0, 1):
             raise ValueError(f"unsupported self-play stage: {self.stage}")
+        from v2_runtime import assert_stage_allowed
+
+        assert_stage_allowed(self.stage, context="v2 self-play")
         self.seed_cursor = int(resume_state.get("seed_cursor", seed) or seed)
         benchmark_seed_payload = json.loads(
             (Path(__file__).resolve().parents[1] / "benchmark_seeds.v1.json").read_text(encoding="utf-8")
@@ -342,14 +345,23 @@ class V2SelfPlayRunner:
             and bool((random_report or {}).get("gate_passed", False))
             and bool(regression_report.get("gate_passed", False))
         ):
-            self.stage = 1
-            self.cluster.base_game_options = _load_stage_options(1)
-            initial_champion = self.checkpoints / "champion_bc.pth"
-            shutil.copy2(self.champion_path, initial_champion)
-            self.history.append(str(initial_champion))
-            shutil.copy2(candidate_path, self.champion_path)
-            self._refresh_frozen_pools()
-            promoted = True
+            from v2_runtime import stage1_unlocked
+
+            if not stage1_unlocked():
+                print(
+                    "[selfplay] Stage 0 gates passed, but Stage 1 remains blocked until "
+                    "V2_ALLOW_STAGE1=1 after a strict action-space audit",
+                    flush=True,
+                )
+            else:
+                self.stage = 1
+                self.cluster.base_game_options = _load_stage_options(1)
+                initial_champion = self.checkpoints / "champion_bc.pth"
+                shutil.copy2(self.champion_path, initial_champion)
+                self.history.append(str(initial_champion))
+                shutil.copy2(candidate_path, self.champion_path)
+                self._refresh_frozen_pools()
+                promoted = True
         elif self.stage == 1:
             teacher_report = await benchmark(str(candidate_path), "teacher", 1, str(self.benchmarks))
             if bool(teacher_report.get("gate_passed", False)) and bool(regression_report.get("gate_passed", False)):

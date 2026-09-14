@@ -40,6 +40,9 @@ ActionFamily = Literal[
     "convert_heat",
     "sell_patents",
     "card_subset",
+    "card_prompt",
+    "claim_milestone",
+    "ares_global_parameters",
     "startup_plan",
     "other",
 ]
@@ -74,6 +77,9 @@ ACTION_FAMILIES = frozenset(
         "convert_heat",
         "sell_patents",
         "card_subset",
+        "card_prompt",
+        "claim_milestone",
+        "ares_global_parameters",
         "startup_plan",
         "other",
     }
@@ -92,7 +98,10 @@ ACTION_RANGES: Dict[str, range] = {
     # Keep the amount namespace disjoint from the existing card-mask namespace.
     "select_amount": range(500, 520),
     "card_selection": range(520, 600),
-    # Awards and players currently share this contextual protocol namespace.
+    # Contextual 600-699 namespace:
+    # - 600-649: fund-award leaves (and select-player prompts, which never
+    #   coexist with the action-menu award branch)
+    # - 650-699: claim-milestone leaves (can coexist with awards on the same OR)
     "target_selection": range(600, 700),
     "special": range(700, 720),
     "select_colony": range(720, 730),
@@ -101,6 +110,7 @@ ACTION_RANGES: Dict[str, range] = {
     "select_global_event": range(750, 760),
     "select_underground_token": range(760, 770),
     "startup_fallback": range(800, 801),
+    "ares_global_parameters": range(810, 811),
     "select_resource": range(820, 830),
     "and": range(830, 831),
     "select_policy": range(840, 850),

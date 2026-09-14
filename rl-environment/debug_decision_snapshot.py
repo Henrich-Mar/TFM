@@ -1,4 +1,5 @@
 import json
+import hashlib
 import math
 import os
 import re
@@ -21,6 +22,55 @@ _REQUEST_LOCK = threading.Lock()
 _PENDING_CAPTURE_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
 _CARD_TAG_RESOLVER: Any = None
+
+
+def legal_action_descriptor_fingerprint(descriptors: List[Dict[str, Any]]) -> str:
+    """Hash the canonical, non-model-specific part of a prompt action catalog."""
+    canonical = [
+        {
+            "action_index": _safe_int(row.get("action_index", -1), -1),
+            "family": str(row.get("family", "") or ""),
+            "label": str(row.get("label", "") or ""),
+            "decoded_action": row.get("decoded_action", {}),
+        }
+        for row in (descriptors or [])
+    ]
+    encoded = json.dumps(
+        _json_safe(canonical),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_action_payload(payload: Any) -> str:
+    """Order-invariant identity for replaying a recorded choice against a new catalog."""
+    if not isinstance(payload, dict):
+        return ""
+    normalized = dict(payload)
+    cards = normalized.get("cards")
+    if isinstance(cards, list):
+        normalized["cards"] = sorted(str(item) for item in cards)
+    return json.dumps(_json_safe(normalized), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def remap_action_index_by_payload(
+    descriptors: List[Dict[str, Any]],
+    payload: Any,
+) -> Optional[int]:
+    target = canonical_action_payload(payload)
+    if not target:
+        return None
+    matches = [
+        _safe_int(row.get("action_index", -1), -1)
+        for row in (descriptors or [])
+        if canonical_action_payload(row.get("decoded_action", {})) == target
+    ]
+    matches = [item for item in matches if item >= 0]
+    if len(matches) != 1:
+        return None
+    return int(matches[0])
 
 
 def _resolve_card_tags(card: Any) -> List[str]:
@@ -649,15 +699,20 @@ def _award_summary(award: Any, index: int) -> Dict[str, Any]:
             continue
         scores.append(
             {
-                "player_name": str(row.get("playerName", "") or "").strip(),
-                "player_color": str(row.get("playerColor", "") or "").strip(),
+                "player_name": str(row.get("playerName", row.get("name", "")) or "").strip(),
+                "player_color": str(row.get("playerColor", row.get("color", "")) or "").strip(),
                 "score": _safe_float(row.get("playerScore", row.get("score", 0.0))),
             }
         )
     return {
         "index": int(index),
         "name": str(award.get("name", "") or award.get("title", "") or "").strip(),
-        "funded_by": str(award.get("playerName", "") or award.get("playerColor", "") or "").strip(),
+        "funded_by": str(
+            award.get("playerName", "")
+            or award.get("playerColor", "")
+            or award.get("color", "")
+            or ""
+        ).strip(),
         "scores": scores,
     }
 
@@ -671,8 +726,8 @@ def _milestone_summary(milestone: Any, index: int) -> Dict[str, Any]:
             continue
         scores.append(
             {
-                "player_name": str(row.get("playerName", "") or "").strip(),
-                "player_color": str(row.get("playerColor", "") or "").strip(),
+                "player_name": str(row.get("playerName", row.get("name", "")) or "").strip(),
+                "player_color": str(row.get("playerColor", row.get("color", "")) or "").strip(),
                 "score": _safe_float(row.get("playerScore", row.get("score", 0.0))),
             }
         )
@@ -1039,8 +1094,16 @@ def build_decision_snapshot(
             "prompt_type": str(waiting_for.get("type", "") or "").strip(),
             "prompt_title": _message_text(waiting_for.get("title", "")),
             "turn_action_count": int(turn_action_count),
+            "decision_sequence": _safe_int(action_meta.get("decision_sequence", 0)),
             "sampled_from_policy": bool(sampled_from_policy),
             "send_outcome": str(send_outcome or "").strip(),
+        },
+        "raw": {
+            # Guided captures are training/debug artifacts and deliberately
+            # retain the exact private player view needed to reproduce the
+            # legal-action catalog.  _json_safe handles numpy values below.
+            "player_state": player_state,
+            "waiting_for": waiting_for,
         },
         "state": {
             "this_player": _player_summary(this_player, hand_count_override=resolved_hand_count),
@@ -1095,6 +1158,16 @@ def build_decision_snapshot(
                 "payment_value_estimate": _safe_float(action_meta.get("payment_value_estimate", 0.0)),
             },
         },
+        "execution": {
+            "finalized": False,
+            "finalized_at": "",
+            "action_source": "",
+            "sent_action_index": None,
+            "sent_action_payload": {},
+            "server_accepted": None,
+            "error": "",
+            "training_eligible": False,
+        },
     }
     if _safe_bool(request.get("include_state_vector", False)) and state_vector is not None:
         try:
@@ -1126,12 +1199,103 @@ def save_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     payload["snapshot_id"] = snapshot_id
     payload["snapshot_path"] = str(path)
 
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
     return {
         "snapshot_id": snapshot_id,
         "snapshot_path": str(path),
         "snapshot": payload,
     }
+
+
+def save_action_pipeline_quarantine(
+    *,
+    agent_id: str,
+    game_id: str,
+    player_id: str,
+    player_state: Dict[str, Any],
+    reason: str,
+) -> Dict[str, Any]:
+    """Persist an invalid/overflow prompt without making it training eligible."""
+    root = Path(get_snapshot_root()) / "quarantine"
+    root.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    snapshot_id = "_".join(
+        [
+            timestamp,
+            _sanitize_id(agent_id)[:12],
+            _sanitize_id(game_id)[:12],
+            "invalid",
+        ]
+    )
+    path = root / f"{snapshot_id}.json"
+    payload = _json_safe({
+        "schema_version": "action_pipeline_quarantine.v1",
+        "snapshot_id": snapshot_id,
+        "captured_at": _utc_now_iso(),
+        "agent": {"id": str(agent_id or "")},
+        "prompt": {
+            "game_id": str(game_id or ""),
+            "player_id": str(player_id or ""),
+            "prompt_type": str(((player_state.get("waitingFor", {}) or {}).get("type", "")) or ""),
+        },
+        "raw": {
+            "player_state": player_state,
+            "waiting_for": player_state.get("waitingFor", {}) or {},
+        },
+        "state": {"planner_bundle": {}},
+        "execution": {
+            "finalized": True,
+            "action_source": "invalid",
+            "server_accepted": False,
+            "fallback_used": False,
+            "training_eligible": False,
+            "validation_errors": [str(reason or "invalid_action_pipeline")],
+        },
+    })
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return payload
+
+
+def finalize_snapshot_execution(
+    snapshot_id: str,
+    action_index: Optional[int],
+    action_payload: Optional[Dict[str, Any]],
+    action_source: str,
+    server_accepted: bool,
+    error: str = "",
+) -> Dict[str, Any]:
+    """Atomically attach the action actually sent and its server outcome."""
+    safe_id = _sanitize_id(snapshot_id)
+    path = Path(get_snapshot_root()) / f"{safe_id}.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"Snapshot not found: {snapshot_id}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid snapshot payload: {snapshot_id}")
+    accepted = bool(server_accepted)
+    source = str(action_source or "").strip()
+    execution = {
+        "finalized": True,
+        "finalized_at": _utc_now_iso(),
+        "action_source": source,
+        "sent_action_index": int(action_index) if action_index is not None else None,
+        "sent_action_payload": dict(action_payload or {}),
+        "server_accepted": accepted,
+        "error": str(error or "").strip(),
+        "training_eligible": bool(accepted and source in {"policy", "teacher", "human_annotation"}),
+    }
+    payload["execution"] = execution
+    prompt = dict(payload.get("prompt", {}) or {})
+    prompt["send_outcome"] = "accepted" if accepted else "rejected"
+    payload["prompt"] = prompt
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(_json_safe(payload), ensure_ascii=True, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return payload
 
 
 def list_saved_snapshots() -> List[Dict[str, Any]]:
@@ -1148,6 +1312,7 @@ def list_saved_snapshots() -> List[Dict[str, Any]]:
             saved_at_ms = 0
         prompt = dict(payload.get("prompt", {}) or {})
         agent = dict(payload.get("agent", {}) or {})
+        execution = dict(payload.get("execution", {}) or {})
         review = dict((payload.get("diagnostics", {}) or {}).get("review_priority", {}) or {})
         items.append(
             {
@@ -1160,6 +1325,8 @@ def list_saved_snapshots() -> List[Dict[str, Any]]:
                 "phase": str(prompt.get("phase", "") or ""),
                 "prompt_type": str(prompt.get("prompt_type", "") or ""),
                 "send_outcome": str(prompt.get("send_outcome", "") or ""),
+                "decision_sequence": _safe_int(prompt.get("decision_sequence", 0)),
+                "server_accepted": execution.get("server_accepted"),
                 "saved_at_ms": saved_at_ms,
                 "review_priority": _safe_float(review.get("priority_score", 0.0)),
                 "path": str(path),
@@ -1198,6 +1365,7 @@ def save_snapshot_annotation(
         "schema_version": "teacher_annotation.v1",
         "snapshot_id": str(snapshot.get("snapshot_id", snapshot_id)),
         "annotated_at": _utc_now_iso(),
+        "decision_sequence": _safe_int((snapshot.get("prompt", {}) or {}).get("decision_sequence", 0)),
         "accepted_action_indices": accepted,
         "note": str(note or "").strip(),
         "skip": bool(skip),
@@ -1255,13 +1423,37 @@ def load_annotation_replay(source_game_id: str, agent_id: str) -> List[Dict[str,
             if str(prompt.get("game_id", "") or "").strip() != source_game_id or snapshot_agent_id != agent_id:
                 continue
             proposed_action_index = _safe_int((snapshot.get("policy", {}) or {}).get("chosen_action_index", -1), -1)
+            source_descriptors = list((snapshot.get("policy", {}) or {}).get("action_descriptors", []) or [])
             selected_action_index = proposed_action_index if proposed_action_index in accepted else accepted[0]
+            selected_payload = next(
+                (
+                    dict(row.get("decoded_action", {}) or {})
+                    for row in source_descriptors
+                    if _safe_int(row.get("action_index", -1), -1) == int(selected_action_index)
+                ),
+                {},
+            )
+            selected_label = next(
+                (
+                    str(row.get("label", "") or "")
+                    for row in source_descriptors
+                    if _safe_int(row.get("action_index", -1), -1) == int(selected_action_index)
+                ),
+                "",
+            )
             replay.append(
                 {
                     "source_snapshot_id": snapshot_id,
                     "captured_at": str(snapshot.get("captured_at", "") or ""),
+                    "annotated_at": str(annotation.get("annotated_at", "") or ""),
+                    "decision_sequence": _safe_int(
+                        annotation.get("decision_sequence", prompt.get("decision_sequence", 0))
+                    ),
                     "accepted_action_indices": accepted,
                     "selected_action_index": selected_action_index,
+                    "selected_action_payload": selected_payload,
+                    "selected_action_label": selected_label,
+                    "legal_action_fingerprint": legal_action_descriptor_fingerprint(source_descriptors),
                     "prompt": {
                         "player_name": str(prompt.get("player_name", "") or ""),
                         "phase": str(prompt.get("phase", "") or ""),
@@ -1278,5 +1470,212 @@ def load_annotation_replay(source_game_id: str, agent_id: str) -> List[Dict[str,
             # remain for the requested source game.
             continue
 
-    replay.sort(key=lambda step: (str(step.get("captured_at", "")), str(step.get("source_snapshot_id", ""))))
+    # New captures have an explicit per-game sequence.  Legacy guided captures
+    # are ordered by the microsecond annotation timestamp, not their
+    # second-resolution snapshot name.
+    if replay and all(_safe_int(step.get("decision_sequence", 0)) > 0 for step in replay):
+        replay.sort(key=lambda step: (_safe_int(step.get("decision_sequence", 0)), str(step.get("source_snapshot_id", ""))))
+    else:
+        replay.sort(
+            key=lambda step: (
+                str(step.get("annotated_at", "") or step.get("captured_at", "")),
+                str(step.get("source_snapshot_id", "")),
+            )
+        )
     return replay
+
+
+def _teacher_row_to_replay_step(row: Dict[str, Any]) -> Dict[str, Any]:
+    descriptors = list(row.get("action_descriptors", []) or [])
+    indices = [int(item) for item in (row.get("action_indices", []) or [])]
+    position = int(row.get("chosen_action_position", -1))
+    selected = indices[position] if 0 <= position < len(indices) else -1
+    selected_payload = {}
+    selected_label = ""
+    if 0 <= position < len(descriptors):
+        selected_payload = dict(descriptors[position].get("decoded_action", {}) or {})
+        selected_label = str(descriptors[position].get("label", "") or "")
+    return {
+        "source_snapshot_id": str(row.get("sample_id", row.get("episode_id", "teacher-shard")) or "teacher-shard"),
+        "selected_action_index": int(selected),
+        "selected_action_payload": selected_payload,
+        "selected_action_label": selected_label,
+        "legal_action_fingerprint": legal_action_descriptor_fingerprint(descriptors),
+        "action_descriptors": descriptors,
+    }
+
+
+def load_teacher_shard_episodes(teacher_source: str, game_id: str) -> List[List[Dict[str, Any]]]:
+    """Load every teacher episode for one recovered game (typically one per seat)."""
+    import gzip
+    import pickle
+
+    root = Path(str(teacher_source or "")).expanduser()
+    game_id = str(game_id or "").strip()
+    if not root.is_dir() or not game_id:
+        return []
+    episodes: List[List[Dict[str, Any]]] = []
+    for path in sorted(root.rglob("episode_*.pkl.gz")):
+        try:
+            with gzip.open(path, "rb") as handle:
+                rows = list(pickle.load(handle) or [])
+        except Exception:
+            continue
+        if not rows:
+            continue
+        if {str(row.get("game_id", "") or "") for row in rows} != {game_id}:
+            continue
+        episodes.append([_teacher_row_to_replay_step(row) for row in rows])
+    return episodes
+
+
+_TEACHER_SHARD_REPLAY_LOCK = threading.Lock()
+_TEACHER_SHARD_REPLAY_STATE: Dict[str, Any] = {
+    "game_id": "",
+    "unbound": [],
+    "bound": {},
+    "pending": {},
+}
+
+
+def reset_teacher_shard_replay() -> None:
+    with _TEACHER_SHARD_REPLAY_LOCK:
+        _TEACHER_SHARD_REPLAY_STATE["game_id"] = ""
+        _TEACHER_SHARD_REPLAY_STATE["unbound"] = []
+        _TEACHER_SHARD_REPLAY_STATE["bound"] = {}
+        _TEACHER_SHARD_REPLAY_STATE["pending"] = {}
+
+
+def configure_teacher_shard_replay(
+    teacher_source: str,
+    game_id: str,
+    *,
+    exclude_fingerprint_sequence: Optional[List[str]] = None,
+) -> int:
+    """Prepare unbound seat trajectories for a multi-seat deterministic replay."""
+    episodes = load_teacher_shard_episodes(teacher_source, game_id)
+    exclude = [str(item) for item in (exclude_fingerprint_sequence or []) if str(item)]
+    unbound: List[List[Dict[str, Any]]] = []
+    for episode in episodes:
+        fingerprints = [str(step.get("legal_action_fingerprint", "") or "") for step in episode]
+        if exclude and len(fingerprints) == len(exclude) and fingerprints == exclude:
+            continue
+        unbound.append(episode)
+    with _TEACHER_SHARD_REPLAY_LOCK:
+        _TEACHER_SHARD_REPLAY_STATE["game_id"] = str(game_id)
+        _TEACHER_SHARD_REPLAY_STATE["unbound"] = unbound
+        _TEACHER_SHARD_REPLAY_STATE["bound"] = {}
+        _TEACHER_SHARD_REPLAY_STATE["pending"] = {}
+    return len(unbound)
+
+
+def _match_teacher_step(step: Dict[str, Any], legal_descriptors: List[Dict[str, Any]]) -> Optional[int]:
+    expected_fp = str(step.get("legal_action_fingerprint", "") or "")
+    actual_fp = legal_action_descriptor_fingerprint(legal_descriptors)
+    selected = int(step.get("selected_action_index", -1))
+    legal = {int(row.get("action_index", -1)) for row in (legal_descriptors or [])}
+    if expected_fp and expected_fp == actual_fp and selected in legal:
+        return selected
+
+    payload = step.get("selected_action_payload", {})
+    if _is_discriminative_payload(payload):
+        remapped = remap_action_index_by_payload(legal_descriptors, payload)
+        if remapped is not None and int(remapped) in legal:
+            return int(remapped)
+
+    label = str(step.get("selected_action_label", "") or "").strip()
+    if label:
+        label_matches = [
+            int(row.get("action_index", -1))
+            for row in (legal_descriptors or [])
+            if str(row.get("label", "") or "").strip() == label
+        ]
+        label_matches = [item for item in label_matches if item in legal]
+        if len(label_matches) == 1:
+            return int(label_matches[0])
+    return None
+
+
+def _is_discriminative_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    if payload.get("cards") or payload.get("spaceId") or payload.get("card"):
+        return True
+    response = payload.get("response")
+    if isinstance(response, dict):
+        if response.get("cards") or response.get("spaceId") or response.get("card"):
+            return True
+        if response.get("type") and response.get("type") not in {"option", "pass"}:
+            return True
+    if payload.get("type") in {"projectCard", "card", "space", "payment", "player"}:
+        return True
+    return False
+
+
+def take_teacher_shard_replay_action(
+    agent_id: str,
+    legal_descriptors: List[Dict[str, Any]],
+) -> Optional[int]:
+    """Consume the next matching teacher-shard action for a non-annotated seat."""
+    agent_id = str(agent_id or "").strip()
+    if not agent_id:
+        return None
+    with _TEACHER_SHARD_REPLAY_LOCK:
+        bound: Dict[str, List[Dict[str, Any]]] = _TEACHER_SHARD_REPLAY_STATE["bound"]
+        unbound: List[List[Dict[str, Any]]] = _TEACHER_SHARD_REPLAY_STATE["unbound"]
+        steps = bound.get(agent_id)
+        if steps is None:
+            match_index = None
+            selected = None
+            for idx, episode in enumerate(unbound):
+                if not episode:
+                    continue
+                selected = _match_teacher_step(episode[0], legal_descriptors)
+                if selected is None:
+                    continue
+                match_index = idx
+                break
+            if match_index is None or selected is None:
+                return None
+            steps = unbound.pop(match_index)
+            bound[agent_id] = steps
+        if not steps:
+            raise RuntimeError(f"teacher shard replay exhausted for agent {agent_id}")
+        selected = _match_teacher_step(steps[0], legal_descriptors)
+        if selected is None:
+            raise RuntimeError(
+                "teacher shard replay diverged for agent "
+                f"{agent_id} at source={steps[0].get('source_snapshot_id')}"
+            )
+        _TEACHER_SHARD_REPLAY_STATE["pending"][agent_id] = {
+            "action_index": int(selected),
+            "source_snapshot_id": steps[0].get("source_snapshot_id"),
+        }
+        return int(selected)
+
+
+def confirm_teacher_shard_replay_action(agent_id: str, action_index: Optional[int]) -> None:
+    agent_id = str(agent_id or "").strip()
+    with _TEACHER_SHARD_REPLAY_LOCK:
+        pending = _TEACHER_SHARD_REPLAY_STATE["pending"].pop(agent_id, None)
+        steps = _TEACHER_SHARD_REPLAY_STATE["bound"].get(agent_id)
+        if not isinstance(pending, dict) or not isinstance(steps, list) or not steps:
+            return
+        if int(pending.get("action_index", -1)) != int(action_index if action_index is not None else -1):
+            return
+        steps.pop(0)
+
+
+def assert_teacher_shard_replay_complete() -> None:
+    with _TEACHER_SHARD_REPLAY_LOCK:
+        leftover_unbound = sum(len(episode) for episode in _TEACHER_SHARD_REPLAY_STATE["unbound"])
+        leftover_bound = {
+            agent_id: len(steps)
+            for agent_id, steps in _TEACHER_SHARD_REPLAY_STATE["bound"].items()
+            if steps
+        }
+    if leftover_unbound or leftover_bound:
+        raise RuntimeError(
+            "teacher shard replay left unused steps: "
+            f"unbound={leftover_unbound} bound={leftover_bound}"
+        )

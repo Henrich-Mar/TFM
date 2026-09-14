@@ -12,10 +12,12 @@ if "rl-environment" not in sys.path:
 from debug_decision_snapshot import (  # noqa: E402
     build_decision_snapshot,
     create_capture_request,
+    finalize_snapshot_execution,
     list_saved_snapshots,
     load_annotation_replay,
     load_snapshot,
     reset_capture_state,
+    save_action_pipeline_quarantine,
     save_snapshot,
 )
 from models.planner_common import PLANNER_OPPORTUNITY_LIMIT, planner_aux_dim, planner_aux_layout  # noqa: E402
@@ -110,6 +112,11 @@ def _base_action_meta() -> dict:
     planner_vector[layout["board_opportunity_value"].start + 0] = 0.81
     planner_vector[layout["deny_risk"].start + 0] = 0.37
     return {
+        "decision_sequence": 7,
+        "planner_bundle": {
+            "action_indices": [0, 100],
+            "action_mask": [True, True],
+        },
         "phase_index": 2,
         "aux_targets": {
             "planner_vector": planner_vector,
@@ -250,6 +257,11 @@ def test_snapshot_serialization_supports_prompt_types(monkeypatch, tmp_path: Pat
             state_vector=[0.1, 0.2, 0.3],
         )
         assert snapshot["prompt"]["prompt_type"] == prompt_type
+        assert snapshot["prompt"]["decision_sequence"] == 7
+        assert snapshot["raw"]["player_state"] == player_state
+        assert snapshot["raw"]["waiting_for"] == player_state["waitingFor"]
+        assert snapshot["state"]["planner_bundle"]["action_indices"] == [0, 100]
+        assert snapshot["execution"]["finalized"] is False
         assert snapshot["state"]["hand"]
         assert snapshot["state"]["tableau"]
         assert "prompt_candidates" in snapshot["state"]
@@ -304,6 +316,65 @@ def test_snapshot_save_normalizes_numpy_payloads(monkeypatch, tmp_path: Path) ->
     assert loaded["policy"]["top_actions"][0]["action_index"] == 7
     assert loaded["policy"]["top_actions"][0]["score"] == pytest.approx(0.9)
     assert loaded["policy"]["top_actions"][0]["weights"] == pytest.approx([0.6, 0.3, 0.1])
+
+
+def test_snapshot_is_atomically_finalized_with_server_result(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DECISION_SNAPSHOT_DIR", str(tmp_path))
+    reset_capture_state()
+    saved = save_snapshot(
+        build_decision_snapshot(
+            request=create_capture_request(note="finalize"),
+            agent_id="agent-finalize",
+            game_id="game-finalize",
+            game_url="http://localhost:8081/game?id=game-finalize",
+            player_id="player-red",
+            player_state=_make_player_state("or", {"options": [{"type": "pass"}]}),
+            action_input={"type": "or", "index": 0},
+            action_index=200,
+            action_meta=_base_action_meta(),
+            sampled_from_policy=False,
+            send_outcome="pending",
+            turn_action_count=0,
+        )
+    )
+
+    finalized = finalize_snapshot_execution(
+        saved["snapshot_id"],
+        action_index=200,
+        action_payload={"type": "or", "index": 0},
+        action_source="human_annotation",
+        server_accepted=True,
+    )
+
+    execution = finalized["execution"]
+    assert execution["finalized"] is True
+    assert execution["finalized_at"]
+    assert execution["sent_action_index"] == 200
+    assert execution["sent_action_payload"] == {"type": "or", "index": 0}
+    assert execution["action_source"] == "human_annotation"
+    assert execution["server_accepted"] is True
+    assert execution["error"] == ""
+    assert execution["training_eligible"] is True
+    assert load_snapshot(saved["snapshot_id"])["prompt"]["send_outcome"] == "accepted"
+
+
+def test_invalid_action_prompt_is_saved_only_to_quarantine(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DECISION_SNAPSHOT_DIR", str(tmp_path))
+    player_state = _make_player_state("card", {"cards": []})
+    payload = save_action_pipeline_quarantine(
+        agent_id="agent-invalid",
+        game_id="game-invalid",
+        player_id="player-red",
+        player_state=player_state,
+        reason="CardSelectionOverflow: more than 80 legal combinations",
+    )
+    path = tmp_path / "quarantine" / f"{payload['snapshot_id']}.json"
+    assert path.is_file()
+    assert payload["raw"]["player_state"] == player_state
+    assert payload["state"]["planner_bundle"] == {}
+    assert payload["execution"]["training_eligible"] is False
+    assert payload["execution"]["server_accepted"] is False
+    assert not list(tmp_path.glob("*.json"))
 
 
 def test_snapshot_uses_or_project_card_options_as_hand_when_cards_in_hand_are_empty(tmp_path: Path) -> None:

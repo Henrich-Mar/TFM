@@ -1,6 +1,7 @@
 import sys
 from typing import Any, Dict, List
 
+import pytest
 
 if "rl-environment" not in sys.path:
     sys.path.insert(0, "rl-environment")
@@ -8,6 +9,7 @@ if "rl-environment" not in sys.path:
 import models.action_decoder as action_decoder_module
 from models.action_decoder import (
     ActionDecoder,
+    ActionEnumerationError,
     _card_keep_cost,
     _card_starting_megacredits,
     _enumerate_startup_plan_payloads,
@@ -87,6 +89,12 @@ def _corp_economics_metadata() -> Dict[str, Dict[str, Any]]:
             "tags": ["Jovian"],
             "category": "corporation",
         },
+        "Mining Guild": {
+            "startingMegaCredits": 30,
+            "cardCost": 3,
+            "tags": ["Building", "Building"],
+            "category": "corporation",
+        },
     }
 
 
@@ -102,6 +110,50 @@ def _player_state(waiting_for: Dict[str, Any]) -> Dict[str, Any]:
             "titaniumValue": 3,
         },
         "game": {"temperature": -30, "oceans": 0, "venusScaleLevel": 0, "moon": {}},
+    }
+
+
+def _stage1_waiting_for() -> Dict[str, Any]:
+    return {
+        "type": "initialCards",
+        "options": [
+            {
+                "title": "Select corporation",
+                "buttonLabel": "Save",
+                "type": "card",
+                "cards": [
+                    {
+                        "name": "United Nations Mars Initiative",
+                        "calculatedCost": 0,
+                        "tags": ["Earth"],
+                    },
+                    {
+                        "name": "Mining Guild",
+                        "calculatedCost": 0,
+                        "tags": ["Building"],
+                    },
+                ],
+                "min": 1,
+                "max": 1,
+            },
+            {
+                "title": "Select initial cards to buy",
+                "buttonLabel": "Save",
+                "type": "card",
+                "cards": [
+                    {"name": "Local Heat Trapping", "calculatedCost": 1, "tags": ["Building"]},
+                    {"name": "Space Mirrors", "calculatedCost": 3, "tags": ["Science"]},
+                    {"name": "Underground Detonations", "calculatedCost": 6, "tags": ["Building"]},
+                    {"name": "Water Splitting Plant", "calculatedCost": 12, "tags": ["Building"]},
+                    {"name": "Colonist Shuttles", "calculatedCost": 12, "tags": ["Earth"]},
+                    {"name": "Tycho Road Network", "calculatedCost": 15, "tags": ["Building"]},
+                    {"name": "Darkside Observatory", "calculatedCost": 12, "tags": ["Science"]},
+                    {"name": "Ishtar Expedition", "calculatedCost": 6, "tags": ["Venus"]},
+                ],
+                "min": 0,
+                "max": 10,
+            },
+        ],
     }
 
 
@@ -172,25 +224,18 @@ def test_startup_bundle_generator_respects_project_keep_legality(monkeypatch) ->
         assert set(project_cards).issubset(offered_project_names)
 
 
-def test_startup_decode_selects_a_cost_aware_project_subset(monkeypatch) -> None:
+def test_startup_decode_quarantines_an_overflowing_action_space(monkeypatch) -> None:
     monkeypatch.setattr(action_decoder_module, "_CARD_META_CACHE", _corp_economics_metadata())
     waiting_for = _startup_waiting_for()
     player_state = _player_state(waiting_for)
     decoder = ActionDecoder()
 
-    available_actions = decoder.get_available_actions(player_state)
-    startup_actions = [a for a in available_actions if 850 <= int(a) < 882]
-    assert 800 in available_actions
-    assert startup_actions, "expected startup bundle actions to be exposed"
-
-    startup_response = decoder.decode_action(startup_actions[0], player_state)
-    assert startup_response is not None
-    assert startup_response.get("type") == "initialCards"
-    assert len(_response_cards(startup_response, 0)) == 1
-    assert len(_response_cards(startup_response, 1)) == 2
-    selected_projects = _response_cards(startup_response, 2)
-    assert selected_projects
-    assert len(selected_projects) < len(waiting_for["options"][2]["cards"])
+    catalog = decoder.enumerate_legal_actions(player_state)
+    assert catalog.status == "invalid"
+    assert catalog.actions == []
+    assert "more than 32 legal plans" in str(catalog.reason)
+    with pytest.raises(ActionEnumerationError, match="more than 32 legal plans"):
+        decoder.get_available_actions(player_state)
 
 
 def test_startup_plan_does_not_fill_the_full_keep_limit_with_mediocre_cards(monkeypatch) -> None:
@@ -204,3 +249,85 @@ def test_startup_plan_does_not_fill_the_full_keep_limit_with_mediocre_cards(monk
 
     assert plans
     assert len(_response_cards(plans[0], 2)) == 0
+
+
+def test_stage1_startup_catalog_stays_within_plan_limit(monkeypatch) -> None:
+    monkeypatch.setattr(action_decoder_module, "_CARD_META_CACHE", _corp_economics_metadata())
+    waiting_for = _stage1_waiting_for()
+    player_state = _player_state(waiting_for)
+    decoder = ActionDecoder()
+
+    catalog = decoder.enumerate_legal_actions(player_state)
+    assert catalog.status == "active"
+    assert 1 <= len(catalog.actions) <= 32
+    assert all(action.family == "startup_plan" for action in catalog.actions)
+    assert all("Keep:" in action.description for action in catalog.actions)
+
+
+def test_startup_plan_tokens_differ_by_corp_and_keeps(monkeypatch) -> None:
+    monkeypatch.setattr(action_decoder_module, "_CARD_META_CACHE", _corp_economics_metadata())
+    waiting_for = _stage1_waiting_for()
+    player_state = _player_state(waiting_for)
+    decoder = ActionDecoder()
+
+    def _token(payload: Dict[str, Any]):
+        labels = decoder._descriptor_labels(850, waiting_for, "startup_plan", payload, player_state)
+        return labels, decoder._build_action_token(
+            player_state=player_state,
+            action_index=850,
+            family="startup_plan",
+            label_info=labels,
+            decoded_action=payload,
+        )
+
+    empty_payload = {
+        "type": "initialCards",
+        "responses": [
+            {"type": "card", "cards": ["United Nations Mars Initiative"]},
+            {"type": "card", "cards": []},
+        ],
+    }
+    keep_payload = {
+        "type": "initialCards",
+        "responses": [
+            {"type": "card", "cards": ["United Nations Mars Initiative"]},
+            {"type": "card", "cards": ["Local Heat Trapping", "Underground Detonations"]},
+        ],
+    }
+    other_corp_payload = {
+        "type": "initialCards",
+        "responses": [
+            {"type": "card", "cards": ["Mining Guild"]},
+            {"type": "card", "cards": ["Local Heat Trapping", "Underground Detonations"]},
+        ],
+    }
+    empty_labels, empty_token = _token(empty_payload)
+    keep_labels, keep_token = _token(keep_payload)
+    other_labels, other_token = _token(other_corp_payload)
+
+    assert "Keep: no cards" in empty_labels["label"]
+    assert "Local Heat Trapping" in keep_labels["label"]
+    assert keep_labels["card_name"] == "United Nations Mars Initiative"
+    assert other_labels["card_name"] == "Mining Guild"
+    assert empty_token.tolist() != keep_token.tolist()
+    assert keep_token.tolist() != other_token.tolist()
+    assert empty_token.shape == keep_token.shape
+
+    descriptors = decoder.get_legal_action_descriptors(player_state)
+    assert len(descriptors) >= 2
+    tokens = {tuple(row["token_features"].tolist()) for row in descriptors}
+    assert len(tokens) > 1
+
+
+def test_startup_keep_roi_does_not_prefer_filling_the_cash_cap(monkeypatch) -> None:
+    monkeypatch.setattr(action_decoder_module, "_CARD_META_CACHE", _corp_economics_metadata())
+    waiting_for = _stage1_waiting_for()
+    plans = _enumerate_startup_plan_payloads(waiting_for, _player_state(waiting_for), max_plans=8)
+    assert plans
+    top_keeps = _response_cards(plans[0], 1)
+    unmi_start_mc, unmi_keep_cost = 40, 3
+    mining_start_mc, mining_keep_cost = 30, 3
+    corp = _response_cards(plans[0], 0)[0]
+    start_mc, keep_cost = (unmi_start_mc, unmi_keep_cost) if corp == "United Nations Mars Initiative" else (mining_start_mc, mining_keep_cost)
+    legal_cap = start_mc // keep_cost
+    assert len(top_keeps) < legal_cap

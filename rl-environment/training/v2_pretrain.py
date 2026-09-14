@@ -134,6 +134,7 @@ def _run_epoch(
         "teacher_top3": 0.0,
     }
     count = 0
+    policy_count = 0
     human_count = 0
     teacher_count = 0
     batch_index = 0
@@ -154,11 +155,26 @@ def _run_epoch(
         logits = output["policy_logits"]
         targets = _targets(samples, int(logits.shape[1]), device)
         weights = torch.tensor([float(item.get("sample_weight", 1.0)) for item in samples], dtype=torch.float32, device=device)
+        policy_valid = torch.tensor(
+            [bool(item.get("policy_target_valid", not item.get("is_forced", False))) for item in samples],
+            dtype=torch.bool,
+            device=device,
+        )
         target_values = torch.tensor([float(item.get("value_target", 0.0)) for item in samples], dtype=torch.float32, device=device)
+        value_valid = torch.tensor(
+            [bool(item.get("value_target_valid", True)) for item in samples],
+            dtype=torch.bool,
+            device=device,
+        )
         per_row_policy = -(targets * F.log_softmax(logits, dim=-1)).sum(dim=-1)
-        policy_loss = (per_row_policy * weights).sum() / torch.clamp(weights.sum(), min=1.0)
+        effective_weights = weights * policy_valid.float()
+        policy_loss = (per_row_policy * effective_weights).sum() / torch.clamp(effective_weights.sum(), min=1.0)
         predicted_values = output["value"].reshape(-1)
-        value_loss = F.mse_loss(predicted_values, target_values)
+        value_loss = (
+            F.mse_loss(predicted_values[value_valid], target_values[value_valid])
+            if bool(value_valid.any())
+            else predicted_values.sum() * 0.0
+        )
         loss = policy_loss + (0.25 * value_loss)
         if train:
             optimizer.zero_grad(set_to_none=True)
@@ -173,6 +189,10 @@ def _run_epoch(
         top3 = (topk == expected.unsqueeze(1)).any(dim=1).float()
         human_rows = [str(sample.get("source", "")).startswith("human") for sample in samples]
         for idx, is_human in enumerate(human_rows):
+            if not bool(policy_valid[idx].item()):
+                top1[idx] = 0.0
+                top3[idx] = 0.0
+                continue
             if is_human:
                 top1[idx] = float(targets[idx, predicted[idx]].item() > 0.0)
                 top3[idx] = float((targets[idx, topk[idx]] > 0.0).any().item())
@@ -182,7 +202,10 @@ def _run_epoch(
         totals["value_loss"] += float(value_loss.detach().item()) * batch_count
         totals["top1"] += float(top1.sum().item())
         totals["top3"] += float(top3.sum().item())
+        policy_count += int(policy_valid.sum().item())
         for idx, is_human in enumerate(human_rows):
+            if not bool(policy_valid[idx].item()):
+                continue
             if is_human:
                 totals["human_top3"] += float(top3[idx].item())
                 human_count += 1
@@ -203,8 +226,8 @@ def _run_epoch(
         "loss": totals["loss"] / count,
         "policy_loss": totals["policy_loss"] / count,
         "value_loss": totals["value_loss"] / count,
-        "top1": totals["top1"] / count,
-        "top3": totals["top3"] / count,
+        "top1": (totals["top1"] / policy_count) if policy_count else 0.0,
+        "top3": (totals["top3"] / policy_count) if policy_count else 0.0,
         "human_top3": (totals["human_top3"] / human_count) if human_count else 0.0,
         "teacher_top1": (totals["teacher_top1"] / teacher_count) if teacher_count else 0.0,
         "teacher_top3": (totals["teacher_top3"] / teacher_count) if teacher_count else 0.0,
@@ -254,7 +277,7 @@ def pretrain(
     # before the first training epoch.
     counts = dict(dataset_audit["split_counts"])
     source_counts = dict(dataset_audit.get("source_counts", {}))
-    human_total = int(source_counts.get("human", 0))
+    human_total = int(source_counts.get("human_preference", source_counts.get("human", 0)))
     teacher_total = int(source_counts.get("teacher", 0))
     if not allow_small_dataset and teacher_total < 100_000:
         raise RuntimeError(f"v2 pretraining requires at least 100000 teacher samples; found {teacher_total}")

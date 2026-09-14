@@ -13,16 +13,51 @@ from .rust_backend import get_rust_module
 from .planner_common import PlannerConfig, stable_identity_features, token_from_features
 from .action_contract import (
     ACTION_BASES,
+    ACTION_RANGES,
+    Action,
     CARD_SELECTION_MASK_LIMIT,
+    LegalActionSet,
     PAYMENT_ACTION_VARIANTS,
     STARTUP_PLAN_LIMIT,
 )
 
 logger = logging.getLogger(__name__)
 
+
+class ActionEnumerationError(RuntimeError):
+    """A live prompt could not be represented without inventing an action."""
+
+
+class CardSelectionOverflow(ActionEnumerationError):
+    """A card prompt has more combinations than the compatibility namespace."""
+
+
+class StartupPlanOverflow(ActionEnumerationError):
+    """A startup prompt has more plans than the compatibility namespace."""
+
 _CARD_SELECTION_MASK_BASE = ACTION_BASES['card_selection']
 _CARD_SELECTION_MASK_LIMIT = CARD_SELECTION_MASK_LIMIT
 _CARD_SELECTION_CANDIDATE_LIMIT = 12
+# Partition the shared 600-699 target namespace so awards and milestones can
+# both appear as concrete leaves on the same top-level action OR.
+_AWARD_ACTION_BASE = 600
+_AWARD_ACTION_LIMIT = 50
+_MILESTONE_ACTION_BASE = 650
+_MILESTONE_ACTION_LIMIT = 50
+
+
+def _is_fund_award_menu_title(title: str) -> bool:
+    return "fund an award" in str(title or "").strip().lower()
+
+
+def _is_claim_milestone_menu_title(title: str) -> bool:
+    normalized = " ".join(str(title or "").strip().lower().split())
+    if "milestone" not in normalized or "fund" in normalized:
+        return False
+    # Named leaves are bare titles such as "Builder". Menu branches say "claim".
+    return "claim" in normalized
+
+
 _STARTUP_PLAN_BASE = ACTION_BASES['startup_selection']
 _STARTUP_PLAN_LIMIT = STARTUP_PLAN_LIMIT
 _PAYMENT_ACTION_BASE = ACTION_BASES['select_payment']
@@ -811,7 +846,12 @@ def _enumerate_card_selection_masks(
         'playerState': player_state or {},
         'purchaseCardCost': max(0.0, float(purchase_card_cost)),
     }
-    combos = _rust_backend().enumerate_card_selection_combos(json.dumps(payload), max(1, int(limit)))
+    resolved_limit = max(1, int(limit))
+    combos = _rust_backend().enumerate_card_selection_combos(json.dumps(payload), resolved_limit + 1)
+    if len(combos) > resolved_limit:
+        raise CardSelectionOverflow(
+            f"card selection produced more than {resolved_limit} legal combinations"
+        )
     masks: List[int] = []
     for combo in combos:
         mask = 0
@@ -891,6 +931,79 @@ def _initial_option_role(option: Dict[str, Any], index: int) -> str:
         return 'corporation'
     return 'project' if index >= 2 else 'unknown'
 
+
+def _startup_plan_contents(
+    decoded_action: Optional[Dict[str, Any]],
+    waiting_for: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Extract corp / prelude / CEO / kept project names from a startup payload."""
+    responses: List[Any] = []
+    top_level_cards: List[str] = []
+    if isinstance(decoded_action, dict):
+        raw_responses = decoded_action.get('responses') or []
+        if isinstance(raw_responses, list):
+            responses = list(raw_responses)
+        top_level_cards = [
+            str(card).strip()
+            for card in (decoded_action.get('cards') or [])
+            if str(card).strip()
+        ]
+
+    options: List[Dict[str, Any]] = []
+    if isinstance(waiting_for, dict):
+        options = [opt for opt in (waiting_for.get('options') or []) if isinstance(opt, dict)]
+
+    corp_names: List[str] = []
+    prelude_names: List[str] = []
+    ceo_names: List[str] = []
+    project_names: List[str] = []
+    for idx, response in enumerate(responses):
+        if not isinstance(response, dict):
+            continue
+        names = [
+            str(card).strip()
+            for card in (response.get('cards') or [])
+            if str(card).strip()
+        ]
+        role = 'unknown'
+        if idx < len(options):
+            role = _initial_option_role(options[idx], idx)
+        elif idx == 0:
+            role = 'corporation'
+        elif idx == 1:
+            role = 'project'
+        if role == 'corporation':
+            corp_names = names
+        elif role == 'prelude':
+            prelude_names = names
+        elif role == 'ceo':
+            ceo_names = names
+        elif role == 'project':
+            project_names = names
+    if not project_names and top_level_cards:
+        project_names = list(top_level_cards)
+    return {
+        'corp': corp_names[0] if corp_names else '',
+        'corp_names': corp_names,
+        'prelude': prelude_names,
+        'ceo': ceo_names,
+        'project': project_names,
+    }
+
+
+def _startup_plan_label(contents: Dict[str, Any]) -> str:
+    corp_name = str(contents.get('corp', '') or '').strip()
+    selected_cards = [
+        str(name).strip()
+        for name in (contents.get('project') or [])
+        if str(name).strip()
+    ]
+    keep_label = ' + '.join(selected_cards) if selected_cards else 'no cards'
+    if corp_name:
+        return f"{corp_name} | Keep: {keep_label}"
+    return f"Keep: {keep_label}"
+
+
 def _score_initial_card(
     card: Dict[str, Any],
     role: str,
@@ -905,8 +1018,12 @@ def _score_initial_card(
 
     score = 0.0
     if role == 'project':
-        score += vp * 6.0
-        score += max(0.0, 20.0 - cost) * 0.18
+        # Keep ROI: VP and gen-1 playability matter; expensive unplayable
+        # cards are a keep-cost tax, not an asset.
+        score += vp * 4.0
+        score += max(0.0, 14.0 - cost) * 0.22
+        if cost > 14.0:
+            score -= (cost - 14.0) * 0.15
     else:
         score += starting_mc * 0.45
         score += vp * 4.0
@@ -1011,6 +1128,7 @@ def _startup_project_subset_scores(
     prelude_tags: Dict[str, int],
     purchase_card_cost: float,
     limit: int,
+    starting_mc: float = 40.0,
 ) -> List[Tuple[float, List[str]]]:
     if not project_cards:
         return [(0.0, [])] if min_cards == 0 else []
@@ -1056,7 +1174,26 @@ def _startup_project_subset_scores(
             # individual upside without this commitment cost always selects the
             # largest legal subset, even when it empties the corporation's cash.
             commitment_penalty = 1.15 * max(1.0, float(purchase_card_cost)) * float(pick_count)
-            total = float(score_base + (0.70 * cheap_bonus) + synergy_bonus + diversity_bonus - commitment_penalty)
+            remaining_mc = max(
+                0.0,
+                float(starting_mc) - (max(1.0, float(purchase_card_cost)) * float(pick_count)),
+            )
+            cash_penalty = 0.0
+            if pick_count > 0:
+                cheapest_play = min(float(_card_cost(card)) for card in combo)
+                if remaining_mc < cheapest_play:
+                    cash_penalty += 0.12 * (cheapest_play - remaining_mc)
+                reserve_target = 14.0
+                if remaining_mc < reserve_target:
+                    cash_penalty += 0.08 * (reserve_target - remaining_mc)
+            total = float(
+                score_base
+                + (0.70 * cheap_bonus)
+                + synergy_bonus
+                + diversity_bonus
+                - commitment_penalty
+                - cash_penalty
+            )
             signature = '|'.join(sorted(names))
             top_scored.append((total, names, signature))
 
@@ -1150,6 +1287,11 @@ def _enumerate_startup_plan_payloads(
     project_max = min(project_max, len(project_cards))
     project_min = min(project_min, project_max)
 
+    prelude_choice_count = max(1, len(prelude_choices))
+    ceo_choice_count = max(1, len(ceo_choices))
+    combo_slots = max(1, len(corp_cards) * prelude_choice_count * ceo_choice_count)
+    per_corp_project_limit = max(4, int(_STARTUP_PLAN_LIMIT // combo_slots))
+
     top_candidates: List[Tuple[float, Dict[str, Any], Tuple[Any, ...], Dict[str, Any]]] = []
     for corp_card in corp_cards:
         corp_name = str(corp_card.get('name', '') or '')
@@ -1180,7 +1322,8 @@ def _enumerate_startup_plan_payloads(
                 corp_tags=corp_tags,
                 prelude_tags=prelude_tags,
                 purchase_card_cost=float(corp_card_cost),
-                limit=64,
+                limit=per_corp_project_limit,
+                starting_mc=float(corp_start_mc),
             )
             if not project_choices:
                 continue
@@ -1190,13 +1333,14 @@ def _enumerate_startup_plan_payloads(
                     ceo_tag_bonus += 0.05 * float(count) * (1.0 + 0.1 * float(project_tag_counts.get(tag_name, 0)))
                 for project_score, project_names in project_choices:
                     keep_count = len(project_names)
-                    budget_ratio = float(keep_count) / float(max(1, legal_project_max))
+                    remaining_mc = float(corp_start_mc) - (float(corp_card_cost) * float(keep_count))
+                    cash_reserve = min(1.0, max(0.0, remaining_mc) / max(1.0, float(corp_start_mc)))
                     total_score = (
                         float(corp_score)
                         + float(prelude_score)
                         + float(ceo_score)
                         + float(project_score)
-                        + (0.18 * budget_ratio)
+                        + (0.20 * cash_reserve)
                     )
                     responses: List[Dict[str, Any]] = []
                     for idx, option in enumerate(options):
@@ -1778,20 +1922,30 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             break
                 if not matched:
                     selected_idx = 0
-            elif action_index >= 600 and action_index < 700:
-                # This is a direct award selection (600+ range)
-                # Find which option contains the award selection
+            elif _AWARD_ACTION_BASE <= action_index < _MILESTONE_ACTION_BASE:
+                # Direct award leaf selection (600-649).
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
                     option_title = _title_text(option.get('title', ''))
                     
-                    if option_type == 'or' and 'fund an award' in option_title.lower():
+                    if option_type == 'or' and _is_fund_award_menu_title(option_title):
                         selected_idx = i
                         # Adjust action_index for the award selection
-                        action_index = action_index - 600
+                        action_index = action_index - _AWARD_ACTION_BASE
                         break
                 else:
                     # If no award option found, default to first option
+                    selected_idx = 0
+            elif _MILESTONE_ACTION_BASE <= action_index < (_MILESTONE_ACTION_BASE + _MILESTONE_ACTION_LIMIT):
+                # Direct milestone leaf selection (650-699).
+                for i, option in enumerate(options):
+                    option_type = option.get('type', '')
+                    option_title = _title_text(option.get('title', ''))
+                    if option_type == 'or' and _is_claim_milestone_menu_title(option_title):
+                        selected_idx = i
+                        action_index = action_index - _MILESTONE_ACTION_BASE
+                        break
+                else:
                     selected_idx = 0
             elif action_index >= 100 and action_index < 200:
                 # This is a direct standard project selection (100-199 range)
@@ -1927,7 +2081,7 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             logger.info(f"Standard project selection action_index: {action_index}")
                             break
                         current_action_count += len(cards)
-                    elif option_type == 'or' and 'fund an award' in _title_text(option.get('title', '')).lower():
+                    elif option_type == 'or' and _is_fund_award_menu_title(_title_text(option.get('title', ''))):
                         award_options = option.get('options', [])
                         if current_action_count <= action_index < current_action_count + len(award_options):
                             selected_idx = i
@@ -1935,6 +2089,14 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             logger.info(f"Award selection action_index: {action_index}")
                             break
                         current_action_count += len(award_options)
+                    elif option_type == 'or' and _is_claim_milestone_menu_title(_title_text(option.get('title', ''))):
+                        milestone_options = option.get('options', [])
+                        if current_action_count <= action_index < current_action_count + len(milestone_options):
+                            selected_idx = i
+                            action_index = action_index - current_action_count
+                            logger.info(f"Milestone selection action_index: {action_index}")
+                            break
+                        current_action_count += len(milestone_options)
                     elif option_type in ['selectCard', 'card'] and 'convert plants' in _title_text(option.get('title', '')).lower():
                         if action_index == current_action_count:
                             selected_idx = i
@@ -2942,13 +3104,28 @@ class ActionDecoder:
                     continue
                 option_type = str(option.get('type', '') or '')
                 option_title_l = _title_text(option.get('title', '')).lower()
-                if option_type == 'or' and 'fund an award' in option_title_l and 600 <= int(action_index) < 700:
-                    award_idx = int(action_index) - 600
+                if (
+                    option_type == 'or'
+                    and _is_fund_award_menu_title(option_title_l)
+                    and _AWARD_ACTION_BASE <= int(action_index) < _MILESTONE_ACTION_BASE
+                ):
+                    award_idx = int(action_index) - _AWARD_ACTION_BASE
                     award_options = option.get('options', []) or []
                     if 0 <= award_idx < len(award_options):
                         award_option = award_options[award_idx]
                         if isinstance(award_option, dict):
                             return award_option
+                if (
+                    option_type == 'or'
+                    and _is_claim_milestone_menu_title(option_title_l)
+                    and _MILESTONE_ACTION_BASE <= int(action_index) < (_MILESTONE_ACTION_BASE + _MILESTONE_ACTION_LIMIT)
+                ):
+                    milestone_idx = int(action_index) - _MILESTONE_ACTION_BASE
+                    milestone_options = option.get('options', []) or []
+                    if 0 <= milestone_idx < len(milestone_options):
+                        milestone_option = milestone_options[milestone_idx]
+                        if isinstance(milestone_option, dict):
+                            return milestone_option
         return {}
 
     def _semantic_family(
@@ -2968,7 +3145,8 @@ class ActionDecoder:
             for option in (waiting_for.get('options', []) or [])
             if isinstance(option, dict)
         ]
-        has_award_branch = any('fund an award' in title for title in nested_option_titles)
+        has_award_branch = any(_is_fund_award_menu_title(title) for title in nested_option_titles)
+        has_milestone_branch = any(_is_claim_milestone_menu_title(title) for title in nested_option_titles)
         has_convert_plants_branch = any('convert plants' in title for title in nested_option_titles)
         has_convert_heat_branch = any('convert heat' in title for title in nested_option_titles)
         has_sell_patents_branch = any('sell patents' in title for title in nested_option_titles)
@@ -2990,17 +3168,23 @@ class ActionDecoder:
             return 'select_payment'
         if int(self.action_types['SELECT_AMOUNT']) <= int(action_index) < int(_CARD_SELECTION_MASK_BASE):
             return 'select_amount'
-        # Award actions use the 600+ range, which overlaps the generic card-mask
-        # range. Classify semantic prompts before applying that numeric fallback.
+        # Award/milestone leaves use the 600+ target namespace, which overlaps the
+        # generic card-mask range. Classify semantic prompts before that fallback.
         if ('award' in combined and ('fund' in combined or 'award' in input_type)) or (
-            600 <= int(action_index) < 700 and has_award_branch
+            _AWARD_ACTION_BASE <= int(action_index) < _MILESTONE_ACTION_BASE and has_award_branch
         ):
             return 'fund_award'
-        if 'milestone' in combined and ('claim' in combined or 'fund' in combined):
+        if (
+            ('milestone' in combined and ('claim' in combined or 'fund' in combined))
+            or (
+                _MILESTONE_ACTION_BASE <= int(action_index) < (_MILESTONE_ACTION_BASE + _MILESTONE_ACTION_LIMIT)
+                and has_milestone_branch
+            )
+        ):
             return 'claim_milestone'
-        if 'award' in option_title_l:
+        if 'award' in option_title_l and not _is_claim_milestone_menu_title(option_title_l):
             return 'fund_award'
-        if 'milestone' in option_title_l:
+        if 'milestone' in option_title_l or _is_claim_milestone_menu_title(option_title_l):
             return 'claim_milestone'
         if int(_CARD_SELECTION_MASK_BASE) <= int(action_index) < int(_CARD_SELECTION_MASK_BASE + _CARD_SELECTION_MASK_LIMIT):
             return 'card_subset'
@@ -3068,6 +3252,10 @@ class ActionDecoder:
                 if str(card).strip()
             ]
             label = f"Buy: {' + '.join(selected_cards)}" if selected_cards else "Buy: no cards"
+        elif family == 'startup_plan':
+            contents = _startup_plan_contents(decoded_action, waiting_for)
+            label = _startup_plan_label(contents)
+            card_name = str(contents.get('corp', '') or '').strip()
         elif family == 'standard_project':
             project_idx = int(action_index) - int(self.action_types['STANDARD_PROJECT'])
             if 0 <= project_idx < len(self.standard_projects):
@@ -3075,10 +3263,24 @@ class ActionDecoder:
             label = project_name or label or 'Standard project'
         elif family == 'fund_award':
             award_name = _message_display_text(payload.get('title', ''), player_state) or _message_display_text(payload.get('name', ''), player_state)
+            if _is_fund_award_menu_title(award_name):
+                award_name = ''
             label = award_name or label or 'Fund award'
         elif family == 'claim_milestone':
             milestone_name = _message_display_text(payload.get('title', ''), player_state) or _message_display_text(payload.get('name', ''), player_state)
+            # Parent menu titles must never become the leaf identity.
+            if _is_claim_milestone_menu_title(milestone_name):
+                nested = payload.get('options', []) or []
+                if len(nested) == 1 and isinstance(nested[0], dict):
+                    milestone_name = (
+                        _message_display_text(nested[0].get('title', ''), player_state)
+                        or _message_display_text(nested[0].get('name', ''), player_state)
+                    )
+                else:
+                    milestone_name = ''
             label = milestone_name or label or 'Claim milestone'
+            if _is_claim_milestone_menu_title(label):
+                label = milestone_name or 'Claim milestone'
         elif family == 'select_space':
             label = title_l or 'Select space'
         elif family == 'select_option' and isinstance(decoded_action, dict):
@@ -3224,7 +3426,7 @@ class ActionDecoder:
         city_project = 0.0
         greenery_project = 0.0
         moon_project = 0.0
-        if card_name:
+        if card_name and family != 'startup_plan':
             waiting_for = player_state.get('waitingFor', {}) or {}
             card = _find_prompt_card(waiting_for, card_name)
             if card:
@@ -3257,14 +3459,58 @@ class ActionDecoder:
             city_project = 1.0 if 'city' in name_l or 'habitat' in name_l else 0.0
             moon_project = 1.0 if 'lunar' in name_l or 'road infrastructure' in name_l else moon_project
 
-        spend_threshold_resource = 1.0 if family in ('convert_plants', 'convert_heat', 'standard_project') else 0.0
-        carry_plants = 1.0 if family in ('pass', 'play_card', 'claim_milestone', 'fund_award') and 7.0 <= plants < 8.0 and plant_prod > 0.0 else 0.0
-        carry_heat = 1.0 if family in ('pass', 'play_card', 'claim_milestone', 'fund_award') and 7.0 <= heat < 8.0 and heat_prod > 0.0 else 0.0
-        if family == 'convert_plants' and 7.0 <= plants < 16.0 and plant_prod > 0.0:
-            carry_plants = -1.0
-        if family == 'convert_heat' and 7.0 <= heat < 16.0 and heat_prod > 0.0:
-            carry_heat = -1.0
-        combo_city_anchor = 1.0 if city_project > 0.0 or 'city' in title_l else 0.0
+        startup_identity = [0.0] * 6
+        if family == 'startup_plan':
+            waiting_for = player_state.get('waitingFor', {}) or {}
+            contents = _startup_plan_contents(decoded_action, waiting_for)
+            corp_name = str(contents.get('corp', '') or '').strip()
+            kept_names = [
+                str(name).strip()
+                for name in (contents.get('project') or [])
+                if str(name).strip()
+            ]
+            corp_card = _find_prompt_card(waiting_for, corp_name) if corp_name else {}
+            if not corp_card and corp_name:
+                corp_card = {'name': corp_name}
+            keep_count = float(len(kept_names))
+            keep_cost_each = float(_card_keep_cost(corp_card, default=3)) if corp_card else 3.0
+            keep_spend = keep_count * keep_cost_each
+            start_mc = float(
+                _card_starting_megacredits(
+                    corp_card,
+                    default=_safe_int(player.get('megaCredits', 40), 40),
+                )
+            ) if corp_card else max(40.0, mc)
+            remaining_mc = max(0.0, start_mc - keep_spend)
+            kept_cards = []
+            for name in kept_names:
+                card = _find_prompt_card(waiting_for, name)
+                kept_cards.append(card if card else {'name': name})
+            if kept_cards:
+                mean_cost = sum(float(_card_cost(card)) for card in kept_cards) / float(len(kept_cards))
+                total_vp = sum(float(_card_vp(card)) for card in kept_cards)
+                cost_norm = min(mean_cost / 40.0, 1.0)
+                vp_norm = min(total_vp / 5.0, 1.0)
+                tag_counts = _count_tags(kept_cards)
+                building_tag = min(float(tag_counts.get('Building', 0)) / keep_count, 1.0)
+                space_tag = min(float(tag_counts.get('Space', 0)) / keep_count, 1.0)
+                science_tag = min(float(tag_counts.get('Science', 0)) / keep_count, 1.0)
+                plant_tag = min(float(tag_counts.get('Plant', 0)) / keep_count, 1.0)
+                moon_project = min(float(tag_counts.get('Moon', 0)) / keep_count, 1.0)
+            spend_threshold_resource = min(keep_spend / 30.0, 1.0)
+            carry_plants = min(keep_count / 10.0, 1.0)
+            carry_heat = min(remaining_mc / 80.0, 1.0)
+            combo_city_anchor = min(keep_spend / max(1.0, start_mc), 1.0)
+            startup_identity = stable_identity_features(corp_name, width=6)
+        else:
+            spend_threshold_resource = 1.0 if family in ('convert_plants', 'convert_heat', 'standard_project') else 0.0
+            carry_plants = 1.0 if family in ('pass', 'play_card', 'claim_milestone', 'fund_award') and 7.0 <= plants < 8.0 and plant_prod > 0.0 else 0.0
+            carry_heat = 1.0 if family in ('pass', 'play_card', 'claim_milestone', 'fund_award') and 7.0 <= heat < 8.0 and heat_prod > 0.0 else 0.0
+            if family == 'convert_plants' and 7.0 <= plants < 16.0 and plant_prod > 0.0:
+                carry_plants = -1.0
+            if family == 'convert_heat' and 7.0 <= heat < 16.0 and heat_prod > 0.0:
+                carry_heat = -1.0
+            combo_city_anchor = 1.0 if city_project > 0.0 or 'city' in title_l else 0.0
         combo_greenery_followup = 1.0 if greenery_project > 0.0 or family == 'convert_plants' else 0.0
         raises_claimability = 1.0 if family == 'claim_milestone' else 0.0
         locks_award_lead = 1.0 if family == 'fund_award' else 0.0
@@ -3305,6 +3551,8 @@ class ActionDecoder:
         ])
         named_concept = award_name if family == 'fund_award' else milestone_name
         features.extend(self._v3_named_action_features(player_state, family, named_concept))
+        if family == 'startup_plan':
+            features.extend(startup_identity)
         if family == 'select_space':
             space = space_features or {}
             features.extend([
@@ -3357,11 +3605,54 @@ class ActionDecoder:
             descriptor['space_features'] = space_features
         return descriptor
 
+    def _build_action_descriptor_from_action(
+        self,
+        action: Action,
+        action_position: int,
+        player_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        waiting_for = player_state.get('waitingFor', {}) or {}
+        label_info = self._descriptor_labels(
+            action.action_id,
+            waiting_for,
+            action.family,
+            action.payload,
+            player_state,
+        )
+        space_features = _space_candidate_features(player_state, action.payload) if action.family == 'select_space' else {}
+        descriptor = {
+            "action_index": int(action.action_id),
+            "action_position": int(action_position),
+            "family": str(action.family),
+            "label": str(action.description),
+            "decoded_action": dict(action.payload),
+            "card_name": label_info.get("card_name", ""),
+            "project_name": label_info.get("project_name", ""),
+            "award_name": label_info.get("award_name", ""),
+            "milestone_name": label_info.get("milestone_name", ""),
+            "token_features": self._build_action_token(
+                player_state=player_state,
+                action_index=action.action_id,
+                family=action.family,
+                label_info=label_info,
+                decoded_action=action.payload,
+                space_features=space_features,
+            ).astype(np.float32),
+        }
+        if space_features:
+            descriptor['space_features'] = space_features
+        return descriptor
+
     def get_legal_action_descriptors(self, player_state: Dict[str, Any]) -> List[Dict[str, Any]]:
-        descriptors: List[Dict[str, Any]] = []
-        for action_position, action_index in enumerate(self.get_available_actions(player_state)):
-            descriptors.append(self._build_action_descriptor(int(action_index), int(action_position), player_state))
-        return descriptors
+        legal = self.enumerate_legal_actions(player_state)
+        if legal.status == "terminal":
+            return []
+        if legal.status == "invalid":
+            raise ActionEnumerationError(str(legal.reason or "invalid legal-action set"))
+        return [
+            self._build_action_descriptor_from_action(action, position, player_state)
+            for position, action in enumerate(legal.actions)
+        ]
 
     def _is_convert_heat_wasteful(self, player_state: Dict[str, Any]) -> bool:
         """Check if converting heat to temperature is wasteful"""
@@ -3503,14 +3794,18 @@ class ActionDecoder:
         plans = _enumerate_startup_plan_payloads(
             waiting_for=waiting_for,
             player_state=player_state,
-            max_plans=_STARTUP_PLAN_LIMIT,
+            max_plans=_STARTUP_PLAN_LIMIT + 1,
         )
+        if len(plans) > _STARTUP_PLAN_LIMIT:
+            raise StartupPlanOverflow(
+                f"startup selection produced more than {_STARTUP_PLAN_LIMIT} legal plans"
+            )
         
         self._startup_plan_cache = plans
         self._startup_plan_cache_state_id = state_id
         return plans
     
-    def get_available_actions(self, player_state: Dict[str, Any]) -> List[int]:
+    def _get_available_action_indices(self, player_state: Dict[str, Any]) -> List[int]:
         """Get list of available action indices for current game state"""
         available_actions = []
         try:
@@ -3569,11 +3864,20 @@ class ActionDecoder:
                         else:
                             # Option shown but no enabled projects: avoid selecting it.
                             allow_select_option = False
-                    elif option_type == 'or' and 'fund an award' in option_title_l:
+                    elif option_type == 'or' and _is_fund_award_menu_title(option_title_l):
                         award_options = option.get('options', [])
                         for j, _ in enumerate(award_options):
-                            available_actions.append(600 + j)
+                            if j >= _AWARD_ACTION_LIMIT:
+                                break
+                            available_actions.append(_AWARD_ACTION_BASE + j)
                         added_concrete_action = len(award_options) > 0
+                    elif option_type == 'or' and _is_claim_milestone_menu_title(option_title_l):
+                        milestone_options = option.get('options', [])
+                        for j, _ in enumerate(milestone_options):
+                            if j >= _MILESTONE_ACTION_LIMIT:
+                                break
+                            available_actions.append(_MILESTONE_ACTION_BASE + j)
+                        added_concrete_action = len(milestone_options) > 0
                     elif option_type in ['selectSpace', 'space']:
                         # Nested placement actions must retain the selected-space
                         # index.  A generic SELECT_OPTION response has no such
@@ -3841,8 +4145,6 @@ class ActionDecoder:
                 startup_plans = self._get_cached_startup_plans(waiting_for, player_state)
                 for i, _ in enumerate(startup_plans):
                     available_actions.append(_STARTUP_PLAN_BASE + i)
-                # Keep deterministic fallback always available.
-                available_actions.append(800)
             elif input_type == 'aresGlobalParameters':
                 available_actions.append(810)
             elif input_type == 'resource':
@@ -3856,45 +4158,103 @@ class ActionDecoder:
                 for i, _ in enumerate(policies):
                     available_actions.append(840 + i)
             else:
-                # logger.warning(f"Unknown input_type '{input_type}' in get_available_actions. Defaulting to PASS.")
-                available_actions.append(self.action_types['PASS'])
+                raise ActionEnumerationError(f"unsupported prompt type: {input_type!r}")
             if available_actions:
                 # Deduplicate while preserving order to reduce repeated retries.
                 available_actions = list(dict.fromkeys(available_actions))
             if not available_actions:
-                # Avoid generating guaranteed-invalid pass payloads. SelectProjectCardToPlay
-                # does not accept {"type":"pass"} - it requires {type, card, payment}.
-                if str(input_type or '') not in [
-                    'payment', 'selectPayment', 'projectCard', 'selectProjectCardToPlay'
-                ]:
+                if bool(waiting_for.get('canPass', False)):
                     available_actions.append(self.action_types['PASS'])
         except Exception as e:
-            # logger.error(f"Error getting available actions: {e}")
-            available_actions = [self.action_types['PASS']]
+            if isinstance(e, ActionEnumerationError):
+                raise
+            raise ActionEnumerationError(
+                f"failed to enumerate prompt {str((waiting_for or {}).get('type', '') or '')!r}: {e}"
+            ) from e
         return available_actions
+
+    def enumerate_legal_actions(self, player_state: Dict[str, Any]) -> LegalActionSet:
+        """Return the single canonical legal-action catalog for a player view."""
+        if not isinstance(player_state, dict):
+            return LegalActionSet(status="invalid", actions=[], reason="player_state must be an object")
+        game = player_state.get('game', {}) or {}
+        if str(game.get('phase', '') or '').strip().lower() == 'end':
+            return LegalActionSet(status="terminal", actions=[])
+        waiting_for = player_state.get('waitingFor')
+        if not isinstance(waiting_for, dict) or not waiting_for:
+            return LegalActionSet(status="invalid", actions=[], reason="active state has no waitingFor prompt")
+        try:
+            action_indices = self._get_available_action_indices(player_state)
+            if not action_indices:
+                return LegalActionSet(
+                    status="invalid",
+                    actions=[],
+                    reason=f"prompt {waiting_for.get('type')!r} has no legal actions",
+                )
+            normalized_indices = [int(item) for item in action_indices]
+            if len(normalized_indices) != len(set(normalized_indices)):
+                return LegalActionSet(status="invalid", actions=[], reason="duplicate action IDs in prompt catalog")
+            actions: List[Action] = []
+            pass_base = int(self.action_types['PASS'])
+            for action_index in normalized_indices:
+                payload = self.decode_action(action_index, player_state)
+                if not isinstance(payload, dict) or not payload:
+                    return LegalActionSet(
+                        status="invalid",
+                        actions=[],
+                        reason=f"action {action_index} has no canonical payload",
+                    )
+                if str(payload.get('type', '') or '').lower() == 'pass' and action_index < pass_base:
+                    return LegalActionSet(
+                        status="invalid",
+                        actions=[],
+                        reason=f"action {action_index} decoded to an implicit pass",
+                    )
+                family = self._semantic_family(action_index, waiting_for, payload)
+                labels = self._descriptor_labels(action_index, waiting_for, family, payload, player_state)
+                actions.append(
+                    Action(
+                        action_id=action_index,
+                        family=family,
+                        payload=dict(payload),
+                        description=str(labels.get('label', family) or family),
+                    )
+                )
+            return LegalActionSet(status="active", actions=actions)
+        except Exception as exc:
+            return LegalActionSet(status="invalid", actions=[], reason=str(exc))
+
+    def get_available_actions(self, player_state: Dict[str, Any]) -> List[int]:
+        """Compatibility adapter over :meth:`enumerate_legal_actions`."""
+        legal = self.enumerate_legal_actions(player_state)
+        if legal.status == "terminal":
+            return []
+        if legal.status == "invalid":
+            raise ActionEnumerationError(str(legal.reason or "invalid legal-action set"))
+        return legal.action_ids
 
     def decode_action(self, action_index: int, player_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Convert action index to game input format using the generic builder.
         """
+        waiting_for = player_state.get('waitingFor') if isinstance(player_state, dict) else None
+        if not isinstance(waiting_for, dict) or not waiting_for:
+            raise ActionEnumerationError("cannot decode an action without waitingFor")
+        if int(action_index) in ACTION_RANGES['pass']:
+            if not bool(waiting_for.get('canPass', False)):
+                raise ActionEnumerationError("prompt does not explicitly allow pass")
+            return {'type': 'pass'}
         try:
-            waiting_for = player_state.get('waitingFor')
-            if not waiting_for:
-                # logger.error(f"decode_action: No waitingFor in player_state. Returning pass.")
-                return self._create_pass_action()
-
-            input_type = waiting_for.get('type', '')
-            # logger.info(f"Decoding action: input_type={input_type}, action_index={action_index}, waiting_for={waiting_for}")
-
-            # Use the new builder for all input types
             response = build_response_for_input(waiting_for, action_index, player_state)
-
-            # logger.info(f"agent response: {response}")
-            return response
-
-        except Exception as e:
-            # logger.error(f"Error decoding action {action_index} for input_type {waiting_for.get('type', '') if waiting_for else 'None'}: {e}")
-            return self._create_pass_action()
+        except Exception as exc:
+            raise ActionEnumerationError(
+                f"failed to decode action {action_index} for prompt {waiting_for.get('type')!r}: {exc}"
+            ) from exc
+        if not isinstance(response, dict) or not response:
+            raise ActionEnumerationError(
+                f"action {action_index} produced no payload for prompt {waiting_for.get('type')!r}"
+            )
+        return response
     
     def _create_card_action(self, card_idx: int, waiting_for: Dict[str, Any], player_state: Dict[str, Any] = None) -> Dict[str, Any]:
         """Create card play action"""

@@ -23,10 +23,14 @@ from debug_decision_snapshot import load_snapshot_annotation, save_snapshot, sav
 def _sample(seed: int = 123, game_id: str = "game-123") -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
-        "planner_bundle": {"action_tokens": np.zeros((2, 64), dtype=np.float32)},
+        "planner_bundle": {
+            "action_tokens": np.zeros((2, 64), dtype=np.float32),
+            "action_indices": np.asarray([10, 20], dtype=np.int64),
+            "action_mask": np.asarray([True, True], dtype=np.bool_),
+        },
         "action_descriptors": [
-            {"action_index": 10, "action_position": 0},
-            {"action_index": 20, "action_position": 1},
+            {"action_index": 10, "action_position": 0, "decoded_action": {"type": "or", "index": 0}},
+            {"action_index": 20, "action_position": 1, "decoded_action": {"type": "or", "index": 1}},
         ],
         "action_indices": [10, 20],
         "teacher_probabilities": [0.75, 0.25],
@@ -95,6 +99,38 @@ def test_human_and_low_confidence_weights() -> None:
     assert source_weight("heuristic-teacher.v1", 0.1) == 0.25
     assert source_weight("heuristic-teacher.v1", 0.9) == 1.0
     assert source_weight("heuristic-teacher.v1", 1.0, is_forced=True) == 0.25
+    assert source_weight("human.annotation.v1", 1.0, is_forced=True) == 0.25
+
+
+def test_rejected_or_payload_mismatched_sample_is_quarantined(tmp_path: Path) -> None:
+    store = TeacherDatasetStore(str(tmp_path))
+    rejected = _sample()
+    rejected["server_accepted"] = False
+    rejected["training_eligible"] = False
+    rejected["validation_errors"] = ["server_not_accepted"]
+    with pytest.raises(ValueError, match="not training eligible"):
+        store.append_episode("rejected", [rejected])
+    assert len(list((tmp_path / "quarantine").glob("episode_*.pkl.gz"))) == 1
+    assert sum(store.counts().values()) == 0
+
+    mismatched = _sample(game_id="game-mismatch")
+    mismatched["selected_action_payload"] = {"type": "pass"}
+    with pytest.raises(ValueError, match="does not match chosen descriptor"):
+        store.append_episode("mismatched", [mismatched])
+    assert len(list((tmp_path / "quarantine").glob("episode_*.pkl.gz"))) == 2
+
+
+def test_forced_human_label_is_excluded_from_preference_count(tmp_path: Path) -> None:
+    store = TeacherDatasetStore(str(tmp_path))
+    sample = _sample()
+    sample["source"] = "human.annotation.v1"
+    sample["action_source"] = "human_annotation"
+    sample["is_forced"] = True
+    sample["policy_target_valid"] = False
+    store.append_episode("forced-human", [sample])
+    audit = store.audit()
+    assert audit["source_counts"]["human"] == 1
+    assert audit["source_counts"]["human_preference"] == 0
 
 
 def test_snapshot_annotation_rejects_non_legal_action(monkeypatch, tmp_path: Path) -> None:

@@ -346,7 +346,29 @@ class TournamentManager:
                 )
                 for agent, player_name in zip(agents, seat_player_names)
             ]
-            agent_group = asyncio.gather(*agent_tasks, return_exceptions=True)
+            async def _wait_for_agents_fail_fast() -> List[Any]:
+                pending = set(agent_tasks)
+                results: Dict[asyncio.Task, Any] = {}
+                while pending:
+                    done, pending = await asyncio.wait(
+                        pending,
+                        return_when=asyncio.FIRST_EXCEPTION,
+                    )
+                    for task in done:
+                        if task.cancelled():
+                            raise RuntimeError(f"agent task {task.get_name()} was cancelled")
+                        error = task.exception()
+                        if error is not None:
+                            raise RuntimeError(
+                                f"agent task {task.get_name()} failed: {error!r}"
+                            ) from error
+                        results[task] = task.result()
+                return [results[task] for task in agent_tasks]
+
+            agent_group = asyncio.create_task(
+                _wait_for_agents_fail_fast(),
+                name=f"agent-group:{actual_game_id}",
+            )
              
             # Wait for game completion with configurable timeout.
             try:
@@ -359,16 +381,6 @@ class TournamentManager:
             # otherwise wait_for cancels the gather first and its CancelledError can
             # escape the timeout path, shutting down the whole collector.
             agent_results = await asyncio.wait_for(asyncio.shield(agent_group), timeout=timeout_sec)
-            task_errors = [r for r in agent_results if isinstance(r, Exception)]
-            task_cancellations = [r for r in agent_results if isinstance(r, asyncio.CancelledError)]
-            if task_cancellations:
-                raise RuntimeError(
-                    f"{len(task_cancellations)} agent task(s) were cancelled unexpectedly while game was running"
-                )
-            if task_errors:
-                raise RuntimeError(
-                    f"{len(task_errors)} agent task(s) failed; first error: {task_errors[0]!r}"
-                )
             agent_telemetry_by_id: Dict[str, Dict[str, Any]] = {}
             for agent, agent_result in zip(agents, agent_results):
                 telemetry = self._normalize_agent_game_telemetry(agent_result)

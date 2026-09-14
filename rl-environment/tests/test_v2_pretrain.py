@@ -35,8 +35,8 @@ def _sample(seed: int, game_id: str) -> dict:
         "schema_version": SCHEMA_VERSION,
         "planner_bundle": _bundle(),
         "action_descriptors": [
-            {"action_index": 10, "action_position": 0},
-            {"action_index": 20, "action_position": 1},
+            {"action_index": 10, "action_position": 0, "decoded_action": {"type": "or", "index": 0}},
+            {"action_index": 20, "action_position": 1, "decoded_action": {"type": "or", "index": 1}},
         ],
         "action_indices": [10, 20],
         "teacher_probabilities": [1.0, 0.0],

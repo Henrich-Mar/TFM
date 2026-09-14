@@ -8,6 +8,14 @@ import math
 import random
 
 from .state_encoder import StateEncoder
+from .action_decoder import (
+    _card_keep_cost,
+    _card_starting_megacredits,
+    _card_tags,
+    _card_vp,
+    _find_prompt_card,
+    _startup_plan_contents,
+)
 
 
 @dataclass(frozen=True)
@@ -155,6 +163,205 @@ class HeuristicTeacherPolicy:
             ])
         return score, reasons
 
+    def _score_startup_plan(
+        self,
+        state: Dict[str, Any],
+        descriptor: Dict[str, Any],
+    ) -> tuple[float, List[str], bool]:
+        waiting = state.get("waitingFor", {}) or {}
+        decoded = descriptor.get("decoded_action", {}) or {}
+        contents = _startup_plan_contents(decoded if isinstance(decoded, dict) else {}, waiting)
+        corp_name = str(contents.get("corp", "") or "").strip()
+        projects = [str(name).strip() for name in (contents.get("project") or []) if str(name).strip()]
+        corp_card = _find_prompt_card(waiting, corp_name) if corp_name else {}
+        if not corp_card and corp_name:
+            corp_card = {"name": corp_name}
+        keep_cost = float(_card_keep_cost(corp_card, default=3)) if corp_card else 3.0
+        start_mc = float(_card_starting_megacredits(corp_card, default=40)) if corp_card else 40.0
+        keep_spend = keep_cost * float(len(projects))
+        remaining = max(0.0, start_mc - keep_spend)
+        corp_tags = {
+            str(tag).lower()
+            for tag, present in _card_tags(corp_card).items()
+            if present
+        } if corp_card else set()
+
+        keep_quality = 0.0
+        synergy = 0.0
+        for name in projects:
+            card = _find_prompt_card(waiting, name) or {"name": name}
+            cost = self._safe_float(card.get("calculatedCost", card.get("cost", 0)))
+            vp = float(_card_vp(card))
+            tags = {str(tag).lower() for tag, present in _card_tags(card).items() if present}
+            keep_quality += (0.35 * vp) + max(0.0, 14.0 - cost) * 0.04
+            if cost > 14.0:
+                keep_quality -= (cost - 14.0) * 0.03
+            synergy += 0.18 * float(len(tags.intersection(corp_tags)))
+
+        spend_penalty = 0.045 * keep_spend
+        cash_bonus = min(1.2, remaining / 40.0)
+        rank_bonus = max(0.0, 0.4 - (0.01 * self._safe_float(descriptor.get("action_position", 0))))
+        score = 0.6 + keep_quality + synergy + cash_bonus - spend_penalty + rank_bonus
+        reasons = [
+            f"corp={corp_name or '?'}",
+            f"keeps={len(projects)}",
+            f"keep-spend={keep_spend:.0f}",
+            f"remaining-mc={remaining:.0f}",
+            f"synergy={synergy:.2f}",
+        ]
+        return score, reasons, False
+
+    def _find_award(self, game: Dict[str, Any], award_name: str) -> Dict[str, Any]:
+        target = str(award_name or "").strip().lower()
+        if not target:
+            return {}
+        for award in game.get("awards", []) or []:
+            if not isinstance(award, dict):
+                continue
+            name = str(award.get("name", award.get("title", "")) or "").strip().lower()
+            if name == target:
+                return award
+        return {}
+
+    def _award_standing(
+        self,
+        player: Dict[str, Any],
+        award: Dict[str, Any],
+        state: Optional[Dict[str, Any]] = None,
+    ) -> tuple[float, float, float, float]:
+        """Return (own_score, opp_best, projected_vp, lead_gap).
+
+        Live TM payloads use ``{color, score}``. Older/test fixtures may use
+        ``playerColor`` / ``playerName`` / ``playerScore``. When identity is
+        missing entirely, fall back to ``players`` order.
+        """
+        own_color = str(player.get("color", "") or "").strip().lower()
+        own_name = str(player.get("name", "") or "").strip().lower()
+        players = []
+        if isinstance(state, dict):
+            players = [row for row in (state.get("players", []) or []) if isinstance(row, dict)]
+            if not players:
+                game = state.get("game", {}) or {}
+                if isinstance(game, dict):
+                    players = [row for row in (game.get("players", []) or []) if isinstance(row, dict)]
+
+        rows: List[tuple[str, str, float]] = []
+        raw_scores = [row for row in (award.get("scores", []) or []) if isinstance(row, dict)]
+        for idx, row in enumerate(raw_scores):
+            color = str(
+                row.get("playerColor", row.get("color", "")) or ""
+            ).strip().lower()
+            name = str(row.get("playerName", row.get("name", "")) or "").strip().lower()
+            score = self._safe_float(row.get("playerScore", row.get("score", 0)))
+            if not color and not name and idx < len(players):
+                color = str(players[idx].get("color", "") or "").strip().lower()
+                name = str(players[idx].get("name", "") or "").strip().lower()
+            if not color and not name:
+                continue
+            rows.append((color, name, score))
+        if not rows:
+            return 0.0, 0.0, 0.0, 0.0
+
+        own_score = 0.0
+        opp_best = 0.0
+        for color, name, score in rows:
+            is_own = (own_color and color == own_color) or (own_name and name == own_name)
+            if is_own:
+                own_score = score
+            else:
+                opp_best = max(opp_best, score)
+
+        ordered = sorted((score for _, _, score in rows), reverse=True)
+        top = ordered[0] if ordered else 0.0
+        top_count = sum(1 for score in ordered if score == top)
+        second = next((score for score in ordered if score < top), 0.0)
+
+        projected = 0.0
+        if top > 0.0 and own_score == top:
+            projected = 5.0
+        elif second > 0.0 and own_score == second and top_count == 1:
+            projected = 2.0
+
+        if own_score == top and top_count == 1:
+            lead_gap = own_score - second
+        else:
+            lead_gap = own_score - opp_best
+        return own_score, opp_best, projected, lead_gap
+
+    def _estimate_award_cost(self, game: Dict[str, Any]) -> float:
+        funded = 0
+        for award in game.get("awards", []) or []:
+            if not isinstance(award, dict):
+                continue
+            # Live model uses ``color`` for the funder; fixtures may use playerColor.
+            if (
+                award.get("playerName")
+                or award.get("playerColor")
+                or award.get("color")
+                or award.get("funded_by")
+            ):
+                funded += 1
+        return float([8.0, 14.0, 20.0][min(funded, 2)])
+
+    def _score_fund_award(
+        self,
+        state: Dict[str, Any],
+        descriptor: Dict[str, Any],
+    ) -> tuple[float, List[str], bool]:
+        player = state.get("thisPlayer", {}) or {}
+        game = state.get("game", {}) or {}
+        generation = max(1.0, self._safe_float(game.get("generation", 1), 1.0))
+        mc = self._safe_float(player.get("megaCredits", 0))
+        award_name = str(descriptor.get("award_name", "") or descriptor.get("label", "") or "").strip()
+        award = self._find_award(game, award_name)
+        if (
+            award.get("playerName")
+            or award.get("playerColor")
+            or award.get("color")
+            or award.get("funded_by")
+        ):
+            return -3.0, [f"award={award_name or '?'}", "already funded"], False
+
+        own_score, opp_best, projected_vp, lead_gap = self._award_standing(player, award, state)
+        cost = self._estimate_award_cost(game)
+        phase = min(1.0, generation / 12.0)
+        cost_vp = cost / 5.0
+        # Mild early tax: first award at 8 MC can still be correct with a real lead.
+        commitment_tax = cost_vp * max(0.0, 1.0 - phase) * 0.35
+        if projected_vp >= 5.0:
+            confidence = 0.70 + min(0.25, max(0.0, lead_gap) / 10.0)
+        elif projected_vp >= 2.0:
+            confidence = 0.40 + min(0.20, max(0.0, lead_gap + 1.0) / 10.0)
+        else:
+            confidence = 0.10
+        expected_vp = projected_vp * confidence
+        expected_net = expected_vp - cost_vp - commitment_tax
+        affordability = 0.15 if cost <= mc else -1.6 - min(1.0, (cost - mc) / 12.0)
+        # Base timing keeps mid/late funding competitive with ordinary card plays.
+        timing = 0.35 + (1.10 * phase)
+        standing = (
+            (0.70 * projected_vp)
+            + (0.22 * lead_gap)
+            + (0.06 * own_score)
+            - (0.20 * max(0.0, opp_best - own_score))
+        )
+        score = timing + affordability + standing + (1.10 * expected_net)
+        if projected_vp <= 0.0:
+            score -= 2.2
+        elif projected_vp >= 5.0 and lead_gap >= 1.0:
+            score += 0.85
+        if lead_gap <= -2.0:
+            score -= 1.1
+        reasons = [
+            f"award={award_name or '?'}",
+            f"own={own_score:.0f}",
+            f"opp={opp_best:.0f}",
+            f"projected-vp={projected_vp:.0f}",
+            f"cost={cost:.0f}",
+            f"expected-net={expected_net:.2f}",
+        ]
+        return score, reasons, False
+
     def _score_descriptor(self, state: Dict[str, Any], descriptor: Dict[str, Any]) -> tuple[float, List[str], bool]:
         family = str(descriptor.get("family", "other") or "other")
         label = str(descriptor.get("label", "") or "").lower()
@@ -165,10 +372,19 @@ class HeuristicTeacherPolicy:
         plants = self._safe_float(player.get("plants", 0))
         heat = self._safe_float(player.get("heat", 0))
 
+        # Nested OR menus sometimes surface convert actions as select_option.
+        if family == "select_option":
+            if "convert" in label and "heat" in label:
+                family = "convert_heat"
+            elif "convert" in label and "plant" in label:
+                family = "convert_plants"
+
         if family == "play_card":
             score, reasons = self._score_card(state, descriptor)
             return score + 0.45, reasons + ["project-card tempo"], False
-        if family in {"startup_plan", "card_subset", "card_prompt"}:
+        if family == "startup_plan":
+            return self._score_startup_plan(state, descriptor)
+        if family in {"card_subset", "card_prompt"}:
             decoded = descriptor.get("decoded_action", {}) or {}
             card_count = len(decoded.get("cards", []) or []) if isinstance(decoded, dict) else 0
             existing_rank_bonus = max(0.0, 1.5 - (0.02 * self._safe_float(descriptor.get("action_position", 0))))
@@ -176,8 +392,7 @@ class HeuristicTeacherPolicy:
         if family == "claim_milestone":
             return 3.6, ["secure five VP before opponents"], False
         if family == "fund_award":
-            phase = min(1.0, generation / 12.0)
-            return -0.3 + 1.8 * phase - min(0.8, max(0.0, 14.0 - mc) / 20.0), ["award timing", "cash opportunity cost"], False
+            return self._score_fund_award(state, descriptor)
         if family == "convert_plants":
             oxygen = self._safe_float(game.get("oxygenLevel", game.get("oxygen", 0)))
             return (2.3 if plants >= 8 and oxygen < 14 else -2.0), ["plant threshold", "oxygen capacity"], False

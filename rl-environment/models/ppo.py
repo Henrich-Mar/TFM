@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
+import math
 import os
 import numpy as np
 import torch
@@ -138,7 +139,11 @@ class PPORolloutStep:
     reward: float
     done: bool
     legal_actions: List[int]
-    action_index: int = -1
+    action_index: int = 0
+    action_source: str = "policy"
+    action_payload: Optional[Dict[str, Any]] = None
+    server_accepted: bool = True
+    fallback_used: bool = False
     phase_index: int = 0
     recurrent_state: Optional[np.ndarray] = None
     aux_targets: Optional[np.ndarray] = None
@@ -161,6 +166,44 @@ class PPORolloutStep:
     policy_version: int = 0
     terminal: bool = False
     bootstrap_value: float = 0.0
+    value_target_valid: bool = True
+
+
+def validate_rollout_step(step: PPORolloutStep) -> None:
+    """Reject transitions which cannot be trusted as on-policy server actions."""
+    bundle = step.state_bundle
+    if not isinstance(bundle, dict):
+        raise ValueError("PPO rollout state_bundle must be a dictionary")
+
+    action_mask = np.asarray(bundle.get("action_mask", []), dtype=np.bool_).reshape(-1)
+    if action_mask.size == 0 or not bool(action_mask.any()):
+        raise ValueError("PPO rollout has an empty legal-action mask")
+
+    position = int(step.action)
+    if position < 0 or position >= int(action_mask.size) or not bool(action_mask[position]):
+        raise ValueError(f"PPO rollout selected invalid action position {position}")
+
+    action_indices = np.asarray(bundle.get("action_indices", []), dtype=np.int64).reshape(-1)
+    if action_indices.size != action_mask.size:
+        raise ValueError("PPO rollout action_indices do not match action mask")
+    if int(action_indices[position]) != int(step.action_index):
+        raise ValueError("PPO rollout action index does not match planner bundle")
+    if int(step.action_index) not in {int(item) for item in step.legal_actions}:
+        raise ValueError("PPO rollout action index is not legal")
+
+    for name, value in (
+        ("logp_old", step.logp_old),
+        ("value_old", step.value_old),
+        ("reward", step.reward),
+    ):
+        if not math.isfinite(float(value)):
+            raise ValueError(f"PPO rollout {name} must be finite")
+    if str(step.action_source) != "policy":
+        raise ValueError("PPO rollout action_source must be policy")
+    if not bool(step.server_accepted):
+        raise ValueError("PPO rollout action was not accepted by the server")
+    if bool(step.fallback_used):
+        raise ValueError("PPO rollout used a fallback action")
 
 
 @dataclass
@@ -443,6 +486,9 @@ def optimize_ppo_policy(
     if not steps:
         return {}
 
+    for step in steps:
+        validate_rollout_step(step)
+
     # --- Device selection: move network + data to GPU for training, back to CPU after ---
     original_device = next(network.parameters()).device
     device = _select_ppo_device(network, requested_device=ppo_device_override)
@@ -542,6 +588,11 @@ def optimize_ppo_policy(
     )
     advantages = gae_payload["advantages"]
     returns = gae_payload["returns"]
+    value_valid = torch.tensor(
+        [bool(getattr(step, "value_target_valid", True)) for step in steps],
+        dtype=torch.bool,
+        device=rewards.device,
+    )
 
     minibatch_size = max(1, min(int(ppo.minibatch_size), len(steps)))
     total_policy_loss = 0.0
@@ -593,7 +644,14 @@ def optimize_ppo_policy(
             batch_old_values = old_values[batch_idx].to(device)
             batch_advantages = advantages[batch_idx].to(device)
             batch_returns = returns[batch_idx].to(device)
+            batch_value_valid = value_valid[batch_idx].to(device)
             batch_legal_masks = batch_states["action_mask"]
+            if batch_legal_masks.ndim != 2 or not bool(batch_legal_masks.any(dim=1).all()):
+                raise ValueError("PPO minibatch contains an empty legal-action mask")
+            if bool((batch_actions < 0).any()) or bool((batch_actions >= batch_legal_masks.shape[1]).any()):
+                raise ValueError("PPO minibatch contains an out-of-range action position")
+            if not bool(batch_legal_masks.gather(1, batch_actions.unsqueeze(1)).all()):
+                raise ValueError("PPO minibatch selected a masked action position")
             batch_phase_indices = phase_indices[batch_idx].to(device)
             batch_recurrent_states = recurrent_states[batch_idx].to(device) if recurrent_states is not None else None
             batch_aux_targets = aux_targets[batch_idx].to(device)
@@ -642,12 +700,16 @@ def optimize_ppo_policy(
                     -float(ppo.value_clip_eps),
                     float(ppo.value_clip_eps),
                 )
-                value_loss = 0.5 * torch.max(
+                per_row_value_loss = 0.5 * torch.max(
                     (value_preds - batch_returns).pow(2),
                     (clipped_values - batch_returns).pow(2),
-                ).mean()
+                )
             else:
-                value_loss = 0.5 * (value_preds - batch_returns).pow(2).mean()
+                per_row_value_loss = 0.5 * (value_preds - batch_returns).pow(2)
+            if bool(batch_value_valid.any()):
+                value_loss = per_row_value_loss[batch_value_valid].mean()
+            else:
+                value_loss = value_preds.sum() * 0.0
 
             if aux_predictions is not None:
                 aux_loss = F.mse_loss(aux_predictions, batch_aux_targets)

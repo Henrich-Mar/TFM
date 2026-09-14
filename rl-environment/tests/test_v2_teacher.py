@@ -17,15 +17,146 @@ def _descriptor(index: int, family: str, label: str = "") -> dict:
     return {"action_index": index, "action_position": index, "family": family, "label": label, "decoded_action": {}}
 
 
-def test_teacher_prefers_claimable_milestone_over_pass() -> None:
-    teacher = HeuristicTeacherPolicy(seed=7, sample=False)
+def test_teacher_prefers_leading_award_over_trailing_scientist() -> None:
+    teacher = HeuristicTeacherPolicy(seed=3, sample=False)
+    state = {
+        "thisPlayer": {"name": "A1", "color": "red", "megaCredits": 25, "heat": 11},
+        "game": {
+            "generation": 8,
+            "temperature": -10,
+            "awards": [
+                {
+                    "name": "Landlord",
+                    "playerName": "A2",
+                    "playerColor": "blue",
+                    "scores": [],
+                },
+                {
+                    "name": "Scientist",
+                    "scores": [
+                        {"playerName": "A1", "playerColor": "red", "score": 2},
+                        {"playerName": "A2", "playerColor": "blue", "score": 6},
+                        {"playerName": "A3", "playerColor": "green", "score": 3},
+                    ],
+                },
+                {
+                    "name": "Thermalist",
+                    "scores": [
+                        {"playerName": "A1", "playerColor": "red", "score": 32},
+                        {"playerName": "A2", "playerColor": "blue", "score": 10},
+                        {"playerName": "A3", "playerColor": "green", "score": 8},
+                    ],
+                },
+                {
+                    "name": "Miner",
+                    "scores": [
+                        {"playerName": "A1", "playerColor": "red", "score": 0},
+                        {"playerName": "A2", "playerColor": "blue", "score": 4},
+                        {"playerName": "A3", "playerColor": "green", "score": 2},
+                    ],
+                },
+            ],
+        },
+        "waitingFor": {},
+    }
+    descriptors = [
+        {"action_index": 200, "action_position": 0, "family": "select_option", "label": "Convert 8 heat into temperature", "decoded_action": {}},
+        {"action_index": 600, "action_position": 1, "family": "fund_award", "label": "Scientist", "award_name": "Scientist", "decoded_action": {}},
+        {"action_index": 602, "action_position": 2, "family": "fund_award", "label": "Thermalist", "award_name": "Thermalist", "decoded_action": {}},
+        {"action_index": 603, "action_position": 3, "family": "fund_award", "label": "Miner", "award_name": "Miner", "decoded_action": {}},
+    ]
+    result = teacher.score_actions(state, descriptors)
+    by_index = {row.action_index: row for row in result.actions}
+    assert by_index[602].score > by_index[600].score
+    assert by_index[602].score > by_index[603].score
+    assert result.chosen_action_index in {200, 602}
+    assert "projected-vp=5" in by_index[602].reasons
+    assert "projected-vp=0" in by_index[600].reasons
+
+
+def test_teacher_reads_live_award_score_color_fields() -> None:
+    """TM FundedAwardModel uses {color, score}, not playerColor/playerScore."""
+    teacher = HeuristicTeacherPolicy(seed=4, sample=False)
+    state = {
+        "thisPlayer": {"name": "A1", "color": "red", "megaCredits": 20},
+        "game": {
+            "generation": 9,
+            "awards": [
+                {
+                    "name": "Scientist",
+                    "scores": [
+                        {"color": "red", "score": 5},
+                        {"color": "blue", "score": 2},
+                    ],
+                },
+                {
+                    "name": "Miner",
+                    "scores": [
+                        {"color": "red", "score": 0},
+                        {"color": "blue", "score": 4},
+                    ],
+                },
+            ],
+        },
+        "waitingFor": {},
+    }
     result = teacher.score_actions(
-        {"thisPlayer": {"megaCredits": 20}, "game": {"generation": 5}, "waitingFor": {}},
-        [_descriptor(600, "claim_milestone", "Claim Gardener"), _descriptor(900, "pass", "Pass")],
+        state,
+        [
+            {
+                "action_index": 600,
+                "action_position": 0,
+                "family": "fund_award",
+                "label": "Scientist",
+                "award_name": "Scientist",
+                "decoded_action": {},
+            },
+            {
+                "action_index": 601,
+                "action_position": 1,
+                "family": "fund_award",
+                "label": "Miner",
+                "award_name": "Miner",
+                "decoded_action": {},
+            },
+            {"action_index": 900, "action_position": 2, "family": "pass", "label": "Pass", "decoded_action": {}},
+        ],
     )
+    by_index = {row.action_index: row for row in result.actions}
+    assert by_index[600].score > by_index[601].score
+    assert by_index[600].score > by_index[900].score
     assert result.chosen_action_index == 600
-    assert not result.used_fallback
-    assert abs(sum(item.probability for item in result.actions) - 1.0) < 1e-8
+    assert "projected-vp=5" in by_index[600].reasons
+    assert "projected-vp=0" in by_index[601].reasons
+
+    teacher = HeuristicTeacherPolicy(seed=11, sample=False)
+    state = {
+        "thisPlayer": {"name": "A1", "color": "red", "megaCredits": 25, "heat": 11},
+        "game": {
+            "generation": 8,
+            "temperature": -10,
+            "awards": [
+                {
+                    "name": "Scientist",
+                    "scores": [
+                        {"playerName": "A1", "playerColor": "red", "score": 2},
+                        {"playerName": "A2", "playerColor": "blue", "score": 6},
+                    ],
+                }
+            ],
+        },
+        "waitingFor": {},
+    }
+    result = teacher.score_actions(
+        state,
+        [
+            {"action_index": 200, "action_position": 0, "family": "select_option", "label": "Convert 8 heat into temperature", "decoded_action": {}},
+            {"action_index": 600, "action_position": 1, "family": "fund_award", "label": "Scientist", "award_name": "Scientist", "decoded_action": {}},
+        ],
+    )
+    assert result.chosen_action_index == 200
+    scientist = next(row for row in result.actions if row.action_index == 600)
+    assert scientist.score < 0.0
 
 
 def test_teacher_only_returns_legal_action() -> None:
@@ -94,3 +225,120 @@ def test_real_award_action_range_is_not_misclassified_as_card_subset() -> None:
         }],
     }
     assert decoder._semantic_family(600, waiting_for, {"type": "option"}) == "fund_award"
+
+
+def test_milestone_leaves_use_named_650_range_and_not_parent_menu_title() -> None:
+    decoder = ActionDecoder()
+    waiting_for = {
+        "type": "or",
+        "title": "Take your next action",
+        "options": [
+            {
+                "type": "or",
+                "title": "Claim a milestone",
+                "options": [
+                    {"type": "option", "title": "Builder"},
+                    {"type": "option", "title": "Mayor"},
+                ],
+            },
+            {
+                "type": "or",
+                "title": "Fund an award",
+                "options": [
+                    {"type": "option", "title": "Landlord"},
+                    {"type": "option", "title": "Scientist"},
+                ],
+            },
+            {"type": "option", "title": "Pass for this generation"},
+        ],
+    }
+    state = {"thisPlayer": {"megaCredits": 20}, "game": {"generation": 8}, "waitingFor": waiting_for}
+    actions = decoder.get_available_actions(state)
+    assert 650 in actions
+    assert 651 in actions
+    assert 600 in actions
+    assert 601 in actions
+    # Parent claim menu must not remain as a bare SELECT_OPTION leaf.
+    claim_option_index = 200  # SELECT_OPTION + 0
+    assert claim_option_index not in actions
+
+    builder = decoder._descriptor_labels(650, waiting_for, "claim_milestone", {"type": "option"}, state)
+    mayor = decoder._descriptor_labels(651, waiting_for, "claim_milestone", {"type": "option"}, state)
+    landlord = decoder._descriptor_labels(600, waiting_for, "fund_award", {"type": "option"}, state)
+    assert builder["milestone_name"] == "Builder"
+    assert builder["label"] == "Builder"
+    assert mayor["milestone_name"] == "Mayor"
+    assert landlord["award_name"] == "Landlord"
+    assert decoder._semantic_family(650, waiting_for, {"type": "option"}) == "claim_milestone"
+    assert decoder._semantic_family(651, waiting_for, {"type": "option"}) == "claim_milestone"
+
+    decoded = decoder.decode_action(650, state)
+    assert decoded == {
+        "type": "or",
+        "index": 0,
+        "response": {"type": "or", "index": 0, "response": {"type": "option"}},
+    }
+    decoded_mayor = decoder.decode_action(651, state)
+    assert decoded_mayor["response"]["index"] == 1
+
+
+def test_teacher_startup_prefers_keep_roi_over_cash_drain() -> None:
+    waiting_for = {
+        "type": "initialCards",
+        "options": [
+            {
+                "title": "Select corporation",
+                "type": "card",
+                "cards": [{"name": "United Nations Mars Initiative", "tags": ["Earth"]}],
+                "min": 1,
+                "max": 1,
+            },
+            {
+                "title": "Select initial cards to buy",
+                "type": "card",
+                "cards": [
+                    {"name": "Local Heat Trapping", "calculatedCost": 1, "tags": ["Building"]},
+                    {"name": "Tycho Road Network", "calculatedCost": 24, "tags": ["Building"]},
+                ],
+                "min": 0,
+                "max": 10,
+            },
+        ],
+    }
+    state = {
+        "thisPlayer": {"megaCredits": 0, "cardCost": 3},
+        "game": {"generation": 1},
+        "waitingFor": waiting_for,
+    }
+    cheap = {
+        "action_index": 850,
+        "action_position": 1,
+        "family": "startup_plan",
+        "label": "United Nations Mars Initiative | Keep: Local Heat Trapping",
+        "decoded_action": {
+            "type": "initialCards",
+            "responses": [
+                {"type": "card", "cards": ["United Nations Mars Initiative"]},
+                {"type": "card", "cards": ["Local Heat Trapping"]},
+            ],
+        },
+    }
+    expensive = {
+        "action_index": 851,
+        "action_position": 0,
+        "family": "startup_plan",
+        "label": "United Nations Mars Initiative | Keep: Tycho Road Network",
+        "decoded_action": {
+            "type": "initialCards",
+            "responses": [
+                {"type": "card", "cards": ["United Nations Mars Initiative"]},
+                {"type": "card", "cards": ["Tycho Road Network"]},
+            ],
+        },
+    }
+    result = HeuristicTeacherPolicy(seed=3, sample=False).score_actions(state, [expensive, cheap])
+    assert result.chosen_action_index == 850
+    cheap_score = next(item.score for item in result.actions if item.action_index == 850)
+    expensive_score = next(item.score for item in result.actions if item.action_index == 851)
+    assert cheap_score > expensive_score
+

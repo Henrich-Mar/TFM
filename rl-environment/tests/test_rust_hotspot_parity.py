@@ -12,6 +12,8 @@ if "rl-environment" not in sys.path:
 
 rust_tfm_rl = pytest.importorskip("rust_tfm_rl")
 
+from models.action_decoder import CardSelectionOverflow, _enumerate_card_selection_masks
+
 
 def _card_cost(card: Dict[str, Any]) -> float:
     try:
@@ -169,3 +171,32 @@ def test_rank_startup_plans_deduplicates_and_sorts() -> None:
     ranked = json.loads(ranked_json)
     assert ranked[0]["index"] == 1
     assert [row["index"] for row in ranked] == [1, 2]
+
+
+def test_card_selection_catalog_contains_every_combination() -> None:
+    cards = [{"name": f"Card {idx}", "calculatedCost": 0} for idx in range(5)]
+    masks = _enumerate_card_selection_masks(cards, 2, 2, {}, limit=80)
+    expected = {
+        sum(1 << idx for idx in combo)
+        for combo in itertools.combinations(range(5), 2)
+    }
+    assert set(masks) == expected
+    assert len(masks) == len(expected)
+
+
+def test_remap_action_index_by_payload_ignores_catalog_order() -> None:
+    from debug_decision_snapshot import remap_action_index_by_payload
+
+    descriptors = [
+        {"action_index": 520, "decoded_action": {"type": "card", "cards": []}},
+        {"action_index": 521, "decoded_action": {"type": "card", "cards": ["B", "A"]}},
+    ]
+    assert remap_action_index_by_payload(descriptors, {"type": "card", "cards": ["A", "B"]}) == 521
+    assert remap_action_index_by_payload(descriptors, {"type": "card", "cards": ["C"]}) is None
+
+
+def test_card_selection_catalog_raises_instead_of_truncating() -> None:
+    cards = [{"name": f"Card {idx}", "calculatedCost": 0} for idx in range(9)]
+    assert len(list(itertools.combinations(range(9), 4))) > 80
+    with pytest.raises(CardSelectionOverflow, match="more than 80"):
+        _enumerate_card_selection_masks(cards, 4, 4, {}, limit=80)

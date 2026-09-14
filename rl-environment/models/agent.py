@@ -21,7 +21,7 @@ from collections import deque
 
 from game_interface import GameInstance, ServerTransportError
 from .state_encoder import StateEncoder
-from .action_decoder import ActionDecoder, _message_display_text, _title_text
+from .action_decoder import ActionDecoder, ActionEnumerationError, _message_display_text, _title_text
 from .planner_common import (
     PlannerConfig,
     bundle_to_torch,
@@ -43,17 +43,25 @@ from .ppo import (
     _move_network_and_optimizer_to,
     _select_ppo_device,
     optimize_ppo_policy,
+    validate_rollout_step,
 )
 from debug_decision_snapshot import (
+    assert_teacher_shard_replay_complete,
     build_decision_snapshot,
     complete_capture_request,
+    confirm_teacher_shard_replay_action,
     create_capture_request,
     fail_capture_request,
+    finalize_snapshot_execution,
     has_pending_capture_request,
+    legal_action_descriptor_fingerprint,
     load_annotation_replay,
     load_snapshot_annotation,
+    remap_action_index_by_payload,
     reserve_pending_capture_request,
+    save_action_pipeline_quarantine,
     save_snapshot,
+    take_teacher_shard_replay_action,
 )
 
 logger = logging.getLogger(__name__)
@@ -652,6 +660,10 @@ class TerraformingMarsNetwork(nn.Module):
 
         batch_size = int(world_tokens.shape[0])
         device = world_tokens.device
+        if action_mask.ndim != 2 or action_mask.shape[0] != batch_size:
+            raise ValueError("Planner action mask must be a two-dimensional batch")
+        if action_mask.shape[1] == 0 or not bool(action_mask.any(dim=1).all()):
+            raise ValueError("Planner received an active state with an empty legal-action mask")
 
         world_embed = self.world_projection(world_tokens) + self.world_type_embedding(
             torch.clamp(world_token_types, 0, int(self.planner_config.type_vocab_size) - 1)
@@ -1955,6 +1967,7 @@ class RLAgent:
             self.games_played += 1
             final_state = await game_instance.get_final_state()
             game_outcome = await self._record_game_result(final_state, player_name, game_instance)
+            self._assert_guided_replay_complete(game_instance)
             if self.decision_recorder is not None:
                 recorder_outcome = game_outcome if not episode_oversized else {**game_outcome, "completed": False}
                 self.decision_recorder.finish_episode(game_instance.game_id, self.id, recorder_outcome)
@@ -2159,7 +2172,20 @@ class RLAgent:
             turn_action_count = self._get_turn_action_count(player_id)
 
             availability_started = time.perf_counter()
-            raw_action_descriptors = self.action_decoder.get_legal_action_descriptors(player_state)
+            try:
+                raw_action_descriptors = self.action_decoder.get_legal_action_descriptors(player_state)
+            except ActionEnumerationError as exc:
+                try:
+                    save_action_pipeline_quarantine(
+                        agent_id=self.id,
+                        game_id=str(getattr(game_instance, "game_id", "") or ""),
+                        player_id=player_id,
+                        player_state=player_state,
+                        reason=str(exc),
+                    )
+                except Exception as snapshot_exc:
+                    logger.warning("Could not quarantine invalid action prompt: %s", snapshot_exc)
+                raise ActionPipelineError(str(exc)) from exc
             raw_available_actions = [int(item.get("action_index", -1)) for item in raw_action_descriptors]
             filtered_available_actions = self._filter_pass_actions(raw_available_actions, player_state)
             filtered_action_set = set(int(item) for item in filtered_available_actions)
@@ -2233,6 +2259,19 @@ class RLAgent:
                 force_random=False,
             )
             if policy_action:
+                guided_snapshot_id = ""
+                execution_action_source = "teacher" if self.decision_policy is not None else "policy"
+                policy_action, policy_action_idx, execution_action_source = self._apply_teacher_shard_replay_override(
+                    legal_descriptors=raw_action_descriptors,
+                    policy_action=policy_action,
+                    policy_action_idx=policy_action_idx,
+                    player_state=player_state,
+                )
+                if isinstance(action_meta, dict):
+                    action_meta["planner_bundle"] = planner_state
+                    action_meta["decision_sequence"] = self._next_decision_sequence(
+                        getattr(game_instance, "game_id", "")
+                    )
                 self._bump_decision_stat('policy_attempts')
                 if sampled_from_policy:
                     self._bump_decision_stat('policy_sampled_actions')
@@ -2243,33 +2282,40 @@ class RLAgent:
                     teacher_action_idx = self._guided_replay_action_index(
                         game_instance=game_instance,
                         player_state=player_state,
-                        legal_descriptors=filtered_action_descriptors,
+                        legal_descriptors=raw_action_descriptors,
                         turn_action_count=turn_action_count,
                     )
+                    # Capture replayed decisions too.  This produces a complete,
+                    # enriched trajectory without asking the user to label the
+                    # same deterministic game again.
+                    guided_snapshot = self._maybe_capture_decision_snapshot(
+                        game_instance=game_instance,
+                        player_id=player_id,
+                        player_state=player_state,
+                        action_input=policy_action,
+                        action_index=policy_action_idx,
+                        action_meta=action_meta,
+                        sampled_from_policy=sampled_from_policy,
+                        send_outcome="awaiting_annotation" if teacher_action_idx is None else "awaiting_replay",
+                        turn_action_count=turn_action_count,
+                        state_vector=None,
+                        guided_auto_capture=True,
+                    )
+                    guided_snapshot_id = str((guided_snapshot or {}).get("snapshot_id", "") or "")
                     if teacher_action_idx is None:
-                        guided_snapshot = self._maybe_capture_decision_snapshot(
-                            game_instance=game_instance,
-                            player_id=player_id,
-                            player_state=player_state,
-                            action_input=policy_action,
-                            action_index=policy_action_idx,
-                            action_meta=action_meta,
-                            sampled_from_policy=sampled_from_policy,
-                            send_outcome="awaiting_annotation",
-                            turn_action_count=turn_action_count,
-                            state_vector=None,
-                            guided_auto_capture=True,
-                        )
-                        snapshot_id = str((guided_snapshot or {}).get("snapshot_id", "") or "")
-                        if snapshot_id:
-                            annotation = await self._wait_for_guided_annotation(snapshot_id)
+                        if guided_snapshot_id:
+                            annotation = await self._wait_for_guided_annotation(guided_snapshot_id)
                             teacher_action_idx = self._guided_annotation_action_index(
                                 annotation,
                                 policy_action_idx,
                                 filtered_action_descriptors,
                             )
+                            if isinstance(annotation, dict) and not bool(annotation.get("skip", False)):
+                                execution_action_source = "human_annotation"
                         else:
                             logger.warning("Guided annotation capture failed; continuing without a pause")
+                    else:
+                        execution_action_source = "human_annotation"
                     if teacher_action_idx is not None and (
                         policy_action_idx is None or int(teacher_action_idx) != int(policy_action_idx)
                     ):
@@ -2302,6 +2348,7 @@ class RLAgent:
                 if await self._timed_send_player_input(game_instance, player_id, policy_action):
                     self._bump_decision_stat('policy_successes')
                     self._confirm_guided_replay_action(game_instance, policy_action_idx)
+                    confirm_teacher_shard_replay_action(str(self.id or ""), policy_action_idx)
                     # Track how many actions this player has taken this turn so the
                     # state encoder can expose first-vs-second-action information.
                     self._increment_turn_action_count(player_id)
@@ -2310,6 +2357,9 @@ class RLAgent:
                         self._clear_rejected_action(player_id, player_state, int(policy_action_idx))
                     self._clear_fallback_retry_count_for_prompt(player_id, player_state)
                     if action_meta is not None:
+                        action_meta["server_accepted"] = True
+                        action_meta["action_source"] = execution_action_source
+                        action_meta["selected_action_payload"] = dict(policy_action)
                         self._set_recurrent_state_for_player(
                             player_id,
                             action_meta.get("recurrent_state_out"),
@@ -2427,6 +2477,10 @@ class RLAgent:
                                     "logp_old": float(action_meta.get("logp_old", 0.0)),
                                     "value_old": float(action_meta.get("value_old", 0.0)),
                                     "legal_actions": list(action_meta.get("legal_actions", [])),
+                                    "action_source": str(action_meta.get("action_source", "policy")),
+                                    "action_payload": action_meta.get("selected_action_payload"),
+                                    "server_accepted": bool(action_meta.get("server_accepted", False)),
+                                    "fallback_used": bool(action_meta.get("fallback_used", False)),
                                     "phase_index": int(action_meta.get("phase_index", 0)),
                                     "recurrent_state": list(action_meta.get("recurrent_state", [])),
                                     "aux_targets": dict(action_meta.get("aux_targets", {})),
@@ -2445,7 +2499,7 @@ class RLAgent:
                                     "reward_shaping_coef": float(reward_shaping_coef),
                                 }
                             )
-                    self._maybe_capture_decision_snapshot(
+                    post_capture = self._maybe_capture_decision_snapshot(
                         game_instance=game_instance,
                         player_id=player_id,
                         player_state=player_state,
@@ -2457,6 +2511,18 @@ class RLAgent:
                         turn_action_count=turn_action_count,
                         state_vector=None,
                     )
+                    snapshot_id = guided_snapshot_id or str((post_capture or {}).get("snapshot_id", "") or "")
+                    if snapshot_id:
+                        try:
+                            finalize_snapshot_execution(
+                                snapshot_id,
+                                policy_action_idx,
+                                policy_action,
+                                execution_action_source,
+                                True,
+                            )
+                        except Exception as exc:
+                            logger.warning("Failed to finalize decision snapshot %s: %s", snapshot_id, exc)
                     await self._sleep_if_needed(self.post_move_sleep_sec)
                     return True
                 else:
@@ -2467,7 +2533,7 @@ class RLAgent:
                         self._remember_rejected_action(player_id, player_state, action_idx)
                     logger.warning(f"Agent {self.id[:8]} policy action was rejected by game")
                     self._log_stuck_context(game_instance, player_id, player_state, "policy_action_rejected")
-                    self._maybe_capture_decision_snapshot(
+                    post_capture = self._maybe_capture_decision_snapshot(
                         game_instance=game_instance,
                         player_id=player_id,
                         player_state=player_state,
@@ -2479,6 +2545,19 @@ class RLAgent:
                         turn_action_count=turn_action_count,
                         state_vector=None,
                     )
+                    snapshot_id = guided_snapshot_id or str((post_capture or {}).get("snapshot_id", "") or "")
+                    if snapshot_id:
+                        try:
+                            finalize_snapshot_execution(
+                                snapshot_id,
+                                policy_action_idx,
+                                policy_action,
+                                execution_action_source,
+                                False,
+                                error="server rejected action",
+                            )
+                        except Exception as exc:
+                            logger.warning("Failed to finalize rejected decision snapshot %s: %s", snapshot_id, exc)
                     pause_after_reject = self.failure_pause_sec
                     if is_initial_cards_prompt:
                         pause_after_reject = max(pause_after_reject, self.initial_cards_reject_pause_sec)
@@ -2909,10 +2988,52 @@ class RLAgent:
         target_agent = str(os.getenv("V2_GUIDED_ANNOTATION_AGENT_ID", "") or "").strip()
         return bool(target_agent and target_agent == str(self.id or "").strip())
 
+    def _next_decision_sequence(self, game_id: str) -> int:
+        """Return a stable one-based sequence for this agent's guided game."""
+        key = str(game_id or "").strip()
+        counters = getattr(self, "_guided_decision_sequences", None)
+        if not isinstance(counters, dict):
+            counters = {}
+            self._guided_decision_sequences = counters
+        counters[key] = int(counters.get(key, 0)) + 1
+        return int(counters[key])
+
     @staticmethod
     def _guided_replay_source_game_id() -> str:
         """Original game whose saved annotations should be replayed, if any."""
         return str(os.getenv("V2_GUIDED_REPLAY_SOURCE_GAME_ID", "") or "").strip()
+
+    @staticmethod
+    def _teacher_shard_replay_source() -> str:
+        return str(os.getenv("V2_GUIDED_REPLAY_TEACHER_SOURCE", "") or "").strip()
+
+    def _apply_teacher_shard_replay_override(
+        self,
+        *,
+        legal_descriptors: List[Dict[str, Any]],
+        policy_action: Optional[Dict[str, Any]],
+        policy_action_idx: Optional[int],
+        player_state: Dict[str, Any],
+    ) -> tuple[Optional[Dict[str, Any]], Optional[int], str]:
+        if self._guided_annotation_is_enabled() or not self._guided_replay_source_game_id():
+            return policy_action, policy_action_idx, "teacher" if self.decision_policy is not None else "policy"
+        if not self._teacher_shard_replay_source():
+            return policy_action, policy_action_idx, "teacher" if self.decision_policy is not None else "policy"
+        shard_action_idx = take_teacher_shard_replay_action(str(self.id or ""), legal_descriptors)
+        if shard_action_idx is None:
+            raise ActionPipelineError(
+                f"No teacher-shard replay step matched for agent {self.id} during guided game replay"
+            )
+        decoded = self.action_decoder.decode_action(int(shard_action_idx), player_state)
+        if not decoded:
+            raise ActionPipelineError(
+                f"Teacher-shard replay action {shard_action_idx} could not be decoded for agent {self.id}"
+            )
+        print(
+            f"[teacher-shard-replay] agent={self.id} action={shard_action_idx}",
+            flush=True,
+        )
+        return decoded, int(shard_action_idx), "teacher"
 
     def _guided_replay_action_index(
         self,
@@ -2952,7 +3073,9 @@ class RLAgent:
         steps = list(getattr(self, "_guided_replay_steps", []) or [])
         cursor = int(getattr(self, "_guided_replay_cursor", 0))
         if cursor >= len(steps):
-            return None
+            raise RuntimeError(
+                f"Guided replay requested decision {cursor + 1}, but the source game has exactly {len(steps)} annotations"
+            )
 
         expected_step = steps[cursor]
         expected = expected_step.get("prompt", {}) or {}
@@ -2980,13 +3103,52 @@ class RLAgent:
                 "Use the original seed, stage, game options, and teacher policy settings."
             )
 
-        legal = {int(item.get("action_index", -1)) for item in (legal_descriptors or [])}
+        expected_fingerprint = str(expected_step.get("legal_action_fingerprint", "") or "")
+        actual_fingerprint = legal_action_descriptor_fingerprint(legal_descriptors)
         selected = int(expected_step.get("selected_action_index", -1))
+        if not expected_fingerprint or actual_fingerprint != expected_fingerprint:
+            remapped = remap_action_index_by_payload(
+                legal_descriptors,
+                expected_step.get("selected_action_payload", {}),
+            )
+            if remapped is None:
+                label = str(expected_step.get("selected_action_label", "") or "").strip()
+                if label:
+                    label_matches = [
+                        int(item.get("action_index", -1))
+                        for item in (legal_descriptors or [])
+                        if str(item.get("label", "") or "").strip() == label
+                    ]
+                    label_matches = [item for item in label_matches if item >= 0]
+                    if len(label_matches) == 1:
+                        remapped = int(label_matches[0])
+            if remapped is None:
+                raise RuntimeError(
+                    "Guided annotation replay legal-action fingerprint diverged at source snapshot "
+                    f"{expected_step.get('source_snapshot_id')}: "
+                    f"expected={expected_fingerprint or 'missing'} actual={actual_fingerprint}. "
+                    "The prompt shape matched, but its canonical choices or payloads did not."
+                )
+            print(
+                "[guided-replay] remapped legacy action catalog at "
+                f"{expected_step.get('source_snapshot_id')}: "
+                f"{selected} -> {remapped}",
+                flush=True,
+            )
+            selected = int(remapped)
+
+        legal = {int(item.get("action_index", -1)) for item in (legal_descriptors or [])}
         if selected not in legal:
             raise RuntimeError(
                 "Guided annotation replay action is not legal at source snapshot "
                 f"{expected_step.get('source_snapshot_id')}. The game state does not match the recorded run."
             )
+        print(
+            f"[guided-replay] matched {cursor + 1}/{len(steps)} "
+            f"source={expected_step.get('source_snapshot_id')} "
+            f"game={current_game_id} action={selected}",
+            flush=True,
+        )
         self._guided_replay_pending = {
             "game_id": current_game_id,
             "cursor": cursor,
@@ -3011,6 +3173,22 @@ class RLAgent:
             return
         self._guided_replay_cursor = int(pending.get("cursor", 0)) + 1
         self._guided_replay_pending = None
+
+    def _assert_guided_replay_complete(self, game_instance: GameInstance) -> None:
+        """Fail a deterministic replay when it ends before all labels were used."""
+        if not self._guided_replay_source_game_id() or not self._guided_annotation_is_enabled():
+            return
+        current_game_id = str(getattr(game_instance, "game_id", "") or "")
+        if getattr(self, "_guided_replay_game_id", None) != current_game_id:
+            raise ActionPipelineError("Guided replay did not initialize for the completed game")
+        expected = len(list(getattr(self, "_guided_replay_steps", []) or []))
+        consumed = int(getattr(self, "_guided_replay_cursor", 0))
+        if consumed != expected or getattr(self, "_guided_replay_pending", None) is not None:
+            raise ActionPipelineError(
+                f"Guided replay ended after {consumed}/{expected} accepted annotations"
+            )
+        if self._teacher_shard_replay_source():
+            assert_teacher_shard_replay_complete()
 
     @staticmethod
     def _guided_annotation_timeout_sec() -> float:
@@ -3349,7 +3527,13 @@ class RLAgent:
                     for idx, row in enumerate(action_descriptors)
                     if int(row.get("action_index", -1)) == chosen_index
                 )
-                decoded = self.action_decoder.decode_action(chosen_index, player_state)
+                chosen_descriptor = action_descriptors[chosen_list_position]
+                decoded = chosen_descriptor.get("decoded_action")
+                if not isinstance(decoded, dict) or not decoded:
+                    raise ActionPipelineError(
+                        f"Canonical descriptor {chosen_index} has no decoded action payload"
+                    )
+                decoded = dict(decoded)
                 chosen_probability = max(
                     1e-8,
                     next(
@@ -3371,6 +3555,9 @@ class RLAgent:
                     "chosen_action_position": int(chosen_list_position),
                     "chosen_action_label": self._describe_action(chosen_index, player_state),
                     "sampled_from_policy": True,
+                    "action_source": "teacher",
+                    "server_accepted": False,
+                    "fallback_used": bool(decision.used_fallback),
                     "value_old": 0.0,
                     "legal_actions": [int(row.get("action_index", -1)) for row in action_descriptors],
                     "logp_old": float(np.log(chosen_probability)),
@@ -3521,9 +3708,17 @@ class RLAgent:
                 prefer_project_cards=prefer_project_cards,
             )
               
-            # Convert to game input
+            # The legal-action descriptor owns the canonical payload.  Never
+            # recompute it after sampling: contextual action IDs can otherwise
+            # decode to a different branch of the prompt.
             decode_started = time.perf_counter()
-            action_input = self.action_decoder.decode_action(action_index, player_state)
+            chosen_descriptor = action_descriptors[int(action_position)]
+            if int(chosen_descriptor.get("action_index", -1)) != int(action_index):
+                raise ActionPipelineError("Sampled action position/index does not match its descriptor")
+            action_input = chosen_descriptor.get("decoded_action")
+            if not isinstance(action_input, dict) or not action_input:
+                raise ActionPipelineError(f"Canonical descriptor {action_index} has no payload")
+            action_input = dict(action_input)
             self._record_pipeline_timing("decode_action_sec", time.perf_counter() - decode_started)
             aux_targets = self._compute_aux_targets(player_state)
             rare_flags = self._infer_rare_state_flags(player_state, action_input)
@@ -3555,6 +3750,9 @@ class RLAgent:
                 "chosen_action_position": int(action_position),
                 "chosen_action_label": self._describe_action(int(action_index), player_state),
                 "sampled_from_policy": bool(sampled_from_policy),
+                "action_source": "policy",
+                "server_accepted": False,
+                "fallback_used": False,
                 "bundle_summary": {
                     "world_token_count": int(planner_state["world_tokens"].shape[0]),
                     "hand_token_count": int(planner_state["hand_tokens"].shape[0]),
@@ -3848,6 +4046,10 @@ class RLAgent:
                         reward=reward,
                         done=(idx == len(steps) - 1),
                         legal_actions=[int(a) for a in step.get("legal_actions", [])],
+                        action_source=str(step.get("action_source", "")),
+                        action_payload=step.get("action_payload"),
+                        server_accepted=bool(step.get("server_accepted", False)),
+                        fallback_used=bool(step.get("fallback_used", False)),
                         phase_index=int(step.get("phase_index", 0)),
                         recurrent_state=np.asarray(step.get("recurrent_state", []), dtype=np.float32).reshape(-1),
                         aux_targets=np.asarray(aux_raw.get("planner_vector", []), dtype=np.float32).reshape(-1),
@@ -3870,8 +4072,10 @@ class RLAgent:
                         policy_version=int(self.policy_version),
                         terminal=(idx == len(steps) - 1),
                         bootstrap_value=0.0,
+                        value_target_valid=bool(step.get("value_target_valid", True)),
                     )
                 )
+                validate_rollout_step(rollout_steps[-1])
             except Exception as exc:
                 logger.error("Dropping malformed episode for agent %s: %s", self.id[:8], exc)
                 self._bump_decision_stat("invalid_episodes_dropped")

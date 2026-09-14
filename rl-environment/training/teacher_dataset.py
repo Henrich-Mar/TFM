@@ -16,7 +16,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 import numpy as np
 
 
-SCHEMA_VERSION = "teacher_sample.v1"
+SCHEMA_VERSION = "teacher_sample.v2"
+LEGACY_SCHEMA_VERSION = "teacher_sample.v1"
 
 
 def load_reserved_benchmark_seeds(path: Optional[str] = None) -> set[int]:
@@ -42,13 +43,43 @@ def split_for_episode(episode_id: str) -> str:
 
 
 def source_weight(source: str, confidence: float, is_forced: bool = False) -> float:
-    if str(source).startswith("human"):
-        return 4.0
-    # Forced decisions contain no preference signal. Keep a small weight for
-    # state/value coverage without treating their one-action mask as quality.
+    # A one-action prompt contains no policy preference signal, regardless of
+    # who confirmed it.  Retain a small weight for value/state coverage.
     if is_forced:
         return 0.25
+    if str(source).startswith("human"):
+        return 4.0
     return 1.0 if float(confidence) >= 0.5 else 0.25
+
+
+def normalize_sample(sample: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill the explicit v2 provenance fields for a newly produced sample."""
+    item = dict(sample)
+    if str(item.get("schema_version", "")) != SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported teacher sample schema {item.get('schema_version')!r}; "
+            "legacy v1 samples require the strict annotation recovery importer"
+        )
+    descriptors = list(item.get("action_descriptors", []) or [])
+    chosen_position = int(item.get("chosen_action_position", -1))
+    chosen_descriptor = descriptors[chosen_position] if 0 <= chosen_position < len(descriptors) else {}
+    source = str(item.get("source", "") or "")
+    is_forced = bool(item.get("is_forced", len(descriptors) == 1))
+    item.setdefault("is_forced", is_forced)
+    item.setdefault("action_source", "human_annotation" if source.startswith("human") else "teacher")
+    item.setdefault("selected_action_payload", dict(chosen_descriptor.get("decoded_action", {}) or {}))
+    item.setdefault("server_accepted", True)
+    item.setdefault("fallback_used", False)
+    item.setdefault("validation_errors", [])
+    item.setdefault(
+        "training_eligible",
+        bool(item.get("server_accepted", False))
+        and not bool(item.get("fallback_used", False))
+        and not bool(item.get("validation_errors", [])),
+    )
+    item.setdefault("value_target_valid", True)
+    item.setdefault("policy_target_valid", not is_forced)
+    return item
 
 
 def validate_sample(sample: Dict[str, Any]) -> None:
@@ -71,6 +102,8 @@ def validate_sample(sample: Dict[str, Any]) -> None:
     descriptor_indices = [int(item.get("action_index", -1)) for item in descriptors]
     if [int(item) for item in action_indices] != descriptor_indices:
         raise ValueError("teacher action_indices do not match action_descriptors")
+    if len(descriptor_indices) != len(set(descriptor_indices)):
+        raise ValueError("teacher action_descriptors contain duplicate action IDs")
     chosen_position = int(sample.get("chosen_action_position", -1))
     if not 0 <= chosen_position < action_count:
         raise ValueError("teacher chosen_action_position is outside the legal action list")
@@ -99,14 +132,68 @@ def validate_sample(sample: Dict[str, Any]) -> None:
         raise ValueError("teacher sample seed must be an integer") from exc
     if not np.isfinite(float(sample.get("value_target", 0.0))):
         raise ValueError("teacher value_target must be finite")
+    selected_payload = sample.get("selected_action_payload")
+    if not isinstance(selected_payload, dict) or not selected_payload:
+        raise ValueError("teacher selected_action_payload must be a non-empty object")
+    canonical_payload = descriptors[chosen_position].get("decoded_action")
+    if not isinstance(canonical_payload, dict) or not canonical_payload:
+        raise ValueError("chosen descriptor is missing its canonical payload")
+    if selected_payload != canonical_payload:
+        raise ValueError("teacher selected_action_payload does not match chosen descriptor")
+    action_source = str(sample.get("action_source", "") or "")
+    if action_source not in {"policy", "teacher", "human_annotation"}:
+        raise ValueError(f"unknown teacher action_source: {action_source!r}")
+    bundle_indices = np.asarray(bundle.get("action_indices", []), dtype=np.int64).reshape(-1)
+    bundle_mask = np.asarray(bundle.get("action_mask", []), dtype=np.bool_).reshape(-1)
+    if bundle_indices.size != action_count or bundle_mask.size != action_count:
+        raise ValueError("teacher planner bundle action catalog is incomplete")
+    if bundle_indices.tolist() != descriptor_indices:
+        raise ValueError("teacher planner bundle action_indices do not match descriptors")
+    if not bool(bundle_mask.any()) or not bool(bundle_mask[chosen_position]):
+        raise ValueError("teacher planner bundle has an empty or invalid action mask")
+    errors = sample.get("validation_errors", [])
+    if not isinstance(errors, list):
+        raise ValueError("teacher validation_errors must be a list")
+    if not bool(sample.get("training_eligible", False)):
+        raise ValueError("teacher sample is not training eligible")
+    if errors:
+        raise ValueError("teacher sample has validation errors")
+    if bool(sample.get("fallback_used", False)):
+        raise ValueError("fallback teacher samples cannot enter training splits")
+    if not bool(sample.get("server_accepted", False)):
+        raise ValueError("server-rejected teacher samples cannot enter training splits")
 
 
 class TeacherDatasetStore:
     def __init__(self, root_dir: str) -> None:
         self.root = Path(root_dir).expanduser().resolve()
         self.reserved_benchmark_seeds = load_reserved_benchmark_seeds()
-        for split in ("train", "validation", "test"):
+        for split in ("train", "validation", "test", "quarantine"):
             (self.root / split).mkdir(parents=True, exist_ok=True)
+
+    def quarantine_episode(
+        self,
+        episode_id: str,
+        samples: Sequence[Dict[str, Any]],
+        reasons: Sequence[str],
+    ) -> Path:
+        payload = {
+            "schema_version": "teacher_quarantine.v1",
+            "episode_id": str(episode_id),
+            "reasons": sorted({str(reason) for reason in reasons if str(reason)}),
+            "samples": [dict(item) for item in (samples or [])],
+        }
+        target = self.root / "quarantine" / f"episode_{episode_id}_{uuid.uuid4().hex[:8]}.pkl.gz"
+        fd, tmp_name = tempfile.mkstemp(prefix="quarantine_", suffix=".tmp", dir=str(target.parent))
+        os.close(fd)
+        try:
+            with gzip.open(tmp_name, "wb", compresslevel=3) as handle:
+                pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp_name, target)
+        finally:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        return target
 
     def append_episode(
         self,
@@ -114,7 +201,7 @@ class TeacherDatasetStore:
         samples: Sequence[Dict[str, Any]],
         split_key: Optional[str] = None,
     ) -> Path:
-        items = [dict(item) for item in (samples or [])]
+        items = [normalize_sample(dict(item)) for item in (samples or [])]
         if not items:
             raise ValueError("cannot append empty teacher episode")
         resolved_split_key = str(split_key or episode_id)
@@ -142,7 +229,11 @@ class TeacherDatasetStore:
             item["step_index"] = int(item.get("step_index", step_index))
             item["split"] = split
             item["split_key"] = resolved_split_key
-            validate_sample(item)
+            try:
+                validate_sample(item)
+            except Exception as exc:
+                self.quarantine_episode(str(episode_id), items, [str(exc)])
+                raise
         target = self.root / split / f"episode_{episode_id}_{len(items)}.pkl.gz"
         fd, tmp_name = tempfile.mkstemp(prefix="teacher_", suffix=".tmp", dir=str(target.parent))
         os.close(fd)
@@ -172,13 +263,15 @@ class TeacherDatasetStore:
         seed_splits: Dict[int, set[str]] = {}
         game_splits: Dict[str, set[str]] = {}
         split_counts: Dict[str, int] = {"train": 0, "validation": 0, "test": 0}
-        source_counts: Dict[str, int] = {"human": 0, "teacher": 0}
+        source_counts: Dict[str, int] = {"human": 0, "human_preference": 0, "teacher": 0}
         reserved_hits: set[int] = set()
         for split in ("train", "validation", "test"):
             for item in self.iter_samples(split):
                 split_counts[split] += 1
                 source_key = "human" if str(item.get("source", "")).startswith("human") else "teacher"
                 source_counts[source_key] += 1
+                if source_key == "human" and bool(item.get("policy_target_valid", not item.get("is_forced", False))):
+                    source_counts["human_preference"] += 1
                 raw_seed = item.get("seed")
                 if raw_seed is not None and int(raw_seed) >= 0:
                     seed = int(raw_seed)
@@ -205,6 +298,7 @@ class TeacherDatasetStore:
             "reserved_seed_hits": sorted(reserved_hits),
             "leaking_seeds": leaking_seeds,
             "leaking_game_ids": leaking_games,
+            "quarantine_files": len(list((self.root / "quarantine").glob("episode_*.pkl.gz"))),
         }
 
 
@@ -215,6 +309,7 @@ class _PendingEpisode:
     game_id: str
     seed: int
     samples: List[Dict[str, Any]] = field(default_factory=list)
+    quarantined_samples: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class TeacherDatasetRecorder:
@@ -245,6 +340,7 @@ class TeacherDatasetRecorder:
             return
         confidence = float(external.get("confidence", 0.0) or 0.0)
         is_forced = bool(external.get("is_forced", False))
+        fallback_used = bool(external.get("used_fallback", action_meta.get("fallback_used", False)))
         source = str(external.get("version", "heuristic-teacher.v1") or "heuristic-teacher.v1")
         key = self._key(game_id, agent_id)
         with self._lock:
@@ -258,40 +354,76 @@ class TeacherDatasetRecorder:
                     resolved_seed,
                 )
                 self._pending[key] = pending
-            pending.samples.append(
-                {
+            descriptors = list(action_meta.get("action_descriptors", []) or [])
+            chosen_position = int(action_meta.get("chosen_action_position", 0))
+            chosen_descriptor = descriptors[chosen_position] if 0 <= chosen_position < len(descriptors) else {}
+            sample = {
                     "schema_version": SCHEMA_VERSION,
                     "sample_id": uuid.uuid4().hex,
                     "planner_bundle": planner_bundle,
-                    "action_descriptors": list(action_meta.get("action_descriptors", []) or []),
+                    "action_descriptors": descriptors,
                     "action_indices": [int(row.get("action_index", -1)) for row in score_rows],
                     "teacher_probabilities": probabilities,
                     "chosen_action_position": int(action_meta.get("chosen_action_position", 0)),
                     "phase_index": int(action_meta.get("phase_index", 0)),
                     "confidence": confidence,
                     "is_forced": is_forced,
+                    "policy_target_valid": not is_forced,
                     "source": source,
+                    "action_source": "teacher",
                     "sample_weight": source_weight(source, confidence, is_forced=is_forced),
                     "seed": int(pending.seed),
                     "game_id": str(pending.game_id),
                     "value_target": 0.0,
+                    "value_target_valid": False,
                     "rank": 0,
                     "vp": 0.0,
                     "vp_mean": 0.0,
+                    "selected_action_payload": dict(
+                        action_meta.get("selected_action_payload", chosen_descriptor.get("decoded_action", {})) or {}
+                    ),
+                    "server_accepted": bool(action_meta.get("server_accepted", False)),
+                    "fallback_used": fallback_used,
+                    "training_eligible": bool(action_meta.get("server_accepted", False)) and not fallback_used,
+                    "validation_errors": ["fallback_used"] if fallback_used else (
+                        [] if bool(action_meta.get("server_accepted", False)) else ["server_not_accepted"]
+                    ),
                 }
-            )
+            if bool(sample["training_eligible"]):
+                pending.samples.append(sample)
+            else:
+                pending.quarantined_samples.append(sample)
 
     def finish_episode(self, game_id: str, agent_id: str, outcome: Dict[str, Any]) -> Optional[Path]:
         key = self._key(game_id, agent_id)
         with self._lock:
             pending = self._pending.pop(key, None)
-        if pending is None or not pending.samples or not bool(outcome.get("completed", False)):
+        if pending is None or not bool(outcome.get("completed", False)):
             return None
         rank = int(outcome.get("rank", 4) or 4)
         vp = float(outcome.get("vp", 0.0) or 0.0)
         vp_mean = float(outcome.get("vp_mean", vp) or vp)
         rank_reward = {1: 1.0, 2: 0.25, 3: -0.25, 4: -1.0}.get(rank, -1.0)
         value_target = rank_reward + max(-0.1, min(0.1, 0.05 * ((vp - vp_mean) / 20.0)))
-        for item in pending.samples:
-            item.update({"rank": rank, "vp": vp, "vp_mean": vp_mean, "value_target": float(value_target)})
+        for item in [*pending.samples, *pending.quarantined_samples]:
+            item.update({
+                "rank": rank,
+                "vp": vp,
+                "vp_mean": vp_mean,
+                "value_target": float(value_target),
+                "value_target_valid": True,
+            })
+        if pending.quarantined_samples:
+            reasons = [
+                reason
+                for item in pending.quarantined_samples
+                for reason in (item.get("validation_errors", []) or [])
+            ]
+            self.store.quarantine_episode(
+                f"{pending.episode_id}-invalid",
+                pending.quarantined_samples,
+                reasons or ["training_ineligible"],
+            )
+        if not pending.samples:
+            return None
         return self.store.append_episode(pending.episode_id, pending.samples, split_key=pending.split_key)

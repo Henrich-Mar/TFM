@@ -27,7 +27,8 @@ Stage 0 uses beginner corporations and the base Tharsis game:
 docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --rm rl-coordinator python -m training.v2_collect_teacher --stage 0 --games 100 --seed-start 10000
 ```
 
-Stage 1 enables Corporate Era and corporation selection:
+Stage 1 enables Corporate Era and corporation selection, but stays hard-blocked
+until `V2_ALLOW_STAGE1=1` after its complete action space passes a strict audit:
 
 ```powershell
 docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --rm -e GAME_OPTIONS_FILE=/app/game_options.v2_stage1.json rl-coordinator python -m training.v2_collect_teacher --stage 1 --games 100 --seed-start 20000
@@ -73,13 +74,43 @@ different player. Guided annotation waits indefinitely by default; add
 are manual labels: the game will not advance until you save or skip the current
 decision.
 
-Import the annotations:
+Audit a capture before importing it. The command is strict: an incomplete game,
+illegal label, missing planner bundle, fallback, rejection, or action-space
+overflow produces a non-zero exit code.
 
 ```powershell
-docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --rm rl-coordinator python -m training.v2_import_annotations --snapshots /app/debug_snapshots --annotations /app/debug_snapshots/annotations --dataset /app/v2/teacher-dataset
+python -m training.v2_audit_capture --snapshots rl-environment/debug_snapshots --annotations rl-environment/debug_snapshots/annotations --teacher-source rl-v2/action-test-recovery-20260914/teacher-dataset --game-id g8d2e4e20f93 --agent-id teacher-v1-seat-0
 ```
 
-At least 100 non-skipped human labels are required by the pretraining gate.
+Import the annotations only after that report is valid. `--teacher-source` is
+required for legacy guided snapshots which do not contain their own planner
+bundle; matching is exact and ambiguous legacy episodes are rejected.
+
+```powershell
+python -m training.v2_import_annotations --snapshots rl-environment/debug_snapshots --annotations rl-environment/debug_snapshots/annotations --dataset rl-v2/recovered-teacher-v2 --teacher-source rl-v2/action-test-recovery-20260914/teacher-dataset --game-id g8d2e4e20f93 --agent-id teacher-v1-seat-0
+```
+
+To verify the deterministic game without another pause, copy its source
+snapshots and annotations under `rl-v2/action-test/debug_snapshots`, start the
+action-test services, and replay all labels:
+
+```powershell
+$env:TFM_TEST_STAGE = "0"
+docker compose -f docker-compose.action-test.yml run --rm --service-ports decision-explainer python -m training.v2_collect_teacher --stage 0 --games 1 --seed-start 10000 --serve-api --annotate-seat 0 --replay-source-game-id g8d2e4e20f93
+```
+
+`docker-compose.action-test.yml` defaults to Stage 1 (Corporate Era, two
+corporations, `V2_ALLOW_STAGE1=1`). The first Decision Explainer pause is the
+startup bundle: `startup_plan` labels name the corporation and kept projects.
+Set `TFM_TEST_STAGE=0` to inspect beginner-corp Stage 0 instead.
+
+```powershell
+docker compose -f docker-compose.action-test.yml up --build
+```
+
+The replay fails unless every source annotation is consumed. At least 100,000
+valid teacher decisions and 100 non-forced human preference labels are required
+by the pretraining gate.
 
 ## 4. Passively record your own games
 
@@ -139,7 +170,16 @@ listener with `Ctrl+C` after your 10–20 games. The command prints one private
 docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --rm rl-coordinator python -m training.v2_pretrain --dataset /app/v2/teacher-dataset --output /app/v2/pretrain --batch-size 32 
 ```
 
-PPO remains blocked unless `pretrain_report.json` records at least 85% top-1,
+Startup plan tokens now encode corporation identity and keep aggregates. Recollect
+Stage 1 teacher games after this encoding change before BC; leftover Stage 1
+shards were recorded against content-blind action tokens.
+
+```powershell
+docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --rm -e GAME_OPTIONS_FILE=/app/game_options.v2_stage1.json -e V2_ALLOW_STAGE1=1 rl-coordinator python -m training.v2_collect_teacher --stage 1 --games 100 --seed-start 20000
+```
+
+Then rerun pretrain into a fresh `/app/v2/pretrain` directory (or set
+`V2_ALLOW_PRETRAIN_OVERWRITE=1`). PPO remains blocked unless `pretrain_report.json` records at least 85% top-1,
 97% top-3 and 80% top-3 on the human annotations.
 Pretraining is deterministic by default (`--seed 20260901`) and refuses to
 overwrite a non-empty output directory. For an intentional clean BC restart,
@@ -179,6 +219,12 @@ teacher legality/action families, clean-runtime isolation, BC checkpoint
 creation, and fixed-seed server initialization. The 100-game smoke test and
 Stage 0/1 gates are empirical training gates and therefore run after data/model
 generation rather than as repository unit tests.
+
+Audit award/milestone naming and take rates on collected data:
+
+```powershell
+python -m training.v2_audit_awards_milestones --teacher-dataset rl-v2/action-test-recovery-20260914/teacher-dataset --snapshots rl-v2/action-test/debug_snapshots --require-named-milestones
+```
 Use these commands in the future:
 # Gracefully stop and save current progress
 docker kill --signal=SIGINT tfm-rl-v2-selfplay

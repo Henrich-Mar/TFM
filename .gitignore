@@ -20,3 +20,5 @@ rl-environment/rl-logs/rl-coordinator.log.4
 rl-environment/rl-logs/rl-coordinator.log.5
 rl-environment/Cargo.lock
 rl-environment/target/
+rl-environment/debug_snapshots/**
+!rl-environment/debug_snapshots/incomplete_games.json

@@ -1,10 +1,12 @@
 import sys
 
+import pytest
+
 
 if "rl-environment" not in sys.path:
     sys.path.append("rl-environment")
 
-from models.action_decoder import ActionDecoder, build_response_for_input
+from models.action_decoder import ActionDecoder, ActionEnumerationError, build_response_for_input
 
 
 def _payment_zero(payment: dict) -> bool:
@@ -88,6 +90,8 @@ def test_get_available_actions_project_card_omits_unaffordable_entries() -> None
         },
     }
 
-    available = decoder.get_available_actions(player_state)
-
-    assert available == []
+    legal = decoder.enumerate_legal_actions(player_state)
+    assert legal.status == "invalid"
+    assert "no legal actions" in str(legal.reason)
+    with pytest.raises(ActionEnumerationError, match="no legal actions"):
+        decoder.get_available_actions(player_state)

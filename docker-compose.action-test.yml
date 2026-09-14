@@ -39,7 +39,7 @@ services:
       - -m
       - training.v2_collect_teacher
       - --stage
-      - "0"
+      - "${TFM_TEST_STAGE:-1}"
       - --games
       - "${TFM_TEST_GAMES:-1}"
       - --seed-start
@@ -53,10 +53,11 @@ services:
       DECISION_SNAPSHOT_DIR: /app/debug_snapshots
       V2_TEACHER_ANNOTATION_DIR: /app/debug_snapshots/annotations
       GAME_SERVERS: tfm-server:8080
-      GAME_OPTIONS_FILE: /app/game_options.v2_stage0.json
+      GAME_OPTIONS_FILE: /app/game_options.v2_stage${TFM_TEST_STAGE:-1}.json
       TFM_RL_V2: "1"
       TFM_RL_V2_ROOT: /app/v2
       V2_ALLOW_RESUME: "0"
+      V2_ALLOW_STAGE1: "1"
       RESUME_TRAINING: "0"
       BOOTSTRAP_CHECKPOINT_PATH: ""
       RL_MODELS_DIR: /app/v2/models
@@ -64,8 +65,13 @@ services:
       V2_TEACHER_DATASET_DIR: /app/v2/teacher-dataset
       RL_LOG_DIR: /app/v2/logs
       AGENT_INFERENCE_DEVICE: cpu
+      # Guided debug play pauses for labels; 600s covers a full Stage 1 game.
+      TM_GAME_TIMEOUT_SEC: "600"
     volumes:
-      - ./rl-environment/debug_snapshots:/app/debug_snapshots
+      # Keep action-test output outside the source tree and persist the complete
+      # teacher dataset as well as the human-readable snapshots.
+      - ./rl-v2/action-test:/app/v2
+      - ./rl-v2/action-test/debug_snapshots:/app/debug_snapshots
       - ./card_metadata.json:/app/card_metadata.json:ro
     depends_on:
       tfm-server:
@@ -79,4 +85,6 @@ services:
       timeout: 8s
       retries: 12
       start_period: 60s
-    restart: unless-stopped
+    # A finite guided run must stay stopped after its requested games finish.
+    # Restarting it silently creates a second game with the same seed.
+    restart: "no"

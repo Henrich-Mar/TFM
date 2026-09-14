@@ -16,7 +16,7 @@ from training.teacher_dataset import (
     TeacherDatasetStore,
     load_reserved_benchmark_seeds,
 )
-from v2_runtime import initialize_v2_runtime
+from v2_runtime import assert_stage_allowed, initialize_v2_runtime
 
 
 async def collect(
@@ -32,6 +32,7 @@ async def collect(
     replay_source_game_id: str | None = None,
 ) -> dict:
     initialize_v2_runtime()
+    assert_stage_allowed(stage, context="v2 teacher collection")
     if annotate_seat is not None and not serve_api:
         raise RuntimeError("guided annotation requires --serve-api so labels can be saved")
     if replay_source_game_id and annotate_seat is None:
@@ -77,6 +78,38 @@ async def collect(
         os.environ["V2_GUIDED_ANNOTATION_TIMEOUT_SEC"] = str(max(0.0, float(annotation_timeout_sec)))
         if replay_source_game_id:
             os.environ["V2_GUIDED_REPLAY_SOURCE_GAME_ID"] = str(replay_source_game_id).strip()
+            teacher_source = str(
+                os.getenv("V2_GUIDED_REPLAY_TEACHER_SOURCE")
+                or os.getenv("V2_TEACHER_DATASET_DIR")
+                or ""
+            ).strip()
+            if teacher_source:
+                os.environ["V2_GUIDED_REPLAY_TEACHER_SOURCE"] = teacher_source
+                from debug_decision_snapshot import (
+                    configure_teacher_shard_replay,
+                    load_annotation_replay,
+                    reset_teacher_shard_replay,
+                )
+
+                reset_teacher_shard_replay()
+                annotation_steps = load_annotation_replay(
+                    str(replay_source_game_id).strip(),
+                    target_agent_id,
+                )
+                exclude = [
+                    str(step.get("legal_action_fingerprint", "") or "")
+                    for step in annotation_steps
+                ]
+                opponent_episodes = configure_teacher_shard_replay(
+                    teacher_source,
+                    str(replay_source_game_id).strip(),
+                    exclude_fingerprint_sequence=exclude,
+                )
+                print(
+                    f"[teacher] configured {opponent_episodes} opponent teacher-shard trajectories "
+                    f"from {teacher_source}",
+                    flush=True,
+                )
         print(
             f"[teacher] guided annotation enabled for seat {annotate_seat} ({target_agent_id}); "
             "each decision will wait for a saved annotation",
@@ -120,6 +153,11 @@ async def collect(
                 f"decisions={total_decisions_so_far}",
                 flush=True,
             )
+            if replay_source_game_id and not bool(result.completed):
+                raise RuntimeError(
+                    f"strict guided replay failed for game {result.game_id}: "
+                    f"{result.error_message or 'unknown error'}"
+                )
     finally:
         await cluster.close()
         if api_server is not None and api_task is not None:
@@ -143,7 +181,7 @@ async def collect(
     report["smoke_gate_passed"] = bool(
         len(seeds) >= 100
         and report["completion_rate"] >= 0.99
-        and report["teacher_fallback_rate"] < 0.05
+        and fallback_decisions == 0
         and rejection_count == 0
     )
     return report
@@ -153,7 +191,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Collect TFM RL v2 heuristic-teacher games")
     parser.add_argument("--dataset", default=os.getenv("V2_TEACHER_DATASET_DIR", "/app/v2/teacher-dataset"))
     parser.add_argument("--games", type=int, default=100)
-    parser.add_argument("--stage", type=int, choices=(0, 1), default=0)
+    parser.add_argument(
+        "--stage",
+        type=int,
+        choices=(0, 1),
+        default=0,
+        help="Stage 1 stays blocked until V2_ALLOW_STAGE1=1 after a strict action-space audit",
+    )
     parser.add_argument("--seed-start", type=int, default=10000)
     parser.add_argument(
         "--serve-api",

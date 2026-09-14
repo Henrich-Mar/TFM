@@ -13,6 +13,25 @@ def _enabled(name: str, default: bool = False) -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def stage1_unlocked() -> bool:
+    """Stage 1 stays locked until its full action space passes a strict audit."""
+    return _enabled("V2_ALLOW_STAGE1")
+
+
+def assert_stage_allowed(stage: int, *, context: str) -> None:
+    """Refuse Stage 1 / Corporate Era until explicitly unlocked after audit."""
+    requested = int(stage)
+    if requested <= 0:
+        return
+    if requested == 1 and stage1_unlocked():
+        return
+    raise RuntimeError(
+        f"{context} refuses stage={requested}: Stage 1 remains blocked until its "
+        "complete action space passes a strict audit. Set V2_ALLOW_STAGE1=1 only "
+        "after that audit is green."
+    )
+
+
 def initialize_v2_runtime() -> Dict[str, str]:
     """Create isolated experiment directories and reject accidental resume."""
     is_v3 = _enabled("TFM_RL_V3")

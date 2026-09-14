@@ -75,8 +75,16 @@ services:
       - STATE_SCHEMA_VERSION=v2
       - PPO_GAMMA=1.0
       - PPO_GAE_LAMBDA=1.0
-      - PPO_SHAPING_INITIAL_COEF=0.0
-      - PPO_SHAPING_FINAL_COEF=0.0
+      # Keep terminal rank/VP as the main objective; dense shaping is a small
+      # warm-start signal and fades instead of replacing the game outcome.
+      - PPO_SHAPING_INITIAL_COEF=0.20
+      - PPO_SHAPING_FINAL_COEF=0.05
+      - PPO_SHAPING_ANNEAL_GAMES=3000
+      # Awards are scored generically from standings, confidence, timing and
+      # cost.  Rank loss gets a slightly stronger signal than funding EV.
+      - PPO_SHAPING_MILESTONES_WEIGHT=2.3
+      - PPO_SHAPING_AWARDS_WEIGHT=1.0
+      - PPO_SHAPING_AWARD_RANK_DROP_WEIGHT=1.5
       - AGENT_MAX_EPISODE_STEPS=10000
       - AGENT_STARTUP_AUTOSUBMIT=0
       - AGENT_STARTUP_PLAN_SELECTION=best

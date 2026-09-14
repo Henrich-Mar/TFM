@@ -1493,6 +1493,9 @@ class RLCoordinator:
                 "hate_draft_corr_valid": bool(generation_metrics.get("hate_draft_corr_valid", False)),
                 "milestone_snipes": int(behavior_snapshot.get("milestone_snipes", 0) or 0),
                 "award_snipes": int(behavior_snapshot.get("award_snipes", 0) or 0),
+                "award_rank_drop_events": int(behavior_snapshot.get("award_rank_drop_events", 0) or 0),
+                "award_rank_drop_total": float(behavior_snapshot.get("award_rank_drop_total", 0.0) or 0.0),
+                "award_rank_drop_mean": float(behavior_snapshot.get("award_rank_drop_mean", 0.0) or 0.0),
             }
             cfg['training_diagnostics'] = {
                 "ppo": ppo_metrics,

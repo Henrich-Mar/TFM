@@ -898,7 +898,18 @@ class RLAgent:
         self.reward_tr_weight = self._safe_env_float("PPO_SHAPING_TR_WEIGHT", 3.3)
         self.reward_cards_vp_weight = self._safe_env_float("PPO_SHAPING_CARDS_VP_WEIGHT", 2.7)
         self.reward_city_greenery_weight = self._safe_env_float("PPO_SHAPING_CITY_GREENERY_WEIGHT", 2.4)
-        self.reward_milestones_awards_weight = self._safe_env_float("PPO_SHAPING_MILESTONES_AWARDS_WEIGHT", 2.3)
+        # Keep the old combined setting as the fallback for existing runs, but
+        # allow awards and milestones to be tuned independently in V2.
+        combined_milestone_award_weight = self._safe_env_float("PPO_SHAPING_MILESTONES_AWARDS_WEIGHT", 2.3)
+        self.reward_milestones_weight = self._safe_env_float(
+            "PPO_SHAPING_MILESTONES_WEIGHT", combined_milestone_award_weight
+        )
+        self.reward_awards_weight = self._safe_env_float(
+            "PPO_SHAPING_AWARDS_WEIGHT", combined_milestone_award_weight
+        )
+        self.reward_award_rank_weight = self._safe_env_float(
+            "PPO_SHAPING_AWARD_RANK_DROP_WEIGHT", 1.5
+        )
         self.reward_other_weight = self._safe_env_float("PPO_SHAPING_OTHER_WEIGHT", 0.5)
         self.reward_debug_enabled = str(os.getenv("PPO_REWARD_DEBUG_ENABLED", "0")).strip().lower() not in ("0", "false", "no", "off")
         self.reward_debug_threshold = max(0.0, self._safe_env_float("PPO_REWARD_DEBUG_THRESHOLD", 0.001))
@@ -1014,6 +1025,8 @@ class RLAgent:
             'hate_draft_picks_low_hand_ev': 0,
             'milestone_snipes': 0,
             'award_snipes': 0,
+            'award_rank_drop_events': 0,
+            'award_rank_drop_total': 0.0,
             'timing_totals_sec': {},
             'timing_counts': {},
             'timing_log_events': 0,
@@ -2396,6 +2409,9 @@ class RLAgent:
                         reward_cards_vp_component = 0.0
                         reward_city_greenery_component = 0.0
                         reward_city_future_component = 0.0
+                        reward_milestones_component = 0.0
+                        reward_awards_component = 0.0
+                        reward_award_rank_component = 0.0
                         reward_milestones_awards_component = 0.0
                         reward_other_component = 0.0
                         reward_shaping_coef = self._current_reward_shaping_coef()
@@ -2411,14 +2427,21 @@ class RLAgent:
                             weighted_cards_vp = float(self.reward_cards_vp_weight) * float(reward_breakdown.get("cards_vp_component", 0.0))
                             weighted_city_greenery = float(self.reward_city_greenery_weight) * float(reward_breakdown.get("city_greenery_component", 0.0))
                             weighted_city_future = float(self.reward_city_greenery_weight) * float(reward_breakdown.get("city_future_component", 0.0))
-                            weighted_milestones_awards = float(self.reward_milestones_awards_weight) * float(reward_breakdown.get("milestones_awards_component", 0.0))
+                            weighted_milestones = float(self.reward_milestones_weight) * float(reward_breakdown.get("milestones_component", 0.0))
+                            weighted_awards = float(self.reward_awards_weight) * float(reward_breakdown.get("awards_component", 0.0))
+                            weighted_award_rank = float(self.reward_award_rank_weight) * (
+                                float(reward_breakdown.get("award_rank_drop_component", 0.0))
+                                + float(reward_breakdown.get("award_rank_gain_component", 0.0))
+                            )
                             weighted_other = float(self.reward_other_weight) * float(reward_breakdown.get("other_component", 0.0))
                             weighted_raw = (
                                 weighted_tr
                                 + weighted_cards_vp
                                 + weighted_city_greenery
                                 + weighted_city_future
-                                + weighted_milestones_awards
+                                + weighted_milestones
+                                + weighted_awards
+                                + weighted_award_rank
                                 + weighted_other
                             )
                             weighted_scaled = max(-0.35, min(0.35, weighted_raw)) * step_reward_scale
@@ -2427,7 +2450,12 @@ class RLAgent:
                             reward_cards_vp_component = float(weighted_cards_vp * step_reward_scale)
                             reward_city_greenery_component = float(weighted_city_greenery * step_reward_scale)
                             reward_city_future_component = float(weighted_city_future * step_reward_scale)
-                            reward_milestones_awards_component = float(weighted_milestones_awards * step_reward_scale)
+                            reward_milestones_component = float(weighted_milestones * step_reward_scale)
+                            reward_awards_component = float(weighted_awards * step_reward_scale)
+                            reward_award_rank_component = float(weighted_award_rank * step_reward_scale)
+                            reward_milestones_awards_component = float(
+                                (weighted_milestones + weighted_awards + weighted_award_rank) * step_reward_scale
+                            )
                             reward_other_component = float(weighted_other * step_reward_scale)
                             if self.reward_debug_enabled:
                                 self._reward_debug_counter += 1
@@ -2444,12 +2472,13 @@ class RLAgent:
                                     and (self._reward_debug_counter % int(self.reward_debug_log_every)) == 0
                                 ):
                                     logger.warning(
-                                        "Low VP shaping components: tr=%.5f cards=%.5f city_greenery=%.5f city_future=%.5f milestones_awards=%.5f other=%.5f coef=%.3f scaled=%.5f raw=%.5f",
+                                        "Low VP shaping components: tr=%.5f cards=%.5f city_greenery=%.5f city_future=%.5f milestones_awards=%.5f award_rank=%.5f other=%.5f coef=%.3f scaled=%.5f raw=%.5f",
                                         reward_tr_component,
                                         reward_cards_vp_component,
                                         reward_city_greenery_component,
                                         reward_city_future_component,
                                         reward_milestones_awards_component,
+                                        reward_award_rank_component,
                                         reward_other_component,
                                         reward_shaping_coef,
                                         float(reward_breakdown.get("scaled_total", 0.0)),
@@ -2467,6 +2496,12 @@ class RLAgent:
                                 self._bump_decision_stat("milestone_snipes")
                             if reward_breakdown.get("sniping_award_applied"):
                                 self._bump_decision_stat("award_snipes")
+                            award_rank_drop = float(
+                                reward_breakdown.get("award_rank_drop_after_action", 0.0) or 0.0
+                            )
+                            if award_rank_drop > 0.0:
+                                self._bump_decision_stat("award_rank_drop_events")
+                                self._bump_decision_stat_float("award_rank_drop_total", award_rank_drop)
                         if action_meta is not None:
                             episode_steps.append(
                                 {
@@ -2494,6 +2529,13 @@ class RLAgent:
                                     "reward_cards_vp_component": float(reward_cards_vp_component),
                                     "reward_city_greenery_component": float(reward_city_greenery_component),
                                     "reward_city_future_component": float(reward_city_future_component),
+                                    "reward_milestones_component": float(reward_milestones_component),
+                                    "reward_awards_component": float(reward_awards_component),
+                                    "reward_award_rank_component": float(reward_award_rank_component),
+                                    "award_rank_drop_after_action": float(
+                                        reward_breakdown.get("award_rank_drop_after_action", 0.0)
+                                        if self.train_from_self_play else 0.0
+                                    ),
                                     "reward_milestones_awards_component": float(reward_milestones_awards_component),
                                     "reward_other_component": float(reward_other_component),
                                     "reward_shaping_coef": float(reward_shaping_coef),
@@ -4063,6 +4105,10 @@ class RLAgent:
                         reward_cards_vp_component=float(step.get("reward_cards_vp_component", 0.0) or 0.0),
                         reward_city_greenery_component=float(step.get("reward_city_greenery_component", 0.0) or 0.0),
                         reward_city_future_component=float(step.get("reward_city_future_component", 0.0) or 0.0),
+                        reward_milestones_component=float(step.get("reward_milestones_component", 0.0) or 0.0),
+                        reward_awards_component=float(step.get("reward_awards_component", 0.0) or 0.0),
+                        reward_award_rank_component=float(step.get("reward_award_rank_component", 0.0) or 0.0),
+                        award_rank_drop_after_action=float(step.get("award_rank_drop_after_action", 0.0) or 0.0),
                         reward_milestones_awards_component=float(step.get("reward_milestones_awards_component", 0.0) or 0.0),
                         reward_other_component=float(step.get("reward_other_component", 0.0) or 0.0),
                         reward_shaping_coef=float(step.get("reward_shaping_coef", 0.0) or 0.0),
@@ -4386,6 +4432,8 @@ class RLAgent:
         hate_draft_picks_low_hand_ev = int(self.decision_stats.get('hate_draft_picks_low_hand_ev', 0))
         milestone_snipes = int(self.decision_stats.get('milestone_snipes', 0))
         award_snipes = int(self.decision_stats.get('award_snipes', 0))
+        award_rank_drop_events = int(self.decision_stats.get('award_rank_drop_events', 0))
+        award_rank_drop_total = float(self.decision_stats.get('award_rank_drop_total', 0.0) or 0.0)
         action_mask_observations = int(self.decision_stats.get('action_mask_observations', 0))
         action_legal_count_total = int(self.decision_stats.get('action_legal_count_total', 0))
         action_rejected_by_server = int(self.decision_stats.get('action_rejected_by_server', 0))
@@ -4456,6 +4504,9 @@ class RLAgent:
             'hate_draft_rate_low_hand_ev': _ratio(hate_draft_picks_low_hand_ev, draft_decisions_low_hand_ev),
             'milestone_snipes': milestone_snipes,
             'award_snipes': award_snipes,
+            'award_rank_drop_events': award_rank_drop_events,
+            'award_rank_drop_total': award_rank_drop_total,
+            'award_rank_drop_mean': _ratio(award_rank_drop_total, award_rank_drop_events),
             'action_legal_count_mean': _ratio(action_legal_count_total, action_mask_observations),
             'action_mask_coverage_rate': _ratio(action_mask_observations, total_decisions),
             'action_rejected_by_server': action_rejected_by_server,

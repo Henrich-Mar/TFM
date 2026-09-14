@@ -205,6 +205,15 @@ The self-play worker does not serve the FastAPI dashboard; monitor its terminal
 output or `rl-v2/metrics/selfplay_progress.json`. The dashboard URL is for the
 coordinator/API process used during annotation and legacy coordinator runs.
 
+V2 award shaping is generic and does not require one annotation policy per
+award. It uses projected award points (5/2/0), confidence, funding cost,
+generation timing and a generic rank-drop regret signal. The initial shaping
+coefficient is `0.20`, anneals to `0.05` over 3,000 games, and award rank loss
+is weighted separately from milestone reward. Monitor
+`rollout/award_rank_drop_after_action_mean` and
+`rollout/award_rank_drop_after_action_count`; both should fall without an
+increase in zero-projection award funding.
+
 ## Tests
 
 ```powershell

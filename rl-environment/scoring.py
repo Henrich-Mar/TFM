@@ -999,6 +999,58 @@ def _estimate_award_funding_cost(prior_funded_count: int) -> float:
     return float(8 + (6 * max(0, int(prior_funded_count))))
 
 
+def _award_projection_map(
+    game_state: Dict[str, Any],
+    player: Dict[str, Any],
+) -> Dict[str, Tuple[float, float]]:
+    """Return generic projected award standings keyed by award name.
+
+    The projection deliberately uses only the score table and the current
+    player identity.  It does not contain award-specific rules, so the same
+    regret signal works when new award mechanics are added to the server.
+    """
+    projections: Dict[str, Tuple[float, float]] = {}
+    for award in (game_state.get("awards", []) or []):
+        if not isinstance(award, dict):
+            continue
+        name = _normalize_token(award.get("name") or award.get("title"))
+        if not name:
+            continue
+        scores = [row for row in (award.get("scores", []) or []) if isinstance(row, dict)]
+        projections[name] = _award_projection_for_player(scores, player)
+    return projections
+
+
+def _award_rank_change(
+    before_state: Dict[str, Any],
+    after_state: Dict[str, Any],
+    before_player: Dict[str, Any],
+    after_player: Dict[str, Any],
+) -> Dict[str, float]:
+    """Measure generic projected award rank gains/losses across one action.
+
+    A 5/2/0 projection is converted to a 0..1 normalized movement.  Losses
+    are weighted by the confidence that existed before the action, which
+    prevents a fragile tie from dominating the reward while still making a
+    clear lead expensive to throw away.
+    """
+    before = _award_projection_map(before_state, before_player)
+    after = _award_projection_map(after_state, after_player)
+    drop = 0.0
+    gain = 0.0
+    for name in set(before) | set(after):
+        before_points, before_confidence = before.get(name, (0.0, 0.0))
+        after_points, after_confidence = after.get(name, (0.0, 0.0))
+        if before_points > after_points:
+            drop += ((before_points - after_points) / 5.0) * before_confidence
+        elif after_points > before_points:
+            gain += ((after_points - before_points) / 5.0) * max(after_confidence, 0.08)
+    return {
+        "drop": float(max(0.0, min(drop, 4.0))),
+        "gain": float(max(0.0, min(gain, 4.0))),
+    }
+
+
 def _extract_selected_card_name(action_input: Optional[Dict[str, Any]]) -> Optional[str]:
     if not isinstance(action_input, dict):
         return None
@@ -1523,6 +1575,11 @@ def calculate_step_reward_decomposition(
             "cards_vp_component": 0.0,
             "city_greenery_component": 0.0,
             "city_future_component": 0.0,
+            "milestones_component": 0.0,
+            "awards_component": 0.0,
+            "award_rank_drop_component": 0.0,
+            "award_rank_gain_component": 0.0,
+            "award_rank_drop_after_action": 0.0,
             "milestones_awards_component": 0.0,
             "other_component": 0.0,
             "raw_total": 0.0,
@@ -1548,6 +1605,11 @@ def calculate_step_reward_decomposition(
             "cards_vp_component": 0.0,
             "city_greenery_component": 0.0,
             "city_future_component": 0.0,
+            "milestones_component": 0.0,
+            "awards_component": 0.0,
+            "award_rank_drop_component": 0.0,
+            "award_rank_gain_component": 0.0,
+            "award_rank_drop_after_action": 0.0,
             "milestones_awards_component": 0.0,
             "other_component": 0.0,
             "raw_total": 0.0,
@@ -1567,6 +1629,11 @@ def calculate_step_reward_decomposition(
     cards_vp_component = 0.0
     city_greenery_component = 0.0
     city_future_component = 0.0
+    milestones_component = 0.0
+    awards_component = 0.0
+    award_rank_drop_component = 0.0
+    award_rank_gain_component = 0.0
+    award_rank_drop_after_action = 0.0
     milestones_awards_component = 0.0
     other_component = 0.0
     hate_draft_bonus_applied = False
@@ -1607,7 +1674,7 @@ def calculate_step_reward_decomposition(
     tr_component += max(-0.15, min(0.30, 0.15 * terraforming_delta))      # 0.045 â†’ 0.15 (3.3x)
 
     milestone_delta = _vp_component(after_player, 'milestones') - _vp_component(before_player, 'milestones')
-    milestones_awards_component += max(-0.12, min(0.35, 0.08 * milestone_delta))    # 0.035 â†’ 0.08 (2.3x)
+    milestones_component += max(-0.12, min(0.35, 0.08 * milestone_delta))    # 0.035 â†’ 0.08 (2.3x)
 
     award_delta = _vp_component(after_player, 'awards') - _vp_component(before_player, 'awards')
     # Funding can make the server's provisional award VP component jump even when
@@ -1615,7 +1682,7 @@ def calculate_step_reward_decomposition(
     # calculation below is the only dense signal for a funding decision.
     funded_award_now = len(_owned_funded_awards(after_game, after_player)) > len(_owned_funded_awards(before_game, before_player))
     if not funded_award_now:
-        milestones_awards_component += max(-0.15, min(0.40, 0.06 * award_delta))
+        awards_component += max(-0.15, min(0.40, 0.06 * award_delta))
 
     city_combo_delta = _vp_component(after_player, 'city') - _vp_component(before_player, 'city')
     greenery_delta = _vp_component(after_player, 'greenery') - _vp_component(before_player, 'greenery')
@@ -1768,10 +1835,10 @@ def calculate_step_reward_decomposition(
         if before_mc >= 8.0:
             # Small extra bonus for claiming with comfortable cash (shows timing awareness)
             milestone_claim_reward += 0.04 * float(milestone_claim_delta) * early_factor
-        milestones_awards_component += min(0.30, milestone_claim_reward)
+        milestones_component += min(0.30, milestone_claim_reward)
         # Sniping bonus: reward claiming in late game (denying opponents).
         if generation_progress > 0.55:
-            milestones_awards_component += min(0.12, 0.06 * float(milestone_claim_delta))
+            milestones_component += min(0.12, 0.06 * float(milestone_claim_delta))
             sniping_milestone_applied = True
 
     # Milestone Regret Penalty: if this player could have claimed a milestone
@@ -1800,7 +1867,7 @@ def calculate_step_reward_decomposition(
             )
             if not own_claimed:
                 # An opponent stole a milestone we could have claimed â†’ regret penalty
-                milestones_awards_component -= 0.20
+                milestones_component -= 0.20
 
     # Awards closing pressure: reinforce positive EV funding and discourage poor-value funding.
     before_owned_awards = _owned_funded_awards(before_game, before_player)
@@ -1829,13 +1896,32 @@ def calculate_step_reward_decomposition(
             positive_timing_factor = 0.20 + (0.80 * generation_progress)
             negative_timing_factor = 1.15 - (0.55 * generation_progress)
             if expected_net_vp > 0.0:
-                milestones_awards_component += min(0.14, (0.015 + (0.028 * expected_net_vp)) * positive_timing_factor)
+                awards_component += min(0.14, (0.015 + (0.028 * expected_net_vp)) * positive_timing_factor)
                 # Sniping bonus: late-game award funding when we're ahead (positive EV).
                 if generation_progress > 0.55 and projected_points >= 3.0 and projection_confidence >= 0.55:
-                    milestones_awards_component += min(0.12, 0.06 * expected_net_vp) # 0.04â†’0.10, 0.02â†’0.05
+                    awards_component += min(0.12, 0.06 * expected_net_vp) # 0.04â†’0.10, 0.02â†’0.05
                     sniping_award_applied = True
             else:
-                milestones_awards_component -= min(0.24, (0.04 + (0.045 * abs(expected_net_vp))) * negative_timing_factor)
+                awards_component -= min(0.24, (0.04 + (0.045 * abs(expected_net_vp))) * negative_timing_factor)
+
+    # Generic award-rank regret: any action that makes a previously projected
+    # award place worse should be costly, regardless of the award's name.
+    rank_change = _award_rank_change(
+        before_game,
+        after_game,
+        before_player,
+        after_player,
+    )
+    award_rank_drop_after_action = float(rank_change["drop"])
+    award_rank_drop_component = -min(0.24, 0.08 * award_rank_drop_after_action)
+    award_rank_gain_component = min(0.12, 0.03 * float(rank_change["gain"]))
+    # Keep the historical aggregate field for old rollout readers and tests.
+    milestones_awards_component = (
+        milestones_component
+        + awards_component
+        + award_rank_drop_component
+        + award_rank_gain_component
+    )
 
     # Final-generation card VP pressure: prefer affordable VP cards over low-ceiling alternatives.
     selected_card_name = _extract_selected_card_name(action_input)
@@ -1882,6 +1968,11 @@ def calculate_step_reward_decomposition(
         "cards_vp_component": float(cards_vp_component),
         "city_greenery_component": float(city_greenery_component),
         "city_future_component": float(city_future_component),
+        "milestones_component": float(milestones_component),
+        "awards_component": float(awards_component),
+        "award_rank_drop_component": float(award_rank_drop_component),
+        "award_rank_gain_component": float(award_rank_gain_component),
+        "award_rank_drop_after_action": float(award_rank_drop_after_action),
         "milestones_awards_component": float(milestones_awards_component),
         "other_component": float(other_component),
         "raw_total": float(raw_total),

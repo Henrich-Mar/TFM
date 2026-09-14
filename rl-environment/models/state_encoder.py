@@ -893,8 +893,11 @@ class StateEncoder:
             fund_now_ev,
             contestability,
             max(0.0, min((opp_progress - progress + 0.25), 1.0)),
-            1.0 if award_name.lower() in ('landscaper', 'thermalist', 'banker', 'scientist') else 0.0,
-            1.0 if 'moon' in award_name.lower() or 'lunar' in award_name.lower() else 0.0,
+            # Keep these slots generic.  Older versions encoded a handful of
+            # named awards here, which encouraged memorizing award names
+            # instead of learning the shared funding/risk mechanics.
+            lead_confidence,
+            affordability,
             min(abs(own_score - opp_best) / 8.0, 1.0),
         ]
         v3_metrics = [

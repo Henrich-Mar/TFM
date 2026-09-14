@@ -157,6 +157,10 @@ class PPORolloutStep:
     reward_cards_vp_component: float = 0.0
     reward_city_greenery_component: float = 0.0
     reward_city_future_component: float = 0.0
+    reward_milestones_component: float = 0.0
+    reward_awards_component: float = 0.0
+    reward_award_rank_component: float = 0.0
+    award_rank_drop_after_action: float = 0.0
     reward_milestones_awards_component: float = 0.0
     reward_other_component: float = 0.0
     reward_shaping_coef: float = 0.0
@@ -399,6 +403,10 @@ def _build_reward_component_batch(steps: Sequence[PPORolloutStep]) -> Dict[str, 
         "cards_vp": torch.zeros((len(steps),), dtype=torch.float32),
         "city_greenery": torch.zeros((len(steps),), dtype=torch.float32),
         "city_future": torch.zeros((len(steps),), dtype=torch.float32),
+        "milestones": torch.zeros((len(steps),), dtype=torch.float32),
+        "awards": torch.zeros((len(steps),), dtype=torch.float32),
+        "award_rank": torch.zeros((len(steps),), dtype=torch.float32),
+        "award_rank_drop": torch.zeros((len(steps),), dtype=torch.float32),
         "milestones_awards": torch.zeros((len(steps),), dtype=torch.float32),
         "other": torch.zeros((len(steps),), dtype=torch.float32),
         "shaping_coef": torch.zeros((len(steps),), dtype=torch.float32),
@@ -408,6 +416,10 @@ def _build_reward_component_batch(steps: Sequence[PPORolloutStep]) -> Dict[str, 
         out["cards_vp"][row_idx] = float(getattr(step, "reward_cards_vp_component", 0.0) or 0.0)
         out["city_greenery"][row_idx] = float(getattr(step, "reward_city_greenery_component", 0.0) or 0.0)
         out["city_future"][row_idx] = float(getattr(step, "reward_city_future_component", 0.0) or 0.0)
+        out["milestones"][row_idx] = float(getattr(step, "reward_milestones_component", 0.0) or 0.0)
+        out["awards"][row_idx] = float(getattr(step, "reward_awards_component", 0.0) or 0.0)
+        out["award_rank"][row_idx] = float(getattr(step, "reward_award_rank_component", 0.0) or 0.0)
+        out["award_rank_drop"][row_idx] = float(getattr(step, "award_rank_drop_after_action", 0.0) or 0.0)
         out["milestones_awards"][row_idx] = float(getattr(step, "reward_milestones_awards_component", 0.0) or 0.0)
         out["other"][row_idx] = float(getattr(step, "reward_other_component", 0.0) or 0.0)
         out["shaping_coef"][row_idx] = float(getattr(step, "reward_shaping_coef", 0.0) or 0.0)
@@ -822,6 +834,11 @@ def optimize_ppo_policy(
         "rollout/reward_cards_vp_component_mean": float(reward_components["cards_vp"].mean().item()),
         "rollout/reward_city_greenery_component_mean": float(reward_components["city_greenery"].mean().item()),
         "rollout/reward_city_future_component_mean": float(reward_components["city_future"].mean().item()),
+        "rollout/reward_milestones_component_mean": float(reward_components["milestones"].mean().item()),
+        "rollout/reward_awards_component_mean": float(reward_components["awards"].mean().item()),
+        "rollout/reward_award_rank_component_mean": float(reward_components["award_rank"].mean().item()),
+        "rollout/award_rank_drop_after_action_mean": float(reward_components["award_rank_drop"].mean().item()),
+        "rollout/award_rank_drop_after_action_count": float((reward_components["award_rank_drop"] > 0.0).sum().item()),
         "rollout/reward_milestones_awards_component_mean": float(reward_components["milestones_awards"].mean().item()),
         "rollout/reward_other_component_mean": float(reward_components["other"].mean().item()),
         "rollout/reward_shaping_coef_mean": float(reward_components["shaping_coef"].mean().item()),

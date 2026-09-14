@@ -170,3 +170,41 @@ def test_projected_zero_award_funding_is_negative_at_every_cost() -> None:
 
         assert expected_cost in (8, 14, 20)
         assert reward["milestones_awards_component"] < 0.0
+
+
+def test_generic_award_rank_drop_is_penalized_for_any_action() -> None:
+    before_state = _build_state(
+        generation=10,
+        awards=[
+            {
+                "name": "Future Award",
+                "scores": [
+                    {"playerName": "Agent A", "playerColor": "red", "score": 10},
+                    {"playerName": "Agent B", "playerColor": "blue", "score": 8},
+                ],
+            }
+        ],
+    )
+    after_state = _build_state(
+        generation=10,
+        awards=[
+            {
+                "name": "Future Award",
+                "scores": [
+                    {"playerName": "Agent A", "playerColor": "red", "score": 7},
+                    {"playerName": "Agent B", "playerColor": "blue", "score": 8},
+                ],
+            }
+        ],
+    )
+
+    reward = calculate_step_reward_decomposition(
+        before_state=before_state,
+        after_state=after_state,
+        action_input={"type": "option", "title": "Spend contested resource"},
+    )
+
+    assert reward["award_rank_drop_after_action"] > 0.0
+    assert reward["award_rank_drop_component"] < 0.0
+    assert reward["awards_component"] == 0.0
+    assert reward["milestones_awards_component"] < 0.0

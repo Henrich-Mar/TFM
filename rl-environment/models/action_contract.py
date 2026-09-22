@@ -98,6 +98,10 @@ ACTION_RANGES: Dict[str, range] = {
     # Keep the amount namespace disjoint from the existing card-mask namespace.
     "select_amount": range(500, 520),
     "card_selection": range(520, 600),
+    # Card-selection catalog entries are prompt-local IDs.  Their payload is
+    # identity-first (card names), so they do not depend on packing a subset
+    # into the legacy 80-slot bitmask namespace above.
+    "card_selection_catalog": range(1000, 100000),
     # Contextual 600-699 namespace:
     # - 600-649: fund-award leaves (and select-player prompts, which never
     #   coexist with the action-menu award branch)
@@ -122,6 +126,8 @@ ACTION_RANGES: Dict[str, range] = {
 
 ACTION_BASES = {name: action_range.start for name, action_range in ACTION_RANGES.items()}
 CARD_SELECTION_MASK_LIMIT = len(ACTION_RANGES["card_selection"])
+CARD_SELECTION_CATALOG_BASE = ACTION_RANGES["card_selection_catalog"].start
+CARD_SELECTION_CATALOG_LIMIT = len(ACTION_RANGES["card_selection_catalog"])
 STARTUP_PLAN_LIMIT = len(ACTION_RANGES["startup_selection"])
 PAYMENT_ACTION_VARIANTS = 8
 

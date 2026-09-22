@@ -78,6 +78,7 @@ class PlannerStateBundle:
     action_indices: np.ndarray
     action_positions: np.ndarray
     global_scalars: np.ndarray
+    terminal: bool = False
 
     def to_serializable(self) -> Dict[str, Any]:
         return {
@@ -91,6 +92,7 @@ class PlannerStateBundle:
             "action_indices": np.asarray(self.action_indices, dtype=np.int64),
             "action_positions": np.asarray(self.action_positions, dtype=np.int64),
             "global_scalars": np.asarray(self.global_scalars, dtype=np.float32),
+            "terminal": bool(self.terminal),
         }
 
 
@@ -120,6 +122,16 @@ def ensure_bundle(
         raw_bundle = raw_bundle.to_serializable()
     if not isinstance(raw_bundle, dict):
         raise TypeError("Planner state bundle must be a dict or PlannerStateBundle")
+    action_tokens = np.asarray(
+        raw_bundle.get("action_tokens", empty_token_matrix(config)),
+        dtype=np.float32,
+    )
+    action_mask = np.asarray(raw_bundle.get("action_mask", empty_bool_vector()), dtype=np.bool_)
+    action_indices = np.asarray(raw_bundle.get("action_indices", empty_int_vector()), dtype=np.int64)
+    action_positions = np.asarray(raw_bundle.get("action_positions", empty_int_vector()), dtype=np.int64)
+    action_count = int(action_tokens.shape[0])
+    if any(int(values.shape[0]) != action_count for values in (action_mask, action_indices, action_positions)):
+        raise ValueError("planner action token, mask, index, and position lengths must match")
     return {
         "world_tokens": np.asarray(
             raw_bundle.get("world_tokens", empty_token_matrix(config)),
@@ -132,17 +144,15 @@ def ensure_bundle(
             dtype=np.float32,
         ),
         "hand_mask": np.asarray(raw_bundle.get("hand_mask", empty_bool_vector()), dtype=np.bool_),
-        "action_tokens": np.asarray(
-            raw_bundle.get("action_tokens", empty_token_matrix(config)),
-            dtype=np.float32,
-        ),
-        "action_mask": np.asarray(raw_bundle.get("action_mask", empty_bool_vector()), dtype=np.bool_),
-        "action_indices": np.asarray(raw_bundle.get("action_indices", empty_int_vector()), dtype=np.int64),
-        "action_positions": np.asarray(raw_bundle.get("action_positions", empty_int_vector()), dtype=np.int64),
+        "action_tokens": action_tokens,
+        "action_mask": action_mask,
+        "action_indices": action_indices,
+        "action_positions": action_positions,
         "global_scalars": np.asarray(
             raw_bundle.get("global_scalars", np.zeros((int(config.global_dim),), dtype=np.float32)),
             dtype=np.float32,
         ).reshape(-1),
+        "terminal": bool(raw_bundle.get("terminal", False)),
     }
 
 
@@ -163,6 +173,7 @@ def bundle_to_torch(
         "action_indices": torch.tensor(bundle["action_indices"], dtype=torch.long, device=device).unsqueeze(0),
         "action_positions": torch.tensor(bundle["action_positions"], dtype=torch.long, device=device).unsqueeze(0),
         "global_scalars": torch.tensor(bundle["global_scalars"], dtype=torch.float32, device=device).unsqueeze(0),
+        "terminal_mask": torch.tensor([bool(bundle["terminal"])], dtype=torch.bool, device=device),
     }
 
 
@@ -193,6 +204,7 @@ def pad_bundle_batch(
     action_indices = torch.full((batch, max_action), -1, dtype=torch.long, device=device)
     action_positions = torch.zeros((batch, max_action), dtype=torch.long, device=device)
     global_scalars = torch.zeros((batch, global_dim), dtype=torch.float32, device=device)
+    terminal_mask = torch.zeros((batch,), dtype=torch.bool, device=device)
 
     for row, item in enumerate(bundles):
         world_count = int(item["world_tokens"].shape[0])
@@ -207,13 +219,20 @@ def pad_bundle_batch(
             hand_mask[row, :hand_count] = torch.tensor(item["hand_mask"], dtype=torch.bool, device=device)
 
         action_count = int(item["action_tokens"].shape[0])
+        terminal = bool(item.get("terminal", False))
+        terminal_mask[row] = terminal
+        if terminal and action_count > 0:
+            raise ValueError("terminal planner bundle must not contain action rows")
         if action_count > 0:
+            if not terminal and not bool(np.asarray(item["action_mask"], dtype=np.bool_).any()):
+                raise ValueError("active planner bundle has an empty legal-action mask")
             action_tokens[row, :action_count] = torch.tensor(item["action_tokens"], dtype=torch.float32, device=device)
             action_mask[row, :action_count] = torch.tensor(item["action_mask"], dtype=torch.bool, device=device)
             action_indices[row, :action_count] = torch.tensor(item["action_indices"], dtype=torch.long, device=device)
             action_positions[row, :action_count] = torch.tensor(item["action_positions"], dtype=torch.long, device=device)
         else:
-            action_mask[row, 0] = True
+            if not terminal:
+                raise ValueError("planner bundle has zero actions without an explicit terminal flag")
             action_positions[row, 0] = 0
 
         g = np.asarray(item["global_scalars"], dtype=np.float32).reshape(-1)
@@ -232,6 +251,7 @@ def pad_bundle_batch(
         "action_indices": action_indices,
         "action_positions": action_positions,
         "global_scalars": global_scalars,
+        "terminal_mask": terminal_mask,
     }
 
 

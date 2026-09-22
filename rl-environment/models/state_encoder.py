@@ -536,6 +536,7 @@ class StateEncoder:
             action_indices=np.asarray(action_indices, dtype=np.int64) if action_indices else empty_int_vector(),
             action_positions=np.asarray(action_positions, dtype=np.int64) if action_positions else empty_int_vector(),
             global_scalars=np.asarray(global_scalars, dtype=np.float32),
+            terminal=str((player_state.get('game', {}) or {}).get('phase', '') or '').strip().lower() == 'end',
         ).to_serializable()
 
     def _planner_global_scalars(

@@ -440,7 +440,9 @@ def _build_legal_mask_batch(steps: Sequence[PPORolloutStep], action_dim: int) ->
             mask[row_idx, chosen] = True
             has_valid = True
         if not has_valid:
-            mask[row_idx, :] = True
+            raise ValueError(
+                f"PPO legal-action catalog has no valid positions for row {row_idx}"
+            )
     return mask
 
 

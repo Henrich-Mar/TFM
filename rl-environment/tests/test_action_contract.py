@@ -14,6 +14,7 @@ from models.action_contract import (
     ACTION_BASES,
     ACTION_RANGES,
     Action,
+    CARD_SELECTION_CATALOG_BASE,
     LegalActionSet,
     action_namespace,
     validate_action_ranges,
@@ -125,3 +126,77 @@ def test_unknown_prompt_decoder_failure_and_duplicate_ids_are_invalid(monkeypatc
     })
     assert failed.status == "invalid"
     assert failed.reason == "decoder exploded"
+
+
+def test_card_selection_uses_identity_catalog_beyond_legacy_80_slots() -> None:
+    cards = [{"name": f"Card {index}"} for index in range(9)]
+    state = {
+        "thisPlayer": {},
+        "waitingFor": {
+            "type": "card",
+            "title": "Select cards",
+            "min": 4,
+            "max": 4,
+            "cards": cards,
+        },
+    }
+
+    decoder = ActionDecoder()
+    legal = decoder.enumerate_legal_actions(state)
+
+    assert legal.status == "active"
+    assert len(legal.actions) == 126
+    assert all(action.action_id >= CARD_SELECTION_CATALOG_BASE for action in legal.actions)
+    assert len({tuple(action.payload["cards"]) for action in legal.actions}) == 126
+    for action in legal.actions:
+        assert decoder.decode_action(action.action_id, state) == action.payload
+
+
+def test_card_selection_catalog_rejects_explicit_capacity_overflow(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_CARD_SELECTION_CATALOG_LIMIT", "10")
+    cards = [{"name": f"Card {index}"} for index in range(6)]
+    state = {
+        "waitingFor": {
+            "type": "card",
+            "title": "Select cards",
+            "min": 2,
+            "max": 3,
+            "cards": cards,
+        },
+    }
+
+    legal = ActionDecoder().enumerate_legal_actions(state)
+
+    assert legal.status == "invalid"
+    assert "more than 10 catalog entries" in str(legal.reason)
+
+
+def test_nested_card_selection_catalog_decodes_the_matching_or_branch() -> None:
+    state = {
+        "waitingFor": {
+            "type": "or",
+            "title": "Choose",
+            "options": [
+                {"type": "option", "title": "Do something else"},
+                {
+                    "type": "card",
+                    "title": "Select cards",
+                    "min": 2,
+                    "max": 2,
+                    "cards": [{"name": "A"}, {"name": "B"}, {"name": "C"}],
+                },
+            ],
+        },
+    }
+    decoder = ActionDecoder()
+
+    legal = decoder.enumerate_legal_actions(state)
+    card_actions = [action for action in legal.actions if action.family == "card_subset"]
+
+    assert legal.status == "active"
+    assert len(card_actions) == 3
+    assert decoder.decode_action(card_actions[-1].action_id, state) == {
+        "type": "or",
+        "index": 1,
+        "response": {"type": "card", "cards": ["B", "C"]},
+    }

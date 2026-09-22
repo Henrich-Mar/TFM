@@ -15,6 +15,8 @@ from .action_contract import (
     ACTION_BASES,
     ACTION_RANGES,
     Action,
+    CARD_SELECTION_CATALOG_BASE,
+    CARD_SELECTION_CATALOG_LIMIT,
     CARD_SELECTION_MASK_LIMIT,
     LegalActionSet,
     PAYMENT_ACTION_VARIANTS,
@@ -37,6 +39,8 @@ class StartupPlanOverflow(ActionEnumerationError):
 
 _CARD_SELECTION_MASK_BASE = ACTION_BASES['card_selection']
 _CARD_SELECTION_MASK_LIMIT = CARD_SELECTION_MASK_LIMIT
+_CARD_SELECTION_CATALOG_BASE = CARD_SELECTION_CATALOG_BASE
+_CARD_SELECTION_CATALOG_LIMIT = CARD_SELECTION_CATALOG_LIMIT
 _CARD_SELECTION_CANDIDATE_LIMIT = 12
 # Partition the shared 600-699 target namespace so awards and milestones can
 # both appear as concrete leaves on the same top-level action OR.
@@ -189,6 +193,33 @@ def _card_name_from_action(action: Any) -> str:
             if isinstance(response, dict):
                 stack.append(response)
     return ''
+
+
+def _selected_card_names_from_action(action: Any) -> List[str]:
+    """Collect card names from a direct or nested server card response."""
+    names: List[str] = []
+    stack = [action] if isinstance(action, dict) else []
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, dict):
+            continue
+        raw_card = current.get('card')
+        if isinstance(raw_card, str) and raw_card.strip():
+            names.append(raw_card.strip())
+        cards = current.get('cards', []) or []
+        if isinstance(cards, list):
+            for card in cards:
+                if isinstance(card, str) and card.strip():
+                    names.append(card.strip())
+                elif isinstance(card, dict) and str(card.get('name', '') or '').strip():
+                    names.append(str(card.get('name', '') or '').strip())
+        response = current.get('response')
+        if isinstance(response, dict):
+            stack.append(response)
+        for nested in current.get('responses', []) or []:
+            if isinstance(nested, dict):
+                stack.append(nested)
+    return names
 
 
 def _action_contains_type(action: Any, types: set[str]) -> bool:
@@ -862,6 +893,146 @@ def _enumerate_card_selection_masks(
                 continue
         masks.append(mask)
     return masks
+
+
+# Keep the old mask enumerator available for replaying pre-catalog snapshots.
+# New live prompts use the identity-first catalog below.  The indirection also
+# leaves existing diagnostic tests/tools able to inject the legacy enumerator
+# while they are migrated.
+_LEGACY_CARD_SELECTION_MASK_ENUMERATOR = _enumerate_card_selection_masks
+
+
+def _card_selection_catalog_limit() -> int:
+    """Return the configured prompt-local catalog capacity.
+
+    Card subsets are combinatorial.  A finite capacity is still necessary to
+    protect the policy from trying to materialize an unbounded action space,
+    but exceeding it is an explicit data-quality failure, never truncation.
+    """
+    try:
+        configured = int(os.getenv("AGENT_CARD_SELECTION_CATALOG_LIMIT", "4096"))
+    except Exception:
+        configured = 4096
+    return max(1, min(int(configured), int(_CARD_SELECTION_CATALOG_LIMIT)))
+
+
+def _enumerate_card_selection_catalog(
+    cards: List[Dict[str, Any]],
+    min_cards: int,
+    max_cards: int,
+    player_state: Optional[Dict[str, Any]],
+    purchase_card_cost: float = 0.0,
+) -> List[List[str]]:
+    """Enumerate prompt-local card selections by card identity.
+
+    The legacy action namespace encoded a selection as a ranked bitmask.  That
+    made the action ID depend on a fixed 80-entry compatibility table and
+    could not represent large hands.  The live catalog is ordered by the
+    serialized card list and carries the actual card names all the way to the
+    server payload.  ``purchase_card_cost`` is accepted for API symmetry with
+    the legacy path; legality is determined by enabled cards and bounds, not by
+    a heuristic score.
+    """
+    del player_state, purchase_card_cost
+    if not isinstance(cards, list) or not cards:
+        return []
+
+    enabled_indices = [
+        index for index, card in enumerate(cards)
+        if isinstance(card, dict) and not bool(card.get("isDisabled", False))
+    ]
+    if not enabled_indices:
+        return []
+
+    min_pick = _safe_int(min_cards, 0)
+    max_pick = _safe_int(max_cards, len(enabled_indices))
+    if min_pick < 0 or max_pick < min_pick:
+        raise ActionEnumerationError(
+            f"invalid card selection bounds min={min_pick} max={max_pick}"
+        )
+    if min_pick > len(enabled_indices):
+        raise ActionEnumerationError(
+            f"card selection requires {min_pick} enabled cards but only "
+            f"{len(enabled_indices)} are available"
+        )
+    max_pick = min(max_pick, len(enabled_indices))
+
+    limit = _card_selection_catalog_limit()
+    catalog: List[List[str]] = []
+    for pick_count in range(min_pick, max_pick + 1):
+        for combo in itertools.combinations(enabled_indices, pick_count):
+            selected_names = [str(cards[index].get("name", "") or "").strip() for index in combo]
+            if any(not name for name in selected_names):
+                raise ActionEnumerationError("card selection contains a card without a name")
+            catalog.append(selected_names)
+            if len(catalog) > limit:
+                raise CardSelectionOverflow(
+                    f"card selection produced more than {limit} catalog entries"
+                )
+    return catalog
+
+
+def _card_selection_catalog_for_prompt(
+    waiting_for: Dict[str, Any],
+    player_state: Optional[Dict[str, Any]],
+) -> List[List[str]]:
+    cards = waiting_for.get("cards", []) or []
+    min_cards = _safe_int(waiting_for.get("min", 1), 1)
+    max_cards = _safe_int(waiting_for.get("max", len(cards)), len(cards))
+    player = (player_state or {}).get("thisPlayer", {}) if isinstance(player_state, dict) else {}
+    purchase_card_cost = (
+        float(player.get("cardCost", 3) or 3)
+        if _is_paid_card_purchase_prompt(waiting_for)
+        else 0.0
+    )
+
+    # A small compatibility hook for old snapshot/replay callers.  Production
+    # code uses the complete identity catalog; an explicitly replaced legacy
+    # function is treated as an intentional request for the old ordering.
+    legacy_enumerator = globals().get("_enumerate_card_selection_masks")
+    if legacy_enumerator is not _LEGACY_CARD_SELECTION_MASK_ENUMERATOR:
+        masks = legacy_enumerator(
+            cards,
+            min_cards,
+            max_cards,
+            player_state,
+            _CARD_SELECTION_MASK_LIMIT,
+            purchase_card_cost,
+        )
+        names: List[List[str]] = []
+        for mask in masks:
+            selected = [
+                str(card.get("name", "") or "").strip()
+                for index, card in enumerate(cards)
+                if ((int(mask) >> index) & 1) and not bool(card.get("isDisabled", False))
+            ]
+            names.append(selected)
+        return names
+
+    return _enumerate_card_selection_catalog(
+        cards,
+        min_cards,
+        max_cards,
+        player_state,
+        purchase_card_cost,
+    )
+
+
+def _decode_card_selection_catalog_action(
+    waiting_for: Dict[str, Any],
+    action_index: Optional[int],
+    player_state: Optional[Dict[str, Any]],
+) -> Optional[List[str]]:
+    if action_index is None:
+        return None
+    normalized = _safe_int(action_index, -1)
+    offset = normalized - _CARD_SELECTION_CATALOG_BASE
+    if offset < 0 or offset >= _CARD_SELECTION_CATALOG_LIMIT:
+        return None
+    catalog = _card_selection_catalog_for_prompt(waiting_for, player_state)
+    if 0 <= offset < len(catalog):
+        return list(catalog[offset])
+    return None
 
 def _decode_card_selection_mask_action(
     waiting_for: Dict[str, Any],
@@ -1922,6 +2093,26 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                             break
                 if not matched:
                     selected_idx = 0
+            elif _CARD_SELECTION_CATALOG_BASE <= action_index < (
+                _CARD_SELECTION_CATALOG_BASE + _CARD_SELECTION_CATALOG_LIMIT
+            ):
+                matched = False
+                for i, option in enumerate(options):
+                    option_type = option.get('type', '')
+                    option_title_l = _title_text(option.get('title', '')).lower()
+                    option_cards = option.get('cards', []) or []
+                    option_max = _safe_int(option.get('max', len(option_cards)), len(option_cards))
+                    if (
+                        option_type in ['selectCard', 'card']
+                        and not _is_special_card_prompt_title(option_title_l)
+                        and _is_card_selection_prompt(option)
+                        and option_max != 1
+                    ):
+                        selected_idx = i
+                        matched = True
+                        break
+                if not matched:
+                    selected_idx = 0
             elif _AWARD_ACTION_BASE <= action_index < _MILESTONE_ACTION_BASE:
                 # Direct award leaf selection (600-649).
                 for i, option in enumerate(options):
@@ -2288,7 +2479,25 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 return {'type': 'pass'}
             return {'type': 'card', 'cards': selected_names}
         if is_selection:
-            # Use bitmask logic for card selection (buy/keep/prelude phase)
+            # Live card-selection actions use a prompt-local identity catalog.
+            # The payload is decoded from the same catalog that produced the
+            # legal action IDs, so no card position or bitmask is guessed later.
+            normalized_action = _safe_int(action_index, -1) if action_index is not None else -1
+            if _CARD_SELECTION_CATALOG_BASE <= normalized_action < (
+                _CARD_SELECTION_CATALOG_BASE + _CARD_SELECTION_CATALOG_LIMIT
+            ):
+                selected_names = _decode_card_selection_catalog_action(
+                    waiting_for,
+                    normalized_action,
+                    player_state,
+                )
+                if selected_names is None:
+                    raise ActionEnumerationError(
+                        f"card catalog action {normalized_action} is not legal for this prompt"
+                    )
+                return {'type': 'card', 'cards': selected_names}
+
+            # Compatibility path for pre-catalog snapshots using bitmask IDs.
             if min_cards == 1 and max_cards == 1:
                 if action_index is not None and 0 <= action_index < n:
                     card_names = [cards[action_index]['name']]
@@ -3060,6 +3269,7 @@ class ActionDecoder:
             'STANDARD_PROJECT': ACTION_BASES['standard_project'],
             'SELECT_OPTION': ACTION_BASES['select_option'],
             'SELECT_CARD_MASK': _CARD_SELECTION_MASK_BASE,
+            'SELECT_CARD_CATALOG': _CARD_SELECTION_CATALOG_BASE,
             'STARTUP_PLAN': _STARTUP_PLAN_BASE,
             'SELECT_SPACE': ACTION_BASES['select_space'],
             'SELECT_PAYMENT': _PAYMENT_ACTION_BASE,
@@ -3081,6 +3291,8 @@ class ActionDecoder:
             'Road Infrastructure (var. 2)', 'Lunar Mine (var. 2)', 'Lunar Habitat (var. 2)',
         ]
         self.card_selection_mask_limit = _CARD_SELECTION_MASK_LIMIT
+        self.card_selection_catalog_base = _CARD_SELECTION_CATALOG_BASE
+        self.card_selection_catalog_limit = _CARD_SELECTION_CATALOG_LIMIT
         self.startup_plan_limit = _STARTUP_PLAN_LIMIT
 
     def _option_payload_for_action(self, action_index: int, waiting_for: Dict[str, Any]) -> Dict[str, Any]:
@@ -3156,6 +3368,8 @@ class ActionDecoder:
             return 'convert_heat'
         if int(action_index) == 702 and ('sell patents' in combined or has_sell_patents_branch):
             return 'sell_patents'
+        if int(_CARD_SELECTION_CATALOG_BASE) <= int(action_index) < int(_CARD_SELECTION_CATALOG_BASE + _CARD_SELECTION_CATALOG_LIMIT):
+            return 'card_subset'
         if int(action_index) >= int(self.action_types['PASS']):
             return 'pass'
         if 0 <= int(action_index) < int(self.action_types['STANDARD_PROJECT']):
@@ -3246,11 +3460,7 @@ class ActionDecoder:
             else:
                 label = card_name or label or 'Play project card'
         elif family == 'card_subset':
-            selected_cards = [
-                str(card).strip()
-                for card in ((decoded_action or {}).get('cards', []) or [])
-                if str(card).strip()
-            ]
+            selected_cards = _selected_card_names_from_action(decoded_action)
             label = f"Buy: {' + '.join(selected_cards)}" if selected_cards else "Buy: no cards"
         elif family == 'startup_plan':
             contents = _startup_plan_contents(decoded_action, waiting_for)
@@ -3907,22 +4117,21 @@ class ActionDecoder:
                         option_cards = option.get('cards', []) or []
                         min_cards = _safe_int(option.get('min', 1), 1)
                         max_cards = _safe_int(option.get('max', len(option_cards)), len(option_cards))
-                        if _is_card_selection_prompt(option) and max_cards > 1:
-                            masks = _enumerate_card_selection_masks(
-                                option_cards,
-                                min_cards,
-                                max_cards,
+                        if _is_card_selection_prompt(option) and max_cards != 1:
+                            catalog = _card_selection_catalog_for_prompt(
+                                option,
                                 player_state,
-                                _CARD_SELECTION_MASK_LIMIT,
-                                float(player.get('cardCost', 3) or 3) if _is_paid_card_purchase_prompt(option) else 0.0,
                             )
-                            for j, _ in enumerate(masks):
-                                available_actions.append(self.action_types['SELECT_CARD_MASK'] + j)
-                            added_concrete_action = len(masks) > 0
+                            for j, _ in enumerate(catalog):
+                                available_actions.append(self.action_types['SELECT_CARD_CATALOG'] + j)
+                            added_concrete_action = len(catalog) > 0
                             if not added_concrete_action:
                                 allow_select_option = False
                         elif _is_card_selection_prompt(option):
-                            enabled_indices = [j for j, card in enumerate(option_cards) if not card.get('isDisabled', False)]
+                            enabled_indices = [
+                                j for j, card in enumerate(option_cards)
+                                if not card.get('isDisabled', False)
+                            ]
                             if not enabled_indices:
                                 enabled_indices = list(range(len(option_cards)))
                             for j in enabled_indices:
@@ -3990,18 +4199,13 @@ class ActionDecoder:
                             available_actions.append(self.action_types['PASS'])
                 elif not available_actions:
                     # For selection scenarios, support multi-card subset actions.
-                    if is_selection and max_cards > 1:
-                        masks = _enumerate_card_selection_masks(
-                            cards,
-                            min_cards,
-                            max_cards,
+                    if is_selection and max_cards != 1:
+                        catalog = _card_selection_catalog_for_prompt(
+                            waiting_for,
                             player_state,
-                            _CARD_SELECTION_MASK_LIMIT,
-                            float((player_state or {}).get('thisPlayer', {}).get('cardCost', 3) or 3)
-                            if _is_paid_card_purchase_prompt(waiting_for) else 0.0,
                         )
-                        for i, _ in enumerate(masks):
-                            available_actions.append(self.action_types['SELECT_CARD_MASK'] + i)
+                        for i, _ in enumerate(catalog):
+                            available_actions.append(self.action_types['SELECT_CARD_CATALOG'] + i)
                     if not available_actions:
                         enabled_indices = [i for i, card in enumerate(cards) if not card.get('isDisabled', False)]
                         if not enabled_indices:
@@ -4034,18 +4238,22 @@ class ActionDecoder:
                     if _has_selectable_patents(cards):
                         available_actions.append(702)
                 else:
-                    if _is_card_selection_prompt(waiting_for) and max_cards > 1:
-                        masks = _enumerate_card_selection_masks(
-                            cards,
-                            min_cards,
-                            max_cards,
+                    if _is_card_selection_prompt(waiting_for) and max_cards != 1:
+                        catalog = _card_selection_catalog_for_prompt(
+                            waiting_for,
                             player_state,
-                            _CARD_SELECTION_MASK_LIMIT,
-                            float((player_state or {}).get('thisPlayer', {}).get('cardCost', 3) or 3)
-                            if _is_paid_card_purchase_prompt(waiting_for) else 0.0,
                         )
-                        for i, _ in enumerate(masks):
-                            available_actions.append(self.action_types['SELECT_CARD_MASK'] + i)
+                        for i, _ in enumerate(catalog):
+                            available_actions.append(self.action_types['SELECT_CARD_CATALOG'] + i)
+                    elif _is_card_selection_prompt(waiting_for):
+                        enabled_indices = [
+                            i for i, card in enumerate(cards)
+                            if not card.get('isDisabled', False)
+                        ]
+                        if not enabled_indices:
+                            enabled_indices = list(range(len(cards)))
+                        for i in enabled_indices:
+                            available_actions.append(self.action_types['PLAY_CARD'] + i)
                     if not available_actions:
                         enabled_indices = [i for i, card in enumerate(cards) if not card.get('isDisabled', False)]
                         if not enabled_indices:

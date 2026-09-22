@@ -21,7 +21,13 @@ from collections import deque
 
 from game_interface import GameInstance, ServerTransportError
 from .state_encoder import StateEncoder
-from .action_decoder import ActionDecoder, ActionEnumerationError, _message_display_text, _title_text
+from .action_decoder import (
+    ActionDecoder,
+    ActionEnumerationError,
+    _message_display_text,
+    _selected_card_names_from_action,
+    _title_text,
+)
 from .planner_common import (
     PlannerConfig,
     bundle_to_torch,
@@ -662,7 +668,17 @@ class TerraformingMarsNetwork(nn.Module):
         device = world_tokens.device
         if action_mask.ndim != 2 or action_mask.shape[0] != batch_size:
             raise ValueError("Planner action mask must be a two-dimensional batch")
-        if action_mask.shape[1] == 0 or not bool(action_mask.any(dim=1).all()):
+        terminal_mask = state.get(
+            "terminal_mask",
+            torch.zeros((batch_size,), dtype=torch.bool, device=device),
+        ).bool().reshape(-1)
+        if int(terminal_mask.shape[0]) != batch_size:
+            raise ValueError("Planner terminal mask must have one value per batch row")
+        active_rows = ~terminal_mask
+        if bool(active_rows.any()) and (
+            action_mask.shape[1] == 0
+            or not bool(action_mask[active_rows].any(dim=1).all())
+        ):
             raise ValueError("Planner received an active state with an empty legal-action mask")
 
         world_embed = self.world_projection(world_tokens) + self.world_type_embedding(
@@ -2850,8 +2866,12 @@ class RLAgent:
         pass_base = int(self.action_decoder.action_types.get('PASS', 900))
         mask_base = int(self.action_decoder.action_types.get('SELECT_CARD_MASK', -1))
         mask_limit = int(getattr(self.action_decoder, 'card_selection_mask_limit', 0) or 0)
+        catalog_base = int(self.action_decoder.action_types.get('SELECT_CARD_CATALOG', -1))
+        catalog_limit = int(getattr(self.action_decoder, 'card_selection_catalog_limit', 0) or 0)
         startup_base = int(self.action_decoder.action_types.get('STARTUP_PLAN', -1))
         startup_limit = int(getattr(self.action_decoder, 'startup_plan_limit', 0) or 0)
+        if catalog_base >= 0 and catalog_limit > 0 and catalog_base <= action_index < (catalog_base + catalog_limit):
+            return 'card_selection_catalog'
         if action_index >= pass_base:
             return 'pass'
         if action_index < 100:
@@ -2881,8 +2901,18 @@ class RLAgent:
         pass_base = int(self.action_decoder.action_types.get('PASS', 900))
         mask_base = int(self.action_decoder.action_types.get('SELECT_CARD_MASK', -1))
         mask_limit = int(getattr(self.action_decoder, 'card_selection_mask_limit', 0) or 0)
+        catalog_base = int(self.action_decoder.action_types.get('SELECT_CARD_CATALOG', -1))
+        catalog_limit = int(getattr(self.action_decoder, 'card_selection_catalog_limit', 0) or 0)
         startup_base = int(self.action_decoder.action_types.get('STARTUP_PLAN', -1))
         startup_limit = int(getattr(self.action_decoder, 'startup_plan_limit', 0) or 0)
+
+        if catalog_base >= 0 and catalog_limit > 0 and catalog_base <= action_index < (catalog_base + catalog_limit):
+            try:
+                payload = self.action_decoder.decode_action(action_index, player_state) or {}
+                selected_cards = _selected_card_names_from_action(payload)
+                return f"CARD_SELECTION({', '.join(selected_cards)})"
+            except Exception:
+                return f"CARD_SELECTION({action_index - catalog_base})"
 
         if action_index >= pass_base:
             return "PASS"
@@ -3164,6 +3194,21 @@ class RLAgent:
                     label_matches = [item for item in label_matches if item >= 0]
                     if len(label_matches) == 1:
                         remapped = int(label_matches[0])
+            if remapped is None:
+                # Older annotations may contain only the accepted action IDs,
+                # without a payload or catalog fingerprint.  Reuse the
+                # recorded choice only when it is still explicitly accepted
+                # and present in the current legal catalog.
+                accepted_ids = {
+                    int(item) for item in (expected_step.get("accepted_action_indices", []) or [])
+                }
+                current_ids = {
+                    int(item.get("action_index", -1))
+                    for item in (legal_descriptors or [])
+                    if isinstance(item, dict)
+                }
+                if selected in accepted_ids and selected in current_ids:
+                    remapped = selected
             if remapped is None:
                 raise RuntimeError(
                     "Guided annotation replay legal-action fingerprint diverged at source snapshot "

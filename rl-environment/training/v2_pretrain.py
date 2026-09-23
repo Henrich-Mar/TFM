@@ -151,8 +151,10 @@ def _run_epoch(
         batch_index += 1
         bundles = pad_bundle_batch([item["planner_bundle"] for item in samples], device=device, planner_config=planner_config)
         phase_indices = torch.tensor([int(item.get("phase_index", 0)) for item in samples], dtype=torch.long, device=device)
-        output = network(bundles, phase_indices=phase_indices)
-        logits = output["policy_logits"]
+        use_amp = device.type == "cuda"
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp, dtype=torch.bfloat16):
+            output = network(bundles, phase_indices=phase_indices)
+        logits = output["policy_logits"].float()
         targets = _targets(samples, int(logits.shape[1]), device)
         weights = torch.tensor([float(item.get("sample_weight", 1.0)) for item in samples], dtype=torch.float32, device=device)
         policy_valid = torch.tensor(
@@ -169,7 +171,7 @@ def _run_epoch(
         per_row_policy = -(targets * F.log_softmax(logits, dim=-1)).sum(dim=-1)
         effective_weights = weights * policy_valid.float()
         policy_loss = (per_row_policy * effective_weights).sum() / torch.clamp(effective_weights.sum(), min=1.0)
-        predicted_values = output["value"].reshape(-1)
+        predicted_values = output["value"].float().reshape(-1)
         value_loss = (
             F.mse_loss(predicted_values[value_valid], target_values[value_valid])
             if bool(value_valid.any())
@@ -293,7 +295,11 @@ def pretrain(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     network.to(device)
     print(
-        f"[pretrain] starting: teacher_samples={teacher_total} human_samples={human_total} device={device}",
+        f"[pretrain] starting: teacher_samples={teacher_total} human_samples={human_total} device={device} "
+        f"hidden_size={config.hidden_size} transformer_layers={config.transformer_layers} "
+        f"transformer_heads={config.transformer_heads} recurrent_size={config.recurrent_size} "
+        f"planner_token_dim={config.planner_token_dim} "
+        f"batch_size={batch_size} amp={'bf16' if device.type == 'cuda' else 'off'}",
         flush=True,
     )
     optimizer = torch.optim.AdamW(network.parameters(), lr=float(learning_rate))

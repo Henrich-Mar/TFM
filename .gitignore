@@ -22,3 +22,4 @@ rl-environment/Cargo.lock
 rl-environment/target/
 rl-environment/debug_snapshots/**
 !rl-environment/debug_snapshots/incomplete_games.json
+rl-v2-archive-20260922/

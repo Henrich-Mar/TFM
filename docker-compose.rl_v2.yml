@@ -104,12 +104,14 @@ services:
       - LEAGUE_ENABLE=0
       - EVOLUTION_IMMIGRANT_RATIO=0.0
       - FIXED_BENCHMARK_ENABLED=0
-      # v2 pretraining must fit the 6 GB laptop RTX 3060. These override the
-      # larger legacy hard-mode network settings from docker-compose.rl_hard.yml.
-      - AGENT_HIDDEN_SIZE=256
+      # First expansion after the 256-wide net plateaued near 70% teacher top-1.
+      # Still has to fit backward passes on the 6 GB laptop RTX 3060.
+      # Token dim stays 64 from docker-compose.rl_hard.yml so existing teacher
+      # shards remain valid. The 768/4-layer/12-head hard preset OOMs here.
+      - AGENT_HIDDEN_SIZE=512
       - AGENT_RECURRENT_SIZE=128
       - AGENT_TRANSFORMER_HEADS=4
-      - AGENT_TRANSFORMER_LAYERS=2
+      - AGENT_TRANSFORMER_LAYERS=3
 
 volumes:
   postgres_data_v2:

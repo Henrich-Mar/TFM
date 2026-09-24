@@ -3257,7 +3257,10 @@ def _can_afford_card(player: Dict[str, Any], card: Dict[str, Any]) -> bool:
 class ActionDecoder:
     def __init__(self, planner_config: Optional[PlannerConfig] = None):
         self.planner_config = planner_config or PlannerConfig()
-        self.v3_enabled = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        from .v4_flags import v3_enabled, v4_enabled
+        self.v4_enabled = v4_enabled()
+        self.v3_enabled = v3_enabled()
+        self.last_canonical_aliases: List[Dict[str, int]] = []
         try:
             configured_scale = float(os.getenv("V3_FEATURE_SCALE", "1"))
         except (TypeError, ValueError):
@@ -3527,6 +3530,8 @@ class ActionDecoder:
             game = player_state.get('game', {}) or {}
             player = player_state.get('thisPlayer', {}) or {}
             own_color = str(player.get('color', '') or '').strip().lower()
+            own_name = str(player.get('name', '') or '').strip().lower()
+            own_identity = own_color or own_name
             award = next(
                 (
                     item for item in (game.get('awards', []) or [])
@@ -3540,33 +3545,38 @@ class ActionDecoder:
             own_score = 0.0
             opp_best = 0.0
             for row in scores:
-                color = str(row.get('playerColor', '') or '').strip().lower()
+                color = str(row.get('playerColor', row.get('color', '')) or '').strip().lower()
+                row_name = str(row.get('playerName', row.get('name', '')) or '').strip().lower()
                 try:
                     score = float(row.get('playerScore', row.get('score', 0)) or 0)
                 except (TypeError, ValueError):
                     score = 0.0
-                if color:
-                    normalized.append((color, score))
-                if own_color and color == own_color:
+                is_own = (own_color and color == own_color) or (own_name and row_name == own_name)
+                identity_key = own_identity if is_own and own_identity else (color or row_name)
+                if identity_key:
+                    normalized.append((identity_key, score))
+                if is_own:
                     own_score = score
                 else:
                     opp_best = max(opp_best, score)
             projected = 0.0
-            if normalized and own_color:
+            if normalized and own_identity:
                 normalized.sort(key=lambda pair: pair[1], reverse=True)
                 top_score = normalized[0][1]
                 top = [color for color, score in normalized if score == top_score]
-                if own_color in top:
+                if own_identity in top:
                     projected = 5.0
                 elif len(top) == 1:
                     remaining = normalized[len(top):]
                     if remaining:
                         second_score = remaining[0][1]
-                        if own_color in [color for color, score in remaining if score == second_score]:
+                        if own_identity in [color for color, score in remaining if score == second_score]:
                             projected = 2.0
             funded_count = sum(
                 1 for item in (game.get('awards', []) or [])
-                if isinstance(item, dict) and (item.get('playerName') or item.get('playerColor'))
+                if isinstance(item, dict) and (
+                    item.get('playerName') or item.get('playerColor') or item.get('color') or item.get('funded_by')
+                )
             )
             cost = [8.0, 14.0, 20.0][min(funded_count, 2)]
             mc = max(0.0, float(player.get('megaCredits', 0) or 0))
@@ -3582,6 +3592,56 @@ class ActionDecoder:
                 min(mc / cost, 1.0),
                 timing,
                 max(0.0, min((1.0 - timing) * (1.0 - lead_confidence), 1.0)),
+            ]
+        elif family == 'claim_milestone':
+            game = player_state.get('game', {}) or {}
+            player = player_state.get('thisPlayer', {}) or {}
+            own_color = str(player.get('color', '') or '').strip().lower()
+            own_name = str(player.get('name', '') or '').strip().lower()
+            milestone = next(
+                (
+                    item for item in (game.get('milestones', []) or [])
+                    if isinstance(item, dict)
+                    and str(item.get('name', item.get('title', '')) or '').strip().lower() == str(name or '').strip().lower()
+                ),
+                None,
+            )
+            own_score = 0.0
+            opp_best = 0.0
+            for row in ((milestone or {}).get('scores', []) or []):
+                if not isinstance(row, dict):
+                    continue
+                color = str(row.get('playerColor', row.get('color', '')) or '').strip().lower()
+                row_name = str(row.get('playerName', row.get('name', '')) or '').strip().lower()
+                try:
+                    score = float(row.get('playerScore', row.get('score', 0)) or 0)
+                except (TypeError, ValueError):
+                    score = 0.0
+                if (own_color and color == own_color) or (own_name and row_name == own_name):
+                    own_score = score
+                else:
+                    opp_best = max(opp_best, score)
+            score_gap = own_score - opp_best
+            claim_now = 1.0 if milestone and own_score >= 3.0 and not (
+                milestone.get('playerName') or milestone.get('playerColor') or milestone.get('color')
+            ) else 0.0
+            deny_risk = max(0.0, min(opp_best / 3.0, 1.0))
+            waiting = player_state.get('waitingFor', {}) or {}
+            try:
+                effective_cost = float(waiting.get('cost', player.get('milestoneCost', 8.0)) or 8.0)
+            except (TypeError, ValueError):
+                effective_cost = 8.0
+            mc = max(0.0, float(player.get('megaCredits', 0) or 0))
+            generation = max(1.0, float(game.get('generation', 1) or 1))
+            metrics = [
+                min(max(own_score, 0.0) / 6.0, 1.0),
+                min(max(opp_best, 0.0) / 6.0, 1.0),
+                max(-1.0, min(score_gap / 6.0, 1.0)),
+                claim_now,
+                deny_risk,
+                min(max(effective_cost, 0.0) / 20.0, 1.0),
+                min(mc / max(1.0, effective_cost), 1.0),
+                min(generation / 14.0, 1.0),
             ]
         return [scale * item for item in (identity + metrics)]
 
@@ -3760,12 +3820,63 @@ class ActionDecoder:
             1.0 if 'pass' in label_l else 0.0,
         ])
         named_concept = award_name if family == 'fund_award' else milestone_name
-        features.extend(self._v3_named_action_features(player_state, family, named_concept))
-        if family == 'startup_plan':
-            features.extend(startup_identity)
-        if family == 'select_space':
+        if self.v4_enabled:
+            if len(features) < 49:
+                raise RuntimeError(f"action token base shrank below 49 features: {len(features)}")
+            features = features[:49] + self._v4_family_tail(
+                player_state,
+                family,
+                label_info,
+                decoded_action,
+                space_features,
+                startup_identity,
+                named_concept,
+            )
+        else:
+            features.extend(self._v3_named_action_features(player_state, family, named_concept))
+            if family == 'startup_plan':
+                features.extend(startup_identity)
+            if family == 'select_space':
+                space = space_features or {}
+                features.extend([
+                    min(max(float(space.get('total_value', 0.0) or 0.0), 0.0), 1.0),
+                    min(max(float(space.get('self_value', 0.0) or 0.0), 0.0), 1.0),
+                    min(max(float(space.get('deny_value', 0.0) or 0.0), 0.0), 1.0),
+                    min(max(float(space.get('risk_value', 0.0) or 0.0), 0.0), 1.0),
+                    min(max(float(space.get('bonus_value', 0.0) or 0.0) / 6.0, 0.0), 1.0),
+                    min(float(space.get('own_city_adjacent', 0) or 0) / 3.0, 1.0),
+                    min(float(space.get('enemy_city_adjacent', 0) or 0) / 3.0, 1.0),
+                    min(float(space.get('own_greenery_adjacent', 0) or 0) / 4.0, 1.0),
+                    min(float(space.get('ocean_adjacent', 0) or 0) / 3.0, 1.0),
+                    min(float(space.get('empty_adjacent', 0) or 0) / 6.0, 1.0),
+                    min(max(float(space.get('x', 0) or 0) / 10.0, 0.0), 1.0),
+                    min(max(float(space.get('y', 0) or 0) / 10.0, 0.0), 1.0),
+                ])
+        return token_from_features(type_id=8, features=features, planner_config=self.planner_config)
+
+    def _v4_family_tail(
+        self,
+        player_state: Dict[str, Any],
+        family: str,
+        label_info: Dict[str, str],
+        decoded_action: Optional[Dict[str, Any]],
+        space_features: Optional[Dict[str, Any]],
+        startup_identity: List[float],
+        named_concept: str,
+    ) -> List[float]:
+        tail = [0.0] * 14
+        if family == 'play_card':
+            tail = self._v4_play_card_tail(player_state, label_info, decoded_action)
+        elif family in ('card_subset', 'card_prompt'):
+            tail = self._v4_card_subset_tail(player_state, decoded_action)
+        elif family in ('fund_award', 'claim_milestone'):
+            named = self._v3_named_action_features(player_state, family, named_concept)
+            tail = list(named[:14]) + [0.0] * max(0, 14 - len(named))
+        elif family == 'startup_plan':
+            tail = list(startup_identity[:14]) + [0.0] * max(0, 14 - len(startup_identity))
+        elif family == 'select_space':
             space = space_features or {}
-            features.extend([
+            placement = [
                 min(max(float(space.get('total_value', 0.0) or 0.0), 0.0), 1.0),
                 min(max(float(space.get('self_value', 0.0) or 0.0), 0.0), 1.0),
                 min(max(float(space.get('deny_value', 0.0) or 0.0), 0.0), 1.0),
@@ -3778,8 +3889,100 @@ class ActionDecoder:
                 min(float(space.get('empty_adjacent', 0) or 0) / 6.0, 1.0),
                 min(max(float(space.get('x', 0) or 0) / 10.0, 0.0), 1.0),
                 min(max(float(space.get('y', 0) or 0) / 10.0, 0.0), 1.0),
-            ])
-        return token_from_features(type_id=8, features=features, planner_config=self.planner_config)
+                1.0 if str(space.get('intent', '') or '').lower() == 'city' else 0.0,
+                1.0 if str(space.get('intent', '') or '').lower() == 'greenery' else 0.0,
+            ]
+            tail = placement[:14] + [0.0] * max(0, 14 - len(placement))
+        return [float(item) for item in tail[:14]]
+
+    def _v4_play_card_tail(
+        self,
+        player_state: Dict[str, Any],
+        label_info: Dict[str, str],
+        decoded_action: Optional[Dict[str, Any]],
+    ) -> List[float]:
+        player = player_state.get('thisPlayer', {}) or {}
+        waiting_for = player_state.get('waitingFor', {}) or {}
+        card_name = str(label_info.get('card_name', '') or '')
+        card = _find_prompt_card(waiting_for, card_name) if card_name else {}
+        raw_cost = float(_card_cost(card)) if card else 0.0
+        discounted = raw_cost
+        if isinstance(card, dict) and card.get('calculatedCost') is not None:
+            discounted = float(_safe_int(card.get('calculatedCost'), int(raw_cost)))
+        tags = _card_tags(card) if card else {}
+        payment = {}
+        if isinstance(decoded_action, dict) and isinstance(decoded_action.get('payment'), dict):
+            payment = decoded_action.get('payment') or {}
+        mc_pay = float(_safe_int(payment.get('megaCredits', payment.get('megacredits', 0)), 0))
+        steel_pay = float(_safe_int(payment.get('steel', 0), 0))
+        titanium_pay = float(_safe_int(payment.get('titanium', 0), 0))
+        other_pay = float(sum(
+            _safe_int(payment.get(key, 0), 0)
+            for key in ('heat', 'plants', 'floaters', 'microbes', 'lunaArchivesScience')
+        ))
+        steel_value = max(1.0, float(player.get('steelValue', 2) or 2))
+        titanium_value = max(1.0, float(player.get('titaniumValue', 3) or 3))
+        paid_value = mc_pay + steel_pay * steel_value + titanium_pay * titanium_value
+        mc = max(0.0, float(player.get('megaCredits', 0) or 0))
+        return [
+            min(mc_pay / 40.0, 1.0),
+            min(steel_pay / 10.0, 1.0),
+            min(titanium_pay / 10.0, 1.0),
+            min(other_pay / 10.0, 1.0),
+            min(raw_cost / 40.0, 1.0),
+            min(discounted / 40.0, 1.0),
+            min(max(0.0, raw_cost - discounted) / 20.0, 1.0),
+            1.0 if tags.get('Building', 0) > 0 else 0.0,
+            1.0 if tags.get('Space', 0) > 0 else 0.0,
+            1.0 if steel_pay > 0.0 else 0.0,
+            1.0 if titanium_pay > 0.0 else 0.0,
+            min(max(0.0, mc - mc_pay) / 80.0, 1.0),
+            1.0 if discounted <= 0.0 or paid_value + 1e-6 >= discounted else 0.0,
+            1.0 if discounted + 1e-6 < raw_cost else 0.0,
+        ]
+
+    def _v4_card_subset_tail(
+        self,
+        player_state: Dict[str, Any],
+        decoded_action: Optional[Dict[str, Any]],
+    ) -> List[float]:
+        waiting_for = player_state.get('waitingFor', {}) or {}
+        player = player_state.get('thisPlayer', {}) or {}
+        names = _selected_card_names_from_action(decoded_action if isinstance(decoded_action, dict) else {})
+        selected = []
+        for name in names:
+            card = _find_prompt_card(waiting_for, name)
+            selected.append(card if card else {'name': name})
+        prompt_cards = [card for card in (waiting_for.get('cards', []) or []) if isinstance(card, dict)]
+        min_bound = float(_safe_int(waiting_for.get('min', 0), 0))
+        max_bound = float(_safe_int(waiting_for.get('max', len(prompt_cards)), len(prompt_cards)))
+        paid = _is_paid_card_purchase_prompt(waiting_for)
+        fee = float(player.get('cardCost', 3) or 3) if paid else 0.0
+        count = float(len(selected))
+        total_fee = fee * count
+        mc = max(0.0, float(player.get('megaCredits', 0) or 0))
+        aggregate_cost = sum(float(_card_cost(card)) for card in selected)
+        aggregate_vp = sum(float(_card_vp(card)) for card in selected)
+        tags = set()
+        for card in selected:
+            tags.update(name for name, present in _card_tags(card).items() if present)
+        prompt_count = max(1.0, float(len(prompt_cards) or count or 1))
+        return [
+            min(count / 4.0, 1.0),
+            min(min_bound / 4.0, 1.0),
+            min(max_bound / 4.0, 1.0),
+            min(fee / 10.0, 1.0),
+            min(total_fee / 40.0, 1.0),
+            min(max(0.0, mc - total_fee) / 80.0, 1.0),
+            min(aggregate_cost / 80.0, 1.0),
+            min(aggregate_vp / 10.0, 1.0),
+            min(float(len(tags)) / 8.0, 1.0),
+            1.0 if count == 0.0 else 0.0,
+            1.0 if prompt_cards and count == float(len(prompt_cards)) else 0.0,
+            1.0 if paid else 0.0,
+            min((aggregate_cost / count) / 40.0, 1.0) if count else 0.0,
+            min(count / prompt_count, 1.0),
+        ]
 
     def _build_action_descriptor(
         self,
@@ -4428,6 +4631,12 @@ class ActionDecoder:
                         description=str(labels.get('label', family) or family),
                     )
                 )
+            if self.v4_enabled:
+                from .action_canonical import canonicalize_legal_actions
+                actions, aliases = canonicalize_legal_actions(actions)
+                self.last_canonical_aliases = aliases
+            else:
+                self.last_canonical_aliases = []
             return LegalActionSet(status="active", actions=actions)
         except Exception as exc:
             return LegalActionSet(status="invalid", actions=[], reason=str(exc))

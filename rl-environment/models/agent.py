@@ -594,6 +594,24 @@ class TerraformingMarsNetwork(nn.Module):
             nn.GELU(),
         )
         self.action_logit_head = nn.Linear(self.hidden_size, 1)
+        from .v4_flags import v4_enabled
+        self.card_aware = bool(v4_enabled())
+        if self.card_aware:
+            from .card_catalog import CARD_CAPACITY, METADATA_DIM, get_catalog
+            self.card_identity = nn.Embedding(CARD_CAPACITY, self.hidden_size, padding_idx=0)
+            self.card_metadata_projection = nn.Linear(METADATA_DIM, self.hidden_size)
+            self.card_set_projection = nn.Linear(self.hidden_size, self.hidden_size)
+            count_vocab = int(planner.hand_limit) + 1
+            self.card_count_embedding = nn.Embedding(count_vocab, self.hidden_size, padding_idx=0)
+            self.hand_context_norm = nn.LayerNorm(self.hidden_size)
+            metadata_table = torch.from_numpy(get_catalog().metadata_matrix())
+            self.register_buffer("card_metadata_table", metadata_table, persistent=False)
+        else:
+            self.card_identity = None
+            self.card_metadata_projection = None
+            self.card_set_projection = None
+            self.card_count_embedding = None
+            self.hand_context_norm = None
         self.last_transformer_stats: Dict[str, Any] = {
             "enabled": True,
             "active_token_ratio": 0.0,
@@ -646,6 +664,23 @@ class TerraformingMarsNetwork(nn.Module):
             recurrent_state = recurrent_state[:, :self.recurrent_size]
         return recurrent_state
 
+    def _card_token_delta(self, card_ids: torch.Tensor) -> torch.Tensor:
+        from .card_catalog import CARD_CAPACITY
+        ids = card_ids.long().clamp(0, CARD_CAPACITY - 1)
+        identity = self.card_identity(ids)
+        metadata = self.card_metadata_table[ids]
+        delta = identity + self.card_metadata_projection(metadata)
+        known = (ids > 0).to(dtype=delta.dtype).unsqueeze(-1)
+        return delta * known
+
+    def _require_card_ids(self, state: Dict[str, Any], name: str, batch_size: int) -> torch.Tensor:
+        if name not in state:
+            raise ValueError(f"card-aware policy requires {name}")
+        values = state[name].long()
+        if int(values.shape[0]) != batch_size:
+            raise ValueError(f"{name} batch dimension does not match the planner state")
+        return values
+
     def forward(
         self,
         state: Any,
@@ -686,6 +721,8 @@ class TerraformingMarsNetwork(nn.Module):
         )
         global_embed = self.global_projection(global_scalars).unsqueeze(1)
         world_embed = world_embed + global_embed
+        if self.card_aware:
+            world_embed = world_embed + self._card_token_delta(self._require_card_ids(state, "world_card_ids", batch_size))
         safe_world_mask = world_mask.clone()
         if safe_world_mask.numel() > 0:
             empty_rows = ~safe_world_mask.any(dim=1)
@@ -696,8 +733,13 @@ class TerraformingMarsNetwork(nn.Module):
         encoded_world = self.world_encoder(world_embed, src_key_padding_mask=~safe_world_mask)
         world_summary = self._masked_mean(encoded_world, safe_world_mask)
 
-        if hand_tokens.shape[1] > 0 and bool(hand_mask.any()):
+        if hand_tokens.shape[1] > 0:
             projected_hand = self.hand_projection(hand_tokens)
+            if self.card_aware:
+                projected_hand = projected_hand + self._card_token_delta(self._require_card_ids(state, "hand_card_ids", batch_size))
+        else:
+            projected_hand = world_embed.new_zeros((batch_size, 0, self.hidden_size))
+        if hand_tokens.shape[1] > 0 and bool(hand_mask.any()):
             hand_attended, _ = self.hand_to_world(
                 query=projected_hand,
                 key=encoded_world,
@@ -705,8 +747,14 @@ class TerraformingMarsNetwork(nn.Module):
                 key_padding_mask=~safe_world_mask,
                 need_weights=False,
             )
-            hand_summary = self._masked_mean(hand_attended, hand_mask)
+            if self.card_aware:
+                contextual_hand = self.hand_context_norm(projected_hand + hand_attended)
+                hand_summary = self._masked_mean(contextual_hand, hand_mask)
+            else:
+                contextual_hand = hand_attended
+                hand_summary = self._masked_mean(hand_attended, hand_mask)
         else:
+            contextual_hand = projected_hand
             hand_summary = torch.zeros_like(world_summary)
 
         if phase_indices is None:
@@ -724,19 +772,42 @@ class TerraformingMarsNetwork(nn.Module):
         fused_summary = summary + recurrent_context
 
         projected_actions = self.action_projection(action_tokens)
-        if projected_actions.shape[1] > 0 and bool(action_mask.any()):
+        action_query = projected_actions
+        if self.card_aware:
+            if "action_card_mask" not in state:
+                raise ValueError("card-aware policy requires action_card_mask")
+            action_card_mask = state["action_card_mask"].bool()
+            if action_card_mask.shape[0] != batch_size or action_card_mask.shape[1] != int(projected_actions.shape[1]):
+                raise ValueError("action_card_mask must align with the action batch")
+            if contextual_hand.ndim != 3 or int(contextual_hand.shape[1]) != int(action_card_mask.shape[2]):
+                raise ValueError("action_card_mask hand dimension must match contextual hand tokens")
+            weights = action_card_mask.to(dtype=contextual_hand.dtype)
+            # [B, A, H] x [B, H, D] keeps the masked sum without a [B, A, H, D] tensor.
+            pooled = torch.bmm(weights, contextual_hand)
+            counts = action_card_mask.sum(dim=-1)
+            scale = torch.sqrt(counts.clamp(min=1).to(dtype=contextual_hand.dtype)).unsqueeze(-1)
+            set_embed = self.card_set_projection(pooled / scale)
+            count_index = counts.clamp(0, int(self.card_count_embedding.num_embeddings) - 1).long()
+            action_query = projected_actions + set_embed + self.card_count_embedding(count_index)
+        if action_query.shape[1] > 0 and bool(action_mask.any()):
+            if self.card_aware and contextual_hand.ndim == 3 and int(contextual_hand.shape[1]) > 0:
+                context_tokens = torch.cat([encoded_world, contextual_hand], dim=1)
+                context_padding = ~torch.cat([safe_world_mask, hand_mask], dim=1)
+            else:
+                context_tokens = encoded_world
+                context_padding = ~safe_world_mask
             action_attended, _ = self.action_to_world(
-                query=projected_actions,
-                key=encoded_world,
-                value=encoded_world,
-                key_padding_mask=~safe_world_mask,
+                query=action_query,
+                key=context_tokens,
+                value=context_tokens,
+                key_padding_mask=context_padding,
                 need_weights=False,
             )
         else:
-            action_attended = projected_actions
+            action_attended = action_query
 
-        summary_expanded = fused_summary.unsqueeze(1).expand(-1, int(projected_actions.shape[1]), -1)
-        fused_actions = self.action_context_fuser(torch.cat([projected_actions, action_attended, summary_expanded], dim=-1))
+        summary_expanded = fused_summary.unsqueeze(1).expand(-1, int(action_query.shape[1]), -1)
+        fused_actions = self.action_context_fuser(torch.cat([action_query, action_attended, summary_expanded], dim=-1))
         policy_logits = self.action_logit_head(fused_actions).squeeze(-1)
         policy_logits = policy_logits.masked_fill(~action_mask, -1e9)
 
@@ -798,6 +869,11 @@ def _normalize_network_output(raw_output: Any) -> Dict[str, Optional[torch.Tenso
 # Removed conflicting Agent class - using RLAgent instead
         
 class RLAgent:
+    def _new_optimizer(self) -> torch.optim.Optimizer:
+        if _safe_env_bool("TFM_RL_V4", False):
+            return torch.optim.AdamW(self.network.parameters(), lr=self.ppo_learning_rate)
+        return torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
+
     def __init__(
         self,
         config: AgentConfig = None,
@@ -827,7 +903,7 @@ class RLAgent:
         
         # Neural network
         self.network = TerraformingMarsNetwork(self.config)
-        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
+        self.optimizer = self._new_optimizer()
         self.network.eval()
         self._model_device_lock = threading.RLock()
 
@@ -4628,13 +4704,15 @@ class RLAgent:
     
     def save_model(self, path: str):
         """Save model to disk"""
-        if _safe_env_bool('TFM_RL_V3', False):
+        if _safe_env_bool('TFM_RL_V4', False):
+            experiment_version = 'tfm-rl-v4'
+        elif _safe_env_bool('TFM_RL_V3', False):
             experiment_version = 'tfm-rl-v3'
         elif _safe_env_bool('TFM_RL_V2', False):
             experiment_version = 'tfm-rl-v2'
         else:
             experiment_version = 'legacy'
-        torch.save({
+        payload = {
             'experiment_version': experiment_version,
             'network_state_dict': self.network.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
@@ -4643,7 +4721,12 @@ class RLAgent:
             'total_victory_points': self.total_victory_points,
             'wins': self.wins,
             'policy_version': int(self.policy_version),
-        }, path)
+        }
+        if experiment_version == 'tfm-rl-v4':
+            from .card_catalog import get_catalog
+            payload['card_catalog_sha256'] = get_catalog().sha256
+            payload['state_schema_version'] = 'v4-card-aware.v1'
+        torch.save(payload, path)
     
     def load_model(self, path: str):
         """Load model from disk"""
@@ -4656,7 +4739,10 @@ class RLAgent:
             # Backward compatibility for torch versions without weights_only argument.
             checkpoint = torch.load(path, map_location='cpu')
         checkpoint_version = checkpoint.get('experiment_version')
-        if _safe_env_bool('TFM_RL_V3', False):
+        if _safe_env_bool('TFM_RL_V4', False):
+            from .card_catalog import validate_checkpoint_catalog
+            validate_checkpoint_catalog(checkpoint)
+        elif _safe_env_bool('TFM_RL_V3', False):
             allowed_versions = {'tfm-rl-v3'}
             if _safe_env_bool('V3_ALLOW_V2_WARMSTART', False):
                 allowed_versions.add('tfm-rl-v2')
@@ -4713,7 +4799,7 @@ class RLAgent:
 
         # Rebuild model/optimizer from restored config before loading state dicts.
         self.network = TerraformingMarsNetwork(self.config)
-        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.ppo_learning_rate)
+        self.optimizer = self._new_optimizer()
         planner_config = self.config.planner_config()
         self.state_encoder = StateEncoder(planner_config=planner_config)
         self.action_decoder = ActionDecoder(planner_config=planner_config)

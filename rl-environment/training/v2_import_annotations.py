@@ -10,7 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from training.teacher_dataset import SCHEMA_VERSION, TeacherDatasetStore, source_weight
+from training.teacher_dataset import TeacherDatasetStore, active_schema_version, source_weight
 
 
 def _safe_name(value: Any) -> str:
@@ -330,7 +330,7 @@ def analyze_annotations(
                 {},
             )
             sample = {
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": active_schema_version(),
                 "sample_id": f"human-{record['snapshot_id']}",
                 "planner_bundle": bundle,
                 "action_descriptors": descriptors,

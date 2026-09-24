@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from models.action_decoder import ActionDecoder
 from models.state_encoder import StateEncoder
-from training.teacher_dataset import SCHEMA_VERSION, TeacherDatasetStore, source_weight
+from training.teacher_dataset import TeacherDatasetStore, active_schema_version, source_weight
 
 
 def _utc_now_iso() -> str:
@@ -199,7 +199,7 @@ class HumanGameListener:
             probabilities = [0.0] * len(descriptors)
             probabilities[selected_position] = 1.0
             sample = {
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": active_schema_version(),
                 "sample_id": f"human-listener-{event_key}",
                 "planner_bundle": bundle,
                 "action_descriptors": descriptors,

@@ -111,7 +111,9 @@ class StateEncoder:
         self.tableau_limit = int(self.planner_config.tableau_limit)
         self.hand_limit = int(self.planner_config.hand_limit)
         self.opponent_limit = int(self.planner_config.opponent_limit)
-        self.v3_enabled = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        from .v4_flags import v3_enabled, v4_enabled
+        self.v4_enabled = v4_enabled()
+        self.v3_enabled = v3_enabled()
         try:
             configured_scale = float(os.getenv("V3_FEATURE_SCALE", "1"))
         except (TypeError, ValueError):
@@ -428,10 +430,12 @@ class StateEncoder:
 
         world_tokens: List[np.ndarray] = []
         world_types: List[int] = []
+        world_card_ids: List[int] = []
 
-        def add_world(type_id: int, features: List[float]) -> None:
+        def add_world(type_id: int, features: List[float], card_id: int = 0) -> None:
             world_tokens.append(token_from_features(type_id=type_id, features=features, planner_config=self.planner_config))
             world_types.append(int(type_id))
+            world_card_ids.append(int(card_id))
 
         resources = self._encode_player_resources(current_player)
         production = self._encode_player_production(current_player)
@@ -493,19 +497,23 @@ class StateEncoder:
         for row in opportunity_rows[:self.opportunity_limit]:
             add_world(7, list(row))
 
+        catalog = None
+        if self.v4_enabled:
+            from .card_catalog import get_catalog
+            catalog = get_catalog()
         tableau_tokens: List[np.ndarray] = []
         for card in (current_player.get('tableau', []) or [])[:self.tableau_limit]:
             if not isinstance(card, dict):
                 continue
             tableau_tokens.append(self._card_token_features(card, player_state, from_hand=False))
-        for card_token in tableau_tokens:
-            world_tokens.append(card_token)
+            card_id = catalog.id_for_name(str(card.get("name", "") or "")) if catalog is not None else 0
+            world_tokens.append(tableau_tokens[-1])
             world_types.append(8)
+            world_card_ids.append(int(card_id))
 
+        candidate_cards = [card for card in self._get_candidate_hand_cards(player_state) if isinstance(card, dict)]
         hand_tokens: List[np.ndarray] = []
-        for card in self._get_candidate_hand_cards(player_state)[:self.hand_limit]:
-            if not isinstance(card, dict):
-                continue
+        for card in candidate_cards[:self.hand_limit]:
             hand_tokens.append(self._card_token_features(card, player_state, from_hand=True))
 
         action_tokens: List[np.ndarray] = []
@@ -524,6 +532,23 @@ class StateEncoder:
             action_positions.append(int(descriptor.get('action_position', pos)))
 
         global_scalars = self._planner_global_scalars(player_state, opportunity_rows, turn_action_count)
+        card_kwargs: Dict[str, Any] = {}
+        if self.v4_enabled and catalog is not None:
+            from .card_catalog import PLANNER_SCHEMA_VERSION, bind_action_card_mask
+            hand_card_ids, action_card_mask = bind_action_card_mask(
+                candidate_cards,
+                list(action_descriptors or []),
+                hand_limit=self.hand_limit,
+                catalog=catalog,
+            )
+            card_kwargs = {
+                "world_card_ids": np.asarray(world_card_ids, dtype=np.int64) if world_card_ids else empty_int_vector(),
+                "hand_card_ids": hand_card_ids,
+                "action_card_mask": action_card_mask,
+                "planner_schema_version": PLANNER_SCHEMA_VERSION,
+                "card_catalog_sha256": catalog.sha256,
+                "unresolved_known_card_references": 0,
+            }
 
         return PlannerStateBundle(
             world_tokens=np.asarray(world_tokens, dtype=np.float32) if world_tokens else empty_token_matrix(),
@@ -537,6 +562,7 @@ class StateEncoder:
             action_positions=np.asarray(action_positions, dtype=np.int64) if action_positions else empty_int_vector(),
             global_scalars=np.asarray(global_scalars, dtype=np.float32),
             terminal=str((player_state.get('game', {}) or {}).get('phase', '') or '').strip().lower() == 'end',
+            **card_kwargs,
         ).to_serializable()
 
     def _planner_global_scalars(
@@ -680,7 +706,9 @@ class StateEncoder:
 
         projected_award_points = 0.0
         for award in (game_state.get('awards', []) or []):
-            if not isinstance(award, dict) or not (award.get('playerName') or award.get('playerColor')):
+            if not isinstance(award, dict) or not (
+                award.get('playerName') or award.get('playerColor') or award.get('color') or award.get('funded_by')
+            ):
                 continue
             scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
             projected_award_points += self._project_award_points_for_color(scores, color)
@@ -790,8 +818,9 @@ class StateEncoder:
         if not milestone:
             return ([0.0] * 12) + identity
         own_color = str((current_player or {}).get('color', '') or '').strip().lower()
-        owner_color = str(milestone.get('playerColor', '') or '').strip().lower()
-        owner_name = str(milestone.get('playerName', '') or '').strip()
+        own_name = str((current_player or {}).get('name', '') or '').strip().lower()
+        owner_color = str(milestone.get('playerColor', milestone.get('color', '')) or '').strip().lower()
+        owner_name = str(milestone.get('playerName', '') or '').strip().lower()
         scores = [row for row in (milestone.get('scores', []) or []) if isinstance(row, dict)]
         own_score = 0.0
         best_score = 0.0
@@ -802,8 +831,9 @@ class StateEncoder:
             except Exception:
                 score = 0.0
             best_score = max(best_score, score)
-            row_color = str(row.get('playerColor', '') or '').strip().lower()
-            if own_color and row_color == own_color:
+            row_color = str(row.get('playerColor', row.get('color', '')) or '').strip().lower()
+            row_name = str(row.get('playerName', row.get('name', '')) or '').strip().lower()
+            if (own_color and row_color == own_color) or (own_name and row_name == own_name):
                 own_score = score
             else:
                 opp_best = max(opp_best, score)
@@ -815,8 +845,8 @@ class StateEncoder:
         deny_risk = max(0.0, min((opp_progress - my_progress + 0.25), 1.0))
         return [
             1.0,
-            1.0 if owner_color == own_color and owner_color else 0.0,
-            1.0 if owner_color and owner_color != own_color else 0.0,
+            1.0 if ((owner_color and owner_color == own_color) or (owner_name and owner_name == own_name)) else 0.0,
+            1.0 if ((owner_color and owner_color != own_color) or (owner_name and owner_name != own_name)) else 0.0,
             my_progress,
             opp_progress,
             turns_bucket,
@@ -843,27 +873,54 @@ class StateEncoder:
         if not award:
             return ([0.0] * 12) + identity + ([0.0] * 8)
         own_color = str((current_player or {}).get('color', '') or '').strip().lower()
-        funder_color = str(award.get('playerColor', '') or '').strip().lower()
+        own_name = str((current_player or {}).get('name', '') or '').strip().lower()
+        funder_color = str(award.get('playerColor', award.get('color', '')) or '').strip().lower()
+        funder_name = str(award.get('playerName', award.get('funded_by', '')) or '').strip().lower()
         scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
         own_score = 0.0
         best_score = 0.0
         opp_best = 0.0
-        own_rank_points = self._project_award_points_for_color(scores, own_color)
+        normalized_scores: List[Tuple[str, float]] = []
         for row in scores:
             try:
                 score = float(row.get('playerScore', row.get('score', 0)) or 0)
             except Exception:
                 score = 0.0
             best_score = max(best_score, score)
-            row_color = str(row.get('playerColor', '') or '').strip().lower()
-            if own_color and row_color == own_color:
+            row_color = str(row.get('playerColor', row.get('color', '')) or '').strip().lower()
+            row_name = str(row.get('playerName', row.get('name', '')) or '').strip().lower()
+            is_own = (own_color and row_color == own_color) or (own_name and row_name == own_name)
+            own_identity = own_color or own_name
+            identity_key = own_identity if is_own and own_identity else (row_color or row_name)
+            if identity_key:
+                normalized_scores.append((identity_key, score))
+            if is_own:
                 own_score = score
             else:
                 opp_best = max(opp_best, score)
+        own_identity = own_color or own_name
+        own_rank_points = 0.0
+        if normalized_scores and own_identity:
+            ordered = sorted(normalized_scores, key=lambda pair: pair[1], reverse=True)
+            top_score = ordered[0][1]
+            top = [identity for identity, score in ordered if score == top_score]
+            if own_identity in top:
+                own_rank_points = 5.0
+            elif len(top) == 1:
+                remaining = ordered[len(top):]
+                if remaining:
+                    second_score = remaining[0][1]
+                    if own_identity in [identity for identity, score in remaining if score == second_score]:
+                        own_rank_points = 2.0
         denominator = max(best_score, 1.0)
         progress = min(own_score / denominator, 1.0)
         opp_progress = min(opp_best / denominator, 1.0)
-        funded_count = sum(1 for item in (game_state.get('awards', []) or []) if isinstance(item, dict) and (item.get('playerName') or item.get('playerColor')))
+        funded_count = sum(
+            1 for item in (game_state.get('awards', []) or [])
+            if isinstance(item, dict) and (
+                item.get('playerName') or item.get('playerColor') or item.get('color') or item.get('funded_by')
+            )
+        )
         estimated_cost = [8.0, 14.0, 20.0][min(funded_count, 2)]
         legacy_fund_now_ev = max(0.0, min((own_rank_points - (estimated_cost / 5.0) + 3.0) / 6.0, 1.0))
         generation = max(1.0, float(game_state.get('generation', 1) or 1))
@@ -886,8 +943,8 @@ class StateEncoder:
         contestability = max(0.0, min(1.0 - abs(progress - opp_progress), 1.0))
         base = [
             1.0,
-            1.0 if funder_color == own_color and funder_color else 0.0,
-            1.0 if funder_color and funder_color != own_color else 0.0,
+            1.0 if ((funder_color and funder_color == own_color) or (funder_name and funder_name == own_name)) else 0.0,
+            1.0 if ((funder_color and funder_color != own_color) or (funder_name and funder_name != own_name)) else 0.0,
             progress,
             opp_progress,
             min(own_rank_points / 5.0, 1.0),
@@ -1525,6 +1582,21 @@ class StateEncoder:
                 return self._dedupe_cards(startup_cards)
         return hand_cards
 
+    def _prompt_title_text(self, title: Any) -> str:
+        if isinstance(title, dict):
+            title = title.get('message', '')
+        return str(title or '').strip().lower()
+
+    def _is_pseudo_card_prompt(self, option: Dict[str, Any]) -> bool:
+        """Standard projects and conversions are card-shaped but are not catalog cards."""
+        title = self._prompt_title_text(option.get('title', ''))
+        return (
+            'standard project' in title
+            or 'convert plants' in title
+            or 'convert heat' in title
+            or 'sell patent' in title
+        )
+
     def _get_or_project_card_candidates(self, waiting_for: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not isinstance(waiting_for, dict):
             return []
@@ -1533,21 +1605,39 @@ class StateEncoder:
 
         collected: List[Dict[str, Any]] = []
         seen_names: set[str] = set()
+
+        def _take(card: Any) -> None:
+            if not isinstance(card, dict):
+                return
+            name = str(card.get('name', '') or '').strip()
+            dedupe_key = name or repr(sorted(card.items()))
+            if dedupe_key in seen_names:
+                return
+            seen_names.add(dedupe_key)
+            collected.append(card)
+
         for option in waiting_for.get('options', []) or []:
             if not isinstance(option, dict):
                 continue
             option_type = str(option.get('type', '') or '')
-            if option_type not in ['projectCard', 'selectProjectCardToPlay']:
+            if option_type == 'or':
+                for card in self._get_or_project_card_candidates(option):
+                    _take(card)
                 continue
-            for card in option.get('cards', []) or []:
-                if not isinstance(card, dict):
-                    continue
-                name = str(card.get('name', '') or '').strip()
-                dedupe_key = name or repr(sorted(card.items()))
-                if dedupe_key in seen_names:
-                    continue
-                seen_names.add(dedupe_key)
-                collected.append(card)
+            if option_type in ('projectCard', 'selectProjectCardToPlay'):
+                for card in option.get('cards', []) or []:
+                    _take(card)
+                continue
+            # V4 play_card actions can target a blue card on an action-menu
+            # branch. Those cards have to be prompt candidates. V2/V3 keep the
+            # older project-card-only candidate list.
+            if (
+                self.v4_enabled
+                and option_type in ('card', 'selectCard')
+                and not self._is_pseudo_card_prompt(option)
+            ):
+                for card in option.get('cards', []) or []:
+                    _take(card)
         return collected
 
     def _estimate_affordability_for_card(

@@ -1,0 +1,81 @@
+services:
+  tfm-server-1: &v4_server
+    environment:
+      - RL_ALLOW_FIXED_SEED=1
+      - RL_RECYCLE_ENABLED=1
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-rl-v4-local-recycle}
+      - GAME_CACHE=sweep=auto;eviction_age=2m;sweep_freq=1m
+      - MAX_GAME_DAYS=1
+      - TFM_HUMAN_LISTENER_URL=${TFM_HUMAN_LISTENER_URL:-http://host.docker.internal:5000/human-listener/decision}
+      - TFM_HUMAN_LISTENER_TOKEN=${TFM_HUMAN_LISTENER_TOKEN:-}
+      - TFM_HUMAN_LISTENER_PLAYER_IDS=${TFM_HUMAN_LISTENER_PLAYER_IDS:-}
+  tfm-server-2: *v4_server
+  tfm-server-3: *v4_server
+  tfm-server-4: *v4_server
+
+  postgres:
+    environment:
+      - POSTGRES_DB=tfm_rl_v4
+    volumes:
+      - postgres_data_v4:/var/lib/postgresql/data
+
+  rl-coordinator:
+    restart: "no"
+    command: ["python", "-m", "training.v4_entrypoint"]
+    volumes:
+      - ./rl-environment:/app
+      - ./rl-v4:/app/v4
+      - ./rl-v2:/app/v2:ro
+      - ./card_metadata.json:/app/card_metadata.json:ro
+      - ./card_catalog.v1.json:/app/card_catalog.v1.json:ro
+    environment:
+      - TFM_RL_V2=0
+      - TFM_RL_V3=1
+      - TFM_RL_V4=1
+      - V3_FEATURE_SCALE=1.0
+      - V3_RECYCLE_IDLE_SERVERS=0
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-rl-v4-local-recycle}
+      - TFM_HUMAN_LISTENER_TOKEN=${TFM_HUMAN_LISTENER_TOKEN:-}
+      - TFM_RL_V4_ROOT=/app/v4
+      - V4_ALLOW_RESUME=0
+      - RESUME_TRAINING=0
+      - BOOTSTRAP_CHECKPOINT_PATH=
+      - RL_MODELS_DIR=/app/v4/models
+      - RL_CHECKPOINT_DIR=/app/v4/checkpoints
+      - PPO_ROLLOUT_SHARD_DIR=/app/v4/rollouts
+      - V4_TEACHER_DATASET_DIR=/app/v4/teacher-dataset-v5
+      - V4_BENCHMARK_DIR=/app/v4/benchmarks
+      - V4_METRICS_DIR=/app/v4/metrics
+      - V4_PRETRAIN_REPORT=/app/v4/pretrain-v2/pretrain_report.json
+      - RL_LOG_DIR=/app/v4/logs
+      - POSTGRES_URL=postgresql://tfm:tfm_password@postgres:5432/tfm_rl_v4
+      - GAME_OPTIONS_FILE=/app/game_options.v3_stage1.json
+      - STATE_SCHEMA_VERSION=v4-card-aware.v1
+      - TM_CARD_METADATA_PATH=/app/card_metadata.json
+      - TM_CARD_CATALOG_PATH=/app/card_catalog.v1.json
+      - PPO_GAMMA=1.0
+      - PPO_GAE_LAMBDA=1.0
+      - PPO_SHAPING_INITIAL_COEF=0.0
+      - PPO_SHAPING_FINAL_COEF=0.0
+      - AGENT_MAX_EPISODE_STEPS=10000
+      - AGENT_STARTUP_AUTOSUBMIT=0
+      - AGENT_STARTUP_PLAN_SELECTION=best
+      - PPO_STRICT_ON_POLICY=1
+      - PPO_MINIBATCH_SIZE=128
+      - PPO_LEARNING_RATE=0.0001
+      - PPO_LR_MAX=0.0001
+      - SELFPLAY_CONCURRENCY=4
+      - BENCHMARK_CONCURRENCY=4
+      - MAX_ACTIVE_GAMES_PER_SERVER=1
+      - LEAGUE_ENABLE=0
+      - EVOLUTION_IMMIGRANT_RATIO=0.0
+      - FIXED_BENCHMARK_ENABLED=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - AGENT_HIDDEN_SIZE=512
+      - AGENT_RECURRENT_SIZE=128
+      - AGENT_TRANSFORMER_HEADS=4
+      - AGENT_TRANSFORMER_LAYERS=3
+      - AGENT_PLANNER_TOKEN_DIM=64
+
+volumes:
+  postgres_data_v4:

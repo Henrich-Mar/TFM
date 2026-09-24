@@ -188,6 +188,13 @@ def test_teacher_action_families_score_deterministically_and_legally(family: str
         "game": {"generation": 8, "oxygenLevel": 10, "temperature": -10},
         "waitingFor": {"cards": []},
     }
+    if family == "claim_milestone":
+        descriptors[0].update({"label": "Gardener", "milestone_name": "Gardener"})
+        state["thisPlayer"].update({"name": "A1", "color": "red"})
+        state["game"]["milestones"] = [{
+            "name": "Gardener",
+            "scores": [{"color": "red", "score": 4}, {"color": "blue", "score": 2}],
+        }]
     first = HeuristicTeacherPolicy(seed=2, sample=False).score_actions(state, descriptors)
     second = HeuristicTeacherPolicy(seed=99, sample=False).score_actions(state, descriptors)
     assert first.chosen_action_index in {10, 900}

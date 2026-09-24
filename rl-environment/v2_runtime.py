@@ -34,13 +34,17 @@ def assert_stage_allowed(stage: int, *, context: str) -> None:
 
 def initialize_v2_runtime() -> Dict[str, str]:
     """Create isolated experiment directories and reject accidental resume."""
+    is_v4 = _enabled("TFM_RL_V4")
     is_v3 = _enabled("TFM_RL_V3")
-    if not is_v3 and not _enabled("TFM_RL_V2"):
+    if not is_v4 and not is_v3 and not _enabled("TFM_RL_V2"):
         return {}
 
-    version = "v3" if is_v3 else "v2"
-    prefix = "V3" if is_v3 else "V2"
-    root_env = "TFM_RL_V3_ROOT" if is_v3 else "TFM_RL_V2_ROOT"
+    if is_v4:
+        version, prefix, root_env = "v4", "V4", "TFM_RL_V4_ROOT"
+    elif is_v3:
+        version, prefix, root_env = "v3", "V3", "TFM_RL_V3_ROOT"
+    else:
+        version, prefix, root_env = "v2", "V2", "TFM_RL_V2_ROOT"
     root = Path(os.getenv(root_env, f"/app/{version}")).expanduser().resolve()
     paths = {
         "root": root,
@@ -82,7 +86,7 @@ def initialize_v2_runtime() -> Dict[str, str]:
                 {
                     "schema_version": f"tfm_rl_{version}.runtime.v1",
                     "created_at": datetime.now(timezone.utc).isoformat(),
-                    "fresh_weights": not is_v3,
+                    "fresh_weights": not (is_v3 or is_v4),
                     "warm_started": False,
                     "legacy_checkpoint_discovery": False,
                 },

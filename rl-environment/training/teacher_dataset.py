@@ -18,6 +18,12 @@ import numpy as np
 
 SCHEMA_VERSION = "teacher_sample.v2"
 LEGACY_SCHEMA_VERSION = "teacher_sample.v1"
+V4_SCHEMA_VERSION = "teacher_sample.v5"
+
+
+def active_schema_version() -> str:
+    from models.v4_flags import v4_enabled
+    return V4_SCHEMA_VERSION if v4_enabled() else SCHEMA_VERSION
 
 
 def load_reserved_benchmark_seeds(path: Optional[str] = None) -> set[int]:
@@ -48,14 +54,15 @@ def source_weight(source: str, confidence: float, is_forced: bool = False) -> fl
     if is_forced:
         return 0.25
     if str(source).startswith("human"):
-        return 4.0
+        from models.v4_flags import v4_enabled
+        return 1.0 if v4_enabled() else 4.0
     return 1.0 if float(confidence) >= 0.5 else 0.25
 
 
 def normalize_sample(sample: Dict[str, Any]) -> Dict[str, Any]:
     """Fill the explicit v2 provenance fields for a newly produced sample."""
     item = dict(sample)
-    if str(item.get("schema_version", "")) != SCHEMA_VERSION:
+    if str(item.get("schema_version", "")) != active_schema_version():
         raise ValueError(
             f"unsupported teacher sample schema {item.get('schema_version')!r}; "
             "legacy v1 samples require the strict annotation recovery importer"
@@ -63,9 +70,19 @@ def normalize_sample(sample: Dict[str, Any]) -> Dict[str, Any]:
     descriptors = list(item.get("action_descriptors", []) or [])
     chosen_position = int(item.get("chosen_action_position", -1))
     chosen_descriptor = descriptors[chosen_position] if 0 <= chosen_position < len(descriptors) else {}
+    probabilities = [float(value) for value in (item.get("teacher_probabilities", []) or [])]
+    target_position = int(
+        item.get(
+            "target_action_position",
+            max(range(len(probabilities)), key=probabilities.__getitem__) if probabilities else -1,
+        )
+    )
+    target_descriptor = descriptors[target_position] if 0 <= target_position < len(descriptors) else {}
     source = str(item.get("source", "") or "")
     is_forced = bool(item.get("is_forced", len(descriptors) == 1))
     item.setdefault("is_forced", is_forced)
+    item.setdefault("target_action_position", target_position)
+    item.setdefault("target_family", str(target_descriptor.get("family", "other") or "other"))
     item.setdefault("action_source", "human_annotation" if source.startswith("human") else "teacher")
     item.setdefault("selected_action_payload", dict(chosen_descriptor.get("decoded_action", {}) or {}))
     item.setdefault("server_accepted", True)
@@ -83,7 +100,7 @@ def normalize_sample(sample: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def validate_sample(sample: Dict[str, Any]) -> None:
-    if str(sample.get("schema_version", "")) != SCHEMA_VERSION:
+    if str(sample.get("schema_version", "")) != active_schema_version():
         raise ValueError("invalid teacher sample schema")
     bundle = sample.get("planner_bundle")
     if not isinstance(bundle, dict):
@@ -107,11 +124,21 @@ def validate_sample(sample: Dict[str, Any]) -> None:
     chosen_position = int(sample.get("chosen_action_position", -1))
     if not 0 <= chosen_position < action_count:
         raise ValueError("teacher chosen_action_position is outside the legal action list")
+    target_position = int(sample.get("target_action_position", -1))
+    if not 0 <= target_position < action_count:
+        raise ValueError("teacher target_action_position is outside the legal action list")
     if any(float(item) < 0.0 for item in probabilities):
         raise ValueError("teacher probabilities must be non-negative")
     total = sum(float(item) for item in probabilities)
     if not np.isfinite(total) or abs(total - 1.0) > 1e-4:
         raise ValueError("teacher probabilities must sum to one")
+    expected_target = max(range(len(probabilities)), key=lambda index: float(probabilities[index]))
+    if target_position != expected_target:
+        raise ValueError("teacher target_action_position must match the probability argmax")
+    target_family = str(sample.get("target_family", "") or "")
+    expected_family = str(descriptors[target_position].get("family", "other") or "other")
+    if target_family != expected_family:
+        raise ValueError("teacher target_family does not match the target descriptor")
     confidence = float(sample.get("confidence", -1.0))
     if not np.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
         raise ValueError("teacher confidence must be between zero and one")
@@ -162,6 +189,33 @@ def validate_sample(sample: Dict[str, Any]) -> None:
         raise ValueError("fallback teacher samples cannot enter training splits")
     if not bool(sample.get("server_accepted", False)):
         raise ValueError("server-rejected teacher samples cannot enter training splits")
+    if active_schema_version() == V4_SCHEMA_VERSION:
+        _validate_v4_sample(sample, descriptors, bundle)
+
+
+def _validate_v4_sample(sample: Dict[str, Any], descriptors: Sequence[Dict[str, Any]], bundle: Dict[str, Any]) -> None:
+    from models.action_canonical import canonical_payload_text
+    from models.card_catalog import PLANNER_SCHEMA_VERSION, get_catalog
+
+    if str(bundle.get("planner_schema_version", "") or "") != PLANNER_SCHEMA_VERSION:
+        raise ValueError("V4 teacher sample refuses a non-card-aware planner bundle")
+    if str(bundle.get("card_catalog_sha256", "") or "") != get_catalog().sha256:
+        raise ValueError("V4 teacher sample catalog hash does not match the current card catalog")
+    if int(bundle.get("unresolved_known_card_references", 1) or 0) != 0:
+        raise ValueError("unresolved known-card references")
+    keys = []
+    for descriptor in descriptors:
+        payload = descriptor.get("decoded_action")
+        if not isinstance(payload, dict):
+            raise ValueError("V4 teacher descriptor is missing its executable payload")
+        keys.append(canonical_payload_text(payload))
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate executable actions")
+    if "value_target_valid" not in sample:
+        raise ValueError("V4 teacher sample must mark whether its value target is valid")
+    source = str(sample.get("source", "") or "")
+    if not source.startswith("human") and source != "heuristic-teacher.v5":
+        raise ValueError(f"V4 requires repaired teacher labels; found {source!r}")
 
 
 class TeacherDatasetStore:
@@ -224,7 +278,7 @@ class TeacherDatasetStore:
         if len(episode_game_ids) > 1:
             raise ValueError("teacher episode contains multiple game_id values")
         for step_index, item in enumerate(items):
-            item["schema_version"] = SCHEMA_VERSION
+            item["schema_version"] = active_schema_version()
             item["episode_id"] = str(episode_id)
             item["step_index"] = int(item.get("step_index", step_index))
             item["split"] = split
@@ -264,12 +318,23 @@ class TeacherDatasetStore:
         game_splits: Dict[str, set[str]] = {}
         split_counts: Dict[str, int] = {"train": 0, "validation": 0, "test": 0}
         source_counts: Dict[str, int] = {"human": 0, "human_preference": 0, "teacher": 0}
+        source_split_counts: Dict[str, Dict[str, int]] = {
+            split: {"human": 0, "teacher": 0} for split in ("train", "validation", "test")
+        }
+        target_family_counts: Dict[str, Dict[str, int]] = {
+            split: {} for split in ("train", "validation", "test")
+        }
+        human_game_ids: Dict[str, set[str]] = {split: set() for split in ("train", "validation", "test")}
         reserved_hits: set[int] = set()
         for split in ("train", "validation", "test"):
             for item in self.iter_samples(split):
                 split_counts[split] += 1
                 source_key = "human" if str(item.get("source", "")).startswith("human") else "teacher"
                 source_counts[source_key] += 1
+                source_split_counts[split][source_key] += 1
+                if source_key == "teacher" and bool(item.get("policy_target_valid", not item.get("is_forced", False))):
+                    family = str(item.get("target_family", "other") or "other")
+                    target_family_counts[split][family] = target_family_counts[split].get(family, 0) + 1
                 if source_key == "human" and bool(item.get("policy_target_valid", not item.get("is_forced", False))):
                     source_counts["human_preference"] += 1
                 raw_seed = item.get("seed")
@@ -281,6 +346,8 @@ class TeacherDatasetStore:
                 game_id = str(item.get("game_id", "") or "")
                 if game_id:
                     game_splits.setdefault(game_id, set()).add(split)
+                    if source_key == "human":
+                        human_game_ids[split].add(game_id)
         leaking_seeds = sorted(seed for seed, splits in seed_splits.items() if len(splits) > 1)
         leaking_games = sorted(game_id for game_id, splits in game_splits.items() if len(splits) > 1)
         errors: List[str] = []
@@ -295,6 +362,9 @@ class TeacherDatasetStore:
             "errors": errors,
             "split_counts": split_counts,
             "source_counts": source_counts,
+            "source_split_counts": source_split_counts,
+            "target_family_counts": target_family_counts,
+            "human_game_ids": {split: sorted(values) for split, values in human_game_ids.items()},
             "reserved_seed_hits": sorted(reserved_hits),
             "leaking_seeds": leaking_seeds,
             "leaking_game_ids": leaking_games,
@@ -357,14 +427,18 @@ class TeacherDatasetRecorder:
             descriptors = list(action_meta.get("action_descriptors", []) or [])
             chosen_position = int(action_meta.get("chosen_action_position", 0))
             chosen_descriptor = descriptors[chosen_position] if 0 <= chosen_position < len(descriptors) else {}
+            target_position = max(range(len(probabilities)), key=probabilities.__getitem__)
+            target_descriptor = descriptors[target_position] if 0 <= target_position < len(descriptors) else {}
             sample = {
-                    "schema_version": SCHEMA_VERSION,
+                    "schema_version": active_schema_version(),
                     "sample_id": uuid.uuid4().hex,
                     "planner_bundle": planner_bundle,
                     "action_descriptors": descriptors,
                     "action_indices": [int(row.get("action_index", -1)) for row in score_rows],
                     "teacher_probabilities": probabilities,
                     "chosen_action_position": int(action_meta.get("chosen_action_position", 0)),
+                    "target_action_position": int(target_position),
+                    "target_family": str(target_descriptor.get("family", "other") or "other"),
                     "phase_index": int(action_meta.get("phase_index", 0)),
                     "confidence": confidence,
                     "is_forced": is_forced,

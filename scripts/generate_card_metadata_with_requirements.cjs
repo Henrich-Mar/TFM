@@ -69,7 +69,10 @@ function collectRequirementMap() {
             continue;
           }
           const requirements = Array.isArray(instance.requirements) ? cloneJson(instance.requirements) : [];
-          requirementMap[name] = requirements;
+          requirementMap[name] = {
+            requirements,
+            behavior: exportStructuredBehavior(instance),
+          };
         } catch (error) {
           process.stderr.write(`Skip requirement export for card: ${error}\n`);
         }
@@ -77,6 +80,25 @@ function collectRequirementMap() {
     }
   }
   return requirementMap;
+}
+
+function exportStructuredBehavior(instance) {
+  const behavior = {};
+  if (!instance || typeof instance !== "object") {
+    return behavior;
+  }
+  for (const key of ["behavior", "action"]) {
+    const value = instance[key];
+    if (!value || typeof value !== "object") {
+      continue;
+    }
+    try {
+      behavior[key === "behavior" ? "immediate" : "action"] = cloneJson(value);
+    } catch (error) {
+      // Non-serializable game objects fall back to description parsing.
+    }
+  }
+  return behavior;
 }
 
 function augmentOutput(requirementMap) {
@@ -89,7 +111,11 @@ function augmentOutput(requirementMap) {
     if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
       continue;
     }
-    meta.requirements = Array.isArray(requirementMap[name]) ? requirementMap[name] : [];
+    const exported = requirementMap[name] || {};
+    meta.requirements = Array.isArray(exported.requirements) ? exported.requirements : [];
+    if (exported.behavior && Object.keys(exported.behavior).length > 0) {
+      meta.behavior = exported.behavior;
+    }
   }
 
   fs.writeFileSync(OUTPUT_PATH, JSON.stringify(payload, null, 2), {encoding: "utf8"});

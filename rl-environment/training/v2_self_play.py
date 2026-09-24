@@ -54,9 +54,20 @@ def _random(agent_id: str, seed: int) -> RLAgent:
     return agent
 
 
+def _experiment_version() -> str:
+    if str(os.getenv("TFM_RL_V4", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        return "v4"
+    if str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        return "v3"
+    return "v2"
+
+
 def _load_stage_options(stage: int) -> Dict:
-    version = "v3" if str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"} else "v2"
-    path = Path(__file__).resolve().parents[1] / f"game_options.{version}_stage{int(stage)}.json"
+    version = _experiment_version()
+    root = Path(__file__).resolve().parents[1]
+    path = root / f"game_options.{version}_stage{int(stage)}.json"
+    if version == "v4" and not path.is_file():
+        path = root / f"game_options.v3_stage{int(stage)}.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -78,10 +89,14 @@ class V2SelfPlayRunner:
         initial_stage: Optional[int] = None,
     ) -> None:
         self.paths = initialize_v2_runtime()
-        self.is_v3 = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
-        self.version = "v3" if self.is_v3 else "v2"
+        self.is_v4 = _experiment_version() == "v4"
+        self.is_v3 = self.is_v4 or str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        self.version = _experiment_version()
+        if self.is_v4:
+            from training.v4_gates import assert_ppo_unlocked
+            assert_ppo_unlocked()
         # Subsequent benchmark subprocess-equivalent calls are intentional resumes.
-        os.environ["V3_ALLOW_RESUME" if self.is_v3 else "V2_ALLOW_RESUME"] = "1"
+        os.environ[f"{self.version.upper()}_ALLOW_RESUME"] = "1"
         self.root = Path(root).expanduser().resolve()
         if self.root != Path(self.paths["root"]).resolve():
             raise RuntimeError(f"--root must exactly match TFM_RL_{self.version.upper()}_ROOT")
@@ -189,6 +204,8 @@ class V2SelfPlayRunner:
         ] if self.history else []
 
     def _current_v3_feature_scale(self) -> float:
+        if getattr(self, "is_v4", False):
+            return 1.0
         if not getattr(self, "is_v3", False):
             return 0.0
         try:

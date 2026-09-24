@@ -14,8 +14,10 @@ from .action_decoder import (
     _card_tags,
     _card_vp,
     _find_prompt_card,
+    _is_paid_card_purchase_prompt,
     _startup_plan_contents,
 )
+from .v4_flags import v4_enabled
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,49 @@ class HeuristicTeacherPolicy:
             ])
         return score, reasons
 
+    def _score_card_subset(
+        self,
+        state: Dict[str, Any],
+        descriptor: Dict[str, Any],
+    ) -> tuple[float, List[str], bool]:
+        """Score a draft or purchase by card quality, with no catalog-position bonus."""
+        from scoring import _card_quality
+
+        waiting = state.get("waitingFor", {}) or {}
+        player = state.get("thisPlayer", {}) or {}
+        decoded = descriptor.get("decoded_action", {}) or {}
+        names = []
+        if isinstance(decoded, dict):
+            for item in decoded.get("cards", []) or []:
+                if isinstance(item, str) and item.strip():
+                    names.append(item.strip())
+                elif isinstance(item, dict) and str(item.get("name", "") or "").strip():
+                    names.append(str(item.get("name")).strip())
+        prompt_cards = [card for card in (waiting.get("cards", []) or []) if isinstance(card, dict)]
+        by_name = {str(card.get("name", "") or "").strip(): card for card in prompt_cards}
+        selected = []
+        for name in names:
+            card = by_name.get(name) or _find_prompt_card(waiting, name)
+            if not card:
+                raise ValueError(f"draft teacher could not resolve selected card {name!r}")
+            selected.append(card)
+        paid = _is_paid_card_purchase_prompt(waiting)
+        card_cost = self._safe_float(player.get("cardCost", 3), 3.0) if paid else 0.0
+        threshold = 0.0 if not paid else min(0.90, 0.60 + 0.05 * card_cost)
+        score = 0.0
+        for card in selected:
+            score += float(_card_quality(card, player)) - threshold
+        fee = card_cost * float(len(selected))
+        remaining = max(0.0, self._safe_float(player.get("megaCredits", 0)) - fee)
+        score -= 0.02 * max(0.0, 14.0 - remaining)
+        reasons = [
+            f"cards={len(selected)}",
+            f"threshold={threshold:.2f}",
+            f"remaining-mc={remaining:.0f}",
+            "card-quality",
+        ]
+        return score, reasons, False
+
     def _score_startup_plan(
         self,
         state: Dict[str, Any],
@@ -222,6 +267,90 @@ class HeuristicTeacherPolicy:
             if name == target:
                 return award
         return {}
+
+    def _find_milestone(self, game: Dict[str, Any], milestone_name: str) -> Dict[str, Any]:
+        target = str(milestone_name or "").strip().lower()
+        if not target:
+            return {}
+        for milestone in game.get("milestones", []) or []:
+            if not isinstance(milestone, dict):
+                continue
+            name = str(milestone.get("name", milestone.get("title", "")) or "").strip().lower()
+            if name == target:
+                return milestone
+        return {}
+
+    @staticmethod
+    def _row_identity(row: Dict[str, Any]) -> tuple[str, str]:
+        color = str(row.get("playerColor", row.get("color", "")) or "").strip().lower()
+        name = str(row.get("playerName", row.get("name", "")) or "").strip().lower()
+        return color, name
+
+    def _milestone_standing(
+        self,
+        state: Dict[str, Any],
+        milestone: Dict[str, Any],
+    ) -> tuple[float, float]:
+        player = state.get("thisPlayer", {}) or {}
+        own_color = str(player.get("color", "") or "").strip().lower()
+        own_name = str(player.get("name", "") or "").strip().lower()
+        players = [row for row in (state.get("players", []) or []) if isinstance(row, dict)]
+        if not players:
+            players = [row for row in ((state.get("game", {}) or {}).get("players", []) or []) if isinstance(row, dict)]
+
+        own_score = 0.0
+        opponent_best = 0.0
+        for index, row in enumerate(milestone.get("scores", []) or []):
+            if not isinstance(row, dict):
+                continue
+            color, name = self._row_identity(row)
+            if not color and not name and index < len(players):
+                color, name = self._row_identity(players[index])
+            score = self._safe_float(row.get("playerScore", row.get("score", 0)))
+            if (own_color and color == own_color) or (own_name and name == own_name):
+                own_score = score
+            else:
+                opponent_best = max(opponent_best, score)
+        return own_score, opponent_best
+
+    def _score_claim_milestone(
+        self,
+        state: Dict[str, Any],
+        descriptor: Dict[str, Any],
+    ) -> tuple[float, List[str], bool]:
+        game = state.get("game", {}) or {}
+        player = state.get("thisPlayer", {}) or {}
+        name = str(descriptor.get("milestone_name", "") or descriptor.get("label", "") or "").strip()
+        if not name or name.lower() in {"claim milestone", "claim a milestone", "milestone"}:
+            raise ValueError("milestone teacher requires an exact milestone identity")
+        milestone = self._find_milestone(game, name)
+        if not milestone:
+            raise ValueError(f"milestone teacher could not resolve {name!r}")
+        if milestone.get("playerName") or milestone.get("playerColor") or milestone.get("color"):
+            return -3.0, [f"milestone={name}", "already claimed"], False
+
+        own_score, opponent_best = self._milestone_standing(state, milestone)
+        generation = max(1.0, self._safe_float(game.get("generation", 1), 1.0))
+        phase = max(0.0, min(generation / 14.0, 1.0))
+        deny_risk = max(0.0, min(opponent_best / 3.0, 1.0))
+        claim_surplus = max(0.0, min((own_score - 3.0) / 3.0, 1.0))
+        waiting = state.get("waitingFor", {}) or {}
+        effective_cost = self._safe_float(
+            descriptor.get("milestone_cost", waiting.get("cost", player.get("milestoneCost", 8.0))),
+            8.0,
+        )
+        mc = self._safe_float(player.get("megaCredits", 0.0))
+        score = 2.9 + (0.45 * phase) + (0.55 * deny_risk) + (0.15 * claim_surplus) - (0.05 * effective_cost)
+        if mc < effective_cost:
+            score -= 2.0 + min(1.0, (effective_cost - mc) / 8.0)
+        reasons = [
+            f"milestone={name}",
+            f"own={own_score:.1f}",
+            f"opp={opponent_best:.1f}",
+            f"deny={deny_risk:.2f}",
+            f"cost={effective_cost:.0f}",
+        ]
+        return score, reasons, False
 
     def _award_standing(
         self,
@@ -385,12 +514,14 @@ class HeuristicTeacherPolicy:
         if family == "startup_plan":
             return self._score_startup_plan(state, descriptor)
         if family in {"card_subset", "card_prompt"}:
+            if v4_enabled():
+                return self._score_card_subset(state, descriptor)
             decoded = descriptor.get("decoded_action", {}) or {}
             card_count = len(decoded.get("cards", []) or []) if isinstance(decoded, dict) else 0
             existing_rank_bonus = max(0.0, 1.5 - (0.02 * self._safe_float(descriptor.get("action_position", 0))))
             return 0.8 + 0.08 * card_count + existing_rank_bonus, ["existing ranked startup/subset heuristic"], False
         if family == "claim_milestone":
-            return 3.6, ["secure five VP before opponents"], False
+            return self._score_claim_milestone(state, descriptor)
         if family == "fund_award":
             return self._score_fund_award(state, descriptor)
         if family == "convert_plants":
@@ -487,7 +618,7 @@ class HeuristicTeacherPolicy:
             chosen_action_index=int(actions[chosen].action_index),
             actions=actions,
             confidence=float(confidence),
-            policy_version="heuristic-teacher.v1",
+            policy_version="heuristic-teacher.v5" if v4_enabled() else "heuristic-teacher.v1",
             used_fallback=bool(fallback),
             is_forced=bool(is_forced),
         )

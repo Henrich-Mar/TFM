@@ -152,6 +152,7 @@ async def trace(args: argparse.Namespace) -> Dict[str, Any]:
         "candidate_seat": args.candidate_seat,
         "completed": bool(result.completed),
         "candidate_result": candidate_result,
+        "candidate_behavior": candidate.get_behavior_stats(),
         "final_players": result.players,
         "decision_count": len(events),
         "families": dict(by_family),

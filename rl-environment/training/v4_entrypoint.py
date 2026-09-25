@@ -16,14 +16,15 @@ def main() -> None:
         "status": "initialized",
         "message": (
             "TFM RL V4 is isolated. Warm-start from /app/v2/pretrain-h512/bc_best.pth, "
-            "collect repaired teacher_sample.v5 decisions with target-family coverage, re-encode human "
-            "events with two held-out games, run the adaptive gate-aware pretrain, then execute the "
-            "checkpoint-bound smoke test. PPO remains blocked until every held-out gate passes."
+            "first prove the reachability teacher on 20 seat-rotated stage-1 games, then collect "
+            "new teacher_sample.v5 decisions and retain eight training and two held-out human games. "
+            "Fine-tune, run the checkpoint-bound smoke test and a 20-game strength evaluation. "
+            "PPO remains blocked until the strength and integrity checks pass."
         ),
         "paths": paths,
         "pretrain": {
             "optimizer": "AdamW",
-            "learning_rate": 1e-4,
+            "learning_rate": 1e-5,
             "batch_size": 128,
             "epochs_max": 10,
             "early_stopping_patience": 2,

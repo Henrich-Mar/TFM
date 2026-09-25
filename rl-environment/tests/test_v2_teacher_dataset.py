@@ -10,8 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from models.agent import generation_is_runaway
 from training.teacher_dataset import (
     SCHEMA_VERSION,
+    TeacherDatasetRecorder,
     TeacherDatasetStore,
     load_reserved_benchmark_seeds,
     source_weight,
@@ -92,6 +94,36 @@ def test_teacher_shard_write_is_atomic(tmp_path: Path) -> None:
     target = store.append_episode("atomic", [_sample()])
     assert target.is_file()
     assert not list(target.parent.glob("*.tmp"))
+
+
+def test_generation_cap_discards_incomplete_episode(tmp_path: Path) -> None:
+    assert generation_is_runaway(30, limit=30) is False
+    assert generation_is_runaway(31, limit=30) is True
+    store = TeacherDatasetStore(str(tmp_path))
+    recorder = TeacherDatasetRecorder(store, seed=960000)
+    recorder.record_decision(
+        "runaway-game",
+        "teacher-v1-seat-0",
+        {},
+        {
+            "external_policy": {
+                "scores": [{"probability": 1.0, "action_index": 1}],
+                "confidence": 1.0,
+            },
+            "action_descriptors": [{
+                "action_index": 1,
+                "family": "standard_project",
+                "decoded_action": {"type": "standardProject", "project": "Asteroid"},
+            }],
+            "chosen_action_position": 0,
+            "server_accepted": True,
+        },
+    )
+    assert recorder._pending
+    written = recorder.finish_episode("runaway-game", "teacher-v1-seat-0", {"completed": False})
+    assert written is None
+    assert recorder._pending == {}
+    assert list(tmp_path.rglob("episode_*.pkl.gz")) == []
 
 
 def test_human_and_low_confidence_weights() -> None:

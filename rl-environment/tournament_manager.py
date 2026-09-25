@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import uuid
 
-from models.agent import RLAgent
+from models.agent import RLAgent, RunawayGenerationError
 from game_interface import GameServerCluster, GameInstance
 
 logger = logging.getLogger(__name__)
@@ -302,6 +302,7 @@ class TournamentManager:
         game_instance: Optional[GameInstance] = None
         start_time = datetime.now()
         seat_player_names = self._build_seat_player_names(agents)
+        runaway_server = None
         
         try:
             fast_mode_env = str(os.getenv('TM_FAST_MODE_OPTION', '1')).strip().lower()
@@ -644,6 +645,9 @@ class TournamentManager:
             with suppress(asyncio.CancelledError, Exception):
                 if "agent_group" in locals():
                     await agent_group
+            runaway = _find_runaway(e)
+            if runaway is not None and game_instance is not None:
+                runaway_server = game_instance.server
             logger.error(f"Game {actual_game_id} failed: {e}")
             return GameResult(
                 game_id=actual_game_id,
@@ -661,7 +665,8 @@ class TournamentManager:
                 } for agent in agents],
                 duration_seconds=(datetime.now() - start_time).total_seconds(),
                 completed=False,
-                error_message=str(e),
+                error_message=str(runaway) if runaway is not None else str(e),
+                game_generation=runaway.generation if runaway is not None else None,
                 end_screens=[]
             )
         
@@ -672,7 +677,12 @@ class TournamentManager:
                     await game_instance.cleanup()
             except:
                 pass
-    
+            if runaway_server is not None and game_instance is not None and game_instance.cluster is not None:
+                try:
+                    await game_instance.cluster.recycle_server(runaway_server)
+                except Exception:
+                    logger.warning("Runaway server recycle failed", exc_info=True)
+
     def _game_result_to_dict(self, game_result: GameResult) -> Dict[str, Any]:
         """Convert GameResult to dictionary"""
         return {
@@ -720,3 +730,14 @@ class TournamentManager:
             "failed_games": int(failed_games),
             "completion_rate": completion_rate,
         }
+
+
+def _find_runaway(exc: BaseException) -> Optional[RunawayGenerationError]:
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, RunawayGenerationError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None

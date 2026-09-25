@@ -214,7 +214,7 @@ def _validate_v4_sample(sample: Dict[str, Any], descriptors: Sequence[Dict[str, 
     if "value_target_valid" not in sample:
         raise ValueError("V4 teacher sample must mark whether its value target is valid")
     source = str(sample.get("source", "") or "")
-    if not source.startswith("human") and source != "heuristic-teacher.v5":
+    if not source.startswith("human") and source not in {"heuristic-teacher.v5", "heuristic-teacher.v6"}:
         raise ValueError(f"V4 requires repaired teacher labels; found {source!r}")
 
 

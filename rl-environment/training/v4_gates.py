@@ -115,28 +115,46 @@ def validation_candidate_status(
     )
 
 
+def _strength_gate_reasons(report: Mapping[str, Any]) -> List[str]:
+    """PPO unlocks from a finished-game strength eval, not per-decision accuracy."""
+    strength = report.get("strength") or {}
+    if not isinstance(strength, Mapping) or not strength:
+        return ["strength report is missing"]
+    reasons: List[str] = []
+    if strength.get("finished_games") is None:
+        finished = int(strength.get("completed") or 0)
+    else:
+        finished = int(strength.get("finished_games") or 0)
+    mean_rank = strength.get("mean_rank")
+    runaways = strength.get("runaway_games")
+    if finished < 20:
+        reasons.append(f"strength eval finished {finished} games; requires 20")
+    if mean_rank is None or float(mean_rank) > 2.55:
+        shown = "missing" if mean_rank is None else f"{float(mean_rank):.3f}"
+        reasons.append(f"strength mean_rank {shown} is above 2.55")
+    if runaways is None or int(runaways) > 1:
+        shown = "missing" if runaways is None else str(int(runaways))
+        reasons.append(f"strength runaway_games {shown} is above 1")
+    return reasons
+
+
+HUMAN_BEATING_GAMES = 40
+HUMAN_BEATING_RANK_UPPER = 2.5
+
+
+def beats_humans(finished_games: int, mean_rank_upper_95: float | None) -> bool:
+    """The only human-beating result: 40 finished seat-rotated games, rank CI below 2.5.
+
+    Ten annotated games and held-out decision labels are not this test.
+    """
+    if int(finished_games) < HUMAN_BEATING_GAMES or mean_rank_upper_95 is None:
+        return False
+    return float(mean_rank_upper_95) < HUMAN_BEATING_RANK_UPPER
+
+
 def evaluate_ppo_gate(report: Mapping[str, Any]) -> Tuple[bool, List[str]]:
     reasons: List[str] = []
-    if report.get("selected_validation_gate_passed") is not True:
-        reasons.append("selected checkpoint did not clear every validation gate")
-    placement = report.get("placement_gate") or {}
-    placement_mode = str(placement.get("mode", "top1") or "top1")
-    if placement_mode == "top3" and not bool(placement.get("diagnostic_qualified", False)):
-        reasons.append("select_space top-3 mode lacks a qualifying saved-checkpoint diagnostic")
-    try:
-        teacher_status = _teacher_gate_status(report.get("test") or {}, placement_mode)
-        reasons.extend(teacher_status["reasons"])
-    except ValueError as exc:
-        reasons.append(str(exc))
-
-    human = report.get("human_evaluation") or {}
-    if float(human.get("top3", 0.0) or 0.0) < 0.80:
-        reasons.append("held-out human top-3 is below 80%")
-    held_out_games = sorted({str(value) for value in (human.get("held_out_games") or []) if str(value)})
-    if len(held_out_games) != 2:
-        reasons.append("human evaluation must contain exactly two held-out source games")
-    if int(human.get("samples", 0) or 0) <= 0:
-        reasons.append("held-out human evaluation has no decisions")
+    reasons.extend(_strength_gate_reasons(report))
 
     if report.get("duplicate_executable_actions") != 0:
         reasons.append("duplicate executable actions remain")

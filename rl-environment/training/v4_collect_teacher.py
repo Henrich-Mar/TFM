@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from training.v2_collect_teacher import collect
+from training.v4_teacher_ab import assert_teacher_ab_allows_collection
 
 
 def pin_stage_options(stage: int) -> str:
@@ -34,7 +35,14 @@ def main() -> None:
     parser.add_argument("--games", type=int, default=100)
     parser.add_argument("--stage", type=int, choices=(0, 1), default=0)
     parser.add_argument("--seed-start", type=int, default=920040)
+    parser.add_argument(
+        "--teacher-ab",
+        default=os.getenv("V4_TEACHER_AB_REPORT", "/app/v4/diagnostics/teacher_ab.json"),
+        help="Stage 1 collection requires a reachability-teacher A/B verdict of collect",
+    )
     args = parser.parse_args()
+    if int(args.stage) == 1:
+        assert_teacher_ab_allows_collection(args.teacher_ab)
     options = pin_stage_options(args.stage)
     print(f"[teacher] V4 options={options} dataset={args.dataset}", flush=True)
     print(

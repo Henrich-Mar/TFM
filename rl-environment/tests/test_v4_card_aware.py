@@ -571,6 +571,7 @@ def test_ppo_stays_blocked_until_every_held_out_gate_passes() -> None:
         "human_evaluation": {"top3": 0.80, "samples": 20, "held_out_games": ["g1", "g2"]},
         "duplicate_executable_actions": 0,
         "unresolved_known_card_references": 0,
+        "strength": {"finished_games": 20, "mean_rank": 2.50, "runaway_games": 0},
         "smoke": {"server_rejected_actions": None},
     }
     passed, reasons = evaluate_ppo_gate(report)
@@ -594,9 +595,16 @@ def test_ppo_stays_blocked_until_every_held_out_gate_passes() -> None:
     assert not passed
     assert any("does not match" in reason for reason in reasons)
     report["smoke"]["checkpoint_sha256"] = checkpoint_sha
+    report["test"]["family_top1"]["claim_milestone"] = 0.50
+    report["test"]["family_top1"]["card_subset"] = 0.50
+    report["human_evaluation"]["top3"] = 0.10
     passed, reasons = evaluate_ppo_gate(report)
     assert passed
     assert reasons == []
+    report["strength"] = {"finished_games": 20, "mean_rank": 2.80, "runaway_games": 0}
+    passed, reasons = evaluate_ppo_gate(report)
+    assert not passed
+    assert any("mean_rank" in reason for reason in reasons)
 
 
 def test_family_metrics_use_teacher_argmax_not_sampled_action() -> None:
@@ -807,6 +815,52 @@ def test_v4_epoch11_reinit_changes_only_action_tail_columns(tmp_path: Path, monk
     with pytest.raises(CardCatalogError, match="incompatible checkpoint"):
         torch.save({"experiment_version": "tfm-rl-v2", "network_state_dict": source.state_dict()}, path)
         load_v4_init_weights(fresh, str(path))
+
+
+def test_v4_keep_action_tail_preserves_projection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TFM_RL_V4", "1")
+    monkeypatch.setenv("TFM_RL_V3", "1")
+    config = AgentConfig(
+        hidden_size=64,
+        recurrent_size=16,
+        transformer_heads=4,
+        transformer_layers=1,
+        planner_token_dim=64,
+    )
+    source = TerraformingMarsNetwork(config)
+    with torch.no_grad():
+        source.action_projection.weight.fill_(0.9)
+        source.action_projection.bias.fill_(0.3)
+    path = tmp_path / "bc_best.pth"
+    torch.save({
+        "experiment_version": "tfm-rl-v4",
+        "card_catalog_sha256": get_catalog().sha256,
+        "network_state_dict": source.state_dict(),
+    }, path)
+    fresh = TerraformingMarsNetwork(config)
+    from training.v4_pretrain import load_v4_init_weights
+    load_v4_init_weights(fresh, str(path), reinit_action_tail=False)
+    assert torch.equal(fresh.action_projection.weight, source.action_projection.weight)
+    assert torch.equal(fresh.action_projection.bias, source.action_projection.bias)
+
+
+def test_v4_pretrain_keep_action_tail_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TFM_RL_V4_ROOT", str(tmp_path / "v4root"))
+    captured = {}
+
+    def fake_pretrain(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"ppo_gate_passed": False}
+
+    monkeypatch.setattr("training.v4_pretrain.pretrain", fake_pretrain)
+    from training.v4_pretrain import pretrain_v4
+    pretrain_v4(
+        str(tmp_path / "data"),
+        str(tmp_path / "out"),
+        init_checkpoint=str(tmp_path / "bc_best.pth"),
+        reinit_action_tail=False,
+    )
+    assert captured["reinit_action_tail"] is False
 
 
 def test_v4_collection_pins_base_game_options(monkeypatch: pytest.MonkeyPatch) -> None:

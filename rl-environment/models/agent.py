@@ -73,6 +73,33 @@ from debug_decision_snapshot import (
 logger = logging.getLogger(__name__)
 
 
+def runaway_generation_limit() -> int:
+    """Games past this in-game generation are discarded as runaways."""
+    try:
+        return max(1, int(os.getenv("TFM_RL_MAX_GENERATION", "30")))
+    except (TypeError, ValueError):
+        return 30
+
+
+def generation_is_runaway(generation: int, limit: Optional[int] = None) -> bool:
+    """True once the game has moved past the generation cap. Generation 30 is still legal."""
+    cap = runaway_generation_limit() if limit is None else int(limit)
+    return int(generation) > int(cap)
+
+
+class RunawayGenerationError(RuntimeError):
+    """The game kept going after the generation cap and must not be trained on."""
+
+    def __init__(self, generation: int, limit: int, last_standard_project: Optional[str] = None):
+        self.generation = int(generation)
+        self.limit = int(limit)
+        self.last_standard_project = last_standard_project
+        project = last_standard_project or "none"
+        super().__init__(
+            f"runaway generation {self.generation} exceeds {self.limit}; last standard project={project}"
+        )
+
+
 class ActionPipelineError(RuntimeError):
     """Base error for failures that must not be repaired with another action."""
 
@@ -2022,6 +2049,23 @@ class RLAgent:
                 # Check if game is over
                 if player_state.get('game', {}).get('phase') == 'end':
                     break
+
+                game_view = player_state.get('game') or {}
+                try:
+                    generation = int(game_view.get('generation') or 0)
+                except (TypeError, ValueError):
+                    generation = 0
+                generation_limit = runaway_generation_limit()
+                if generation_is_runaway(generation, generation_limit):
+                    last_project = getattr(self, "_last_standard_project_name", None)
+                    logger.error(
+                        "Runaway game for agent %s at generation %d (limit %d); last standard project=%s",
+                        self.id[:8],
+                        generation,
+                        generation_limit,
+                        last_project or "none",
+                    )
+                    raise RunawayGenerationError(generation, generation_limit, last_project)
                 
                 # If we are waiting for input, make a move.
                 # Otherwise, we wait for our turn.
@@ -3554,6 +3598,7 @@ class RLAgent:
             if project_name:
                 project_counts = self.decision_stats.setdefault('standard_project_counts', {})
                 project_counts[project_name] = int(project_counts.get(project_name, 0)) + 1
+                self._last_standard_project_name = project_name
 
         # Track project card plays and resource spend, including nested OR/AND payloads.
         if not isinstance(action_input, dict):

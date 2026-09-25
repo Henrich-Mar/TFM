@@ -1370,7 +1370,63 @@ class GameServerCluster:
                 return bool(all(accepted))
         logger.warning("Timed out waiting for RL servers after idle recycle")
         return False
-    
+
+    async def recycle_server(self, server: GameServer) -> bool:
+        """Restart one game server so an unfinished runaway game leaves memory.
+
+        Idle cluster recycle stays off. Only the server that hosted the runaway
+        is restarted, and only after that game's slot has been released.
+        """
+        if not self.rl_control_token:
+            logger.warning("Skipping runaway server recycle: RL_CONTROL_TOKEN is not configured")
+            return False
+        session = self.ensure_session(timeout_total=None)
+        headers = {"x-rl-control-token": self.rl_control_token}
+        request_timeout = aiohttp.ClientTimeout(total=float(self.rl_recycle_request_timeout_sec))
+        endpoint = f"http://{server.host}:{server.port}/api/rl/recycle"
+        key = self._server_key(server)
+        async with self._recycle_lock:
+            async with self._server_slot_lock:
+                server.healthy = False
+            accepted = False
+            try:
+                async with session.post(endpoint, headers=headers, timeout=request_timeout) as response:
+                    await response.read()
+                    accepted = response.status == 202
+                    if not accepted:
+                        logger.warning(
+                            "Runaway recycle rejected by %s with HTTP %s",
+                            key,
+                            response.status,
+                        )
+                        if response.status == 404:
+                            server.healthy = True
+                            return False
+            except Exception as exc:
+                logger.warning(
+                    "Runaway recycle request to %s ended with %s; waiting for restart",
+                    key,
+                    exc,
+                )
+                accepted = True
+            deadline = asyncio.get_running_loop().time() + float(self.rl_recycle_ready_timeout_sec)
+            health_timeout = aiohttp.ClientTimeout(total=max(0.5, float(self.server_health_timeout_sec)))
+            while asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.5)
+                try:
+                    async with session.get(
+                        f"http://{server.host}:{server.port}/",
+                        timeout=health_timeout,
+                    ) as response:
+                        if response.status == 200:
+                            server.healthy = True
+                            logger.info("Server %s is healthy after runaway recycle", key)
+                            return True
+                except Exception:
+                    continue
+            logger.warning("Timed out waiting for %s after runaway recycle", key)
+            return accepted
+
     def _get_best_server(self) -> GameServer:
         """Get the server with the least load"""
         healthy_servers = [s for s in self.servers if s.healthy]

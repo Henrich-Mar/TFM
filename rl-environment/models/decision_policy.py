@@ -111,10 +111,32 @@ class HeuristicTeacherPolicy:
         "sell_patents", "pass", "card_prompt", "other",
     }
 
-    def __init__(self, seed: int = 0, temperature: float = 0.18, sample: bool = True) -> None:
+    _MILESTONE_TRACKS = {
+        "builder": ("building_tags", 8.0, 2.0),
+        "gardener": ("greenery", 3.0, 1.0),
+        "mayor": ("city", 3.0, 1.0),
+        "planner": ("cards_in_play", 16.0, 2.0),
+        "terraformer": ("tr", 35.0, 3.0),
+    }
+    _AWARD_TRACKS = {
+        "landlord": ("tiles", 1.0),
+        "banker": ("mc_production", 2.0),
+        "scientist": ("science_tags", 2.0),
+        "thermalist": ("heat", 2.0),
+        "miner": ("miner", 2.0),
+    }
+
+    def __init__(
+        self,
+        seed: int = 0,
+        temperature: float = 0.18,
+        sample: bool = True,
+        reachability: bool = True,
+    ) -> None:
         self.rng = random.Random(int(seed))
         self.temperature = max(1e-4, float(temperature))
         self.sample = bool(sample)
+        self.reachability = bool(reachability)
         self.decisions = 0
         self.fallbacks = 0
         self._card_ranker = StateEncoder()
@@ -130,6 +152,150 @@ class HeuristicTeacherPolicy:
             return float(value)
         except Exception:
             return float(default)
+
+    @staticmethod
+    def _track_taken(row: Dict[str, Any]) -> bool:
+        return bool(
+            row.get("playerName")
+            or row.get("playerColor")
+            or row.get("color")
+            or row.get("funded_by")
+        )
+
+    def _card_record(self, name: str, card: Dict[str, Any]) -> Dict[str, Any]:
+        cache = getattr(self._card_ranker, "card_metadata_by_name", None) or {}
+        meta = dict(cache.get(name) or {}) if name else {}
+        if not meta:
+            tags = card.get("tags")
+            meta = {
+                "tags": tags if isinstance(tags, list) else [],
+                "description": card.get("description") or "",
+                "cardType": card.get("cardType") or card.get("type") or "",
+            }
+        elif not meta.get("description") and card.get("description"):
+            meta["description"] = card.get("description")
+        return meta
+
+    def _tag_count(self, name: str, card: Dict[str, Any], needle: str) -> float:
+        meta = self._card_record(name, card)
+        tags = meta.get("tags")
+        if isinstance(tags, list) and tags:
+            return float(sum(1 for tag in tags if needle in str(tag).lower()))
+        raw = card.get("tags")
+        if isinstance(raw, dict):
+            return float(sum(1 for key, present in raw.items() if present and needle in str(key).lower()))
+        if isinstance(raw, list):
+            return float(sum(1 for tag in raw if needle in str(tag).lower()))
+        return 0.0
+
+    def _card_track_delta(self, name: str, card: Dict[str, Any], *, include_planner: bool) -> Dict[str, float]:
+        from .card_catalog import resolve_behavior
+
+        meta = self._card_record(name, card)
+        immediate = (resolve_behavior(meta).get("immediate") or {})
+        global_params = immediate.get("global") or {}
+        production = immediate.get("production") or {}
+        stock = immediate.get("stock") or {}
+        cities = self._safe_float(immediate.get("place_city"))
+        greeneries = self._safe_float(immediate.get("place_greenery"))
+        oceans = self._safe_float(global_params.get("oceans"))
+        temperature = self._safe_float(global_params.get("temperature"))
+        oxygen = self._safe_float(global_params.get("oxygen"))
+        card_type = str(meta.get("cardType") or meta.get("type") or card.get("cardType") or card.get("type") or "")
+        is_event = "event" in card_type.lower()
+        return {
+            "building_tags": self._tag_count(name, card, "building"),
+            "science_tags": self._tag_count(name, card, "science"),
+            "greenery": greeneries,
+            "city": cities,
+            "cards_in_play": 0.0 if (is_event or not include_planner) else 1.0,
+            "tr": temperature + oxygen + oceans + greeneries,
+            "tiles": cities + greeneries + oceans,
+            "mc_production": self._safe_float(production.get("megacredits")),
+            "heat": self._safe_float(stock.get("heat")),
+            "miner": self._safe_float(stock.get("steel")) + self._safe_float(stock.get("titanium")),
+        }
+
+    @staticmethod
+    def _standard_project_delta(label: str) -> Dict[str, float]:
+        text = str(label or "").lower()
+        delta = {
+            "building_tags": 0.0, "science_tags": 0.0, "greenery": 0.0, "city": 0.0,
+            "cards_in_play": 0.0, "tr": 0.0, "tiles": 0.0, "mc_production": 0.0,
+            "heat": 0.0, "miner": 0.0,
+        }
+        if "greenery" in text:
+            delta["greenery"] = 1.0
+            delta["tiles"] = 1.0
+            delta["tr"] = 1.0
+        elif "city" in text:
+            delta["city"] = 1.0
+            delta["tiles"] = 1.0
+        elif "asteroid" in text:
+            delta["tr"] = 1.0
+        elif "aquifer" in text or "ocean" in text:
+            delta["tr"] = 1.0
+            delta["tiles"] = 1.0
+        return delta
+
+    def _reachability_bonus(
+        self,
+        state: Dict[str, Any],
+        delta: Dict[str, float],
+    ) -> tuple[float, List[str]]:
+        if not self.reachability:
+            return 0.0, []
+        game = state.get("game", {}) or {}
+        generation = max(1.0, self._safe_float(game.get("generation", 1), 1.0))
+        generations_left = max(0.0, 14.0 - generation)
+        milestones = [row for row in (game.get("milestones") or []) if isinstance(row, dict)]
+        awards = [row for row in (game.get("awards") or []) if isinstance(row, dict)]
+        claimed = sum(1 for row in milestones if self._track_taken(row))
+        funded = sum(1 for row in awards if self._track_taken(row))
+        total = 0.0
+        reasons: List[str] = []
+        if claimed < 3:
+            for milestone in milestones:
+                key = str(milestone.get("name", "") or "").strip().lower()
+                spec = self._MILESTONE_TRACKS.get(key)
+                if spec is None or self._track_taken(milestone):
+                    continue
+                counter, threshold, budget = spec
+                step = self._safe_float(delta.get(counter))
+                if step <= 0.0:
+                    continue
+                own_score, _opponent = self._milestone_standing(state, milestone)
+                gap = threshold - own_score
+                if gap <= 0.0 or gap > generations_left * budget:
+                    continue
+                progress = own_score / threshold
+                piece = min(0.8, 0.35 * 5.0 * progress / gap * step)
+                total += piece
+                reasons.append(f"reach-{key}={piece:.2f}")
+        if funded < 3:
+            player = state.get("thisPlayer", {}) or {}
+            for award in awards:
+                key = str(award.get("name", "") or "").strip().lower()
+                spec = self._AWARD_TRACKS.get(key)
+                if spec is None or self._track_taken(award):
+                    continue
+                counter, budget = spec
+                step = self._safe_float(delta.get(counter))
+                if step <= 0.0:
+                    continue
+                own_score, opponent_best, projected, _lead = self._award_standing(player, award, state)
+                points = float(projected)
+                if points <= 0.0 or own_score > opponent_best:
+                    continue
+                threshold = max(opponent_best + 1.0, 1.0)
+                gap = threshold - own_score
+                if gap <= 0.0 or gap > generations_left * budget:
+                    continue
+                progress = own_score / threshold
+                piece = min(0.8, 0.35 * points * progress / gap * step)
+                total += piece
+                reasons.append(f"reach-{key}={piece:.2f}")
+        return min(0.8, total), reasons
 
     def _score_card(self, state: Dict[str, Any], descriptor: Dict[str, Any]) -> tuple[float, List[str]]:
         waiting = state.get("waitingFor", {}) or {}
@@ -163,7 +329,11 @@ class HeuristicTeacherPolicy:
                 f"existing-card-score={self._safe_float(reused.get('selection_score', 0.0)):.2f}",
                 f"requirement-readiness={self._safe_float(reused.get('readiness_score', 1.0)):.2f}",
             ])
-        return score, reasons
+        bonus, bonus_reasons = self._reachability_bonus(
+            state,
+            self._card_track_delta(name, card, include_planner=True),
+        )
+        return score + bonus, reasons + bonus_reasons
 
     def _score_card_subset(
         self,
@@ -206,6 +376,14 @@ class HeuristicTeacherPolicy:
             f"remaining-mc={remaining:.0f}",
             "card-quality",
         ]
+        for card in selected:
+            card_name = str(card.get("name", "") or "")
+            bonus, bonus_reasons = self._reachability_bonus(
+                state,
+                self._card_track_delta(card_name, card, include_planner=False),
+            )
+            score += bonus
+            reasons.extend(bonus_reasons)
         return score, reasons, False
 
     def _score_startup_plan(
@@ -561,7 +739,8 @@ class HeuristicTeacherPolicy:
                 score += 0.45
             if "power" in label and self._safe_float(player.get("energyProduction", 0)) <= 0:
                 score += 0.25
-            return score, ["standard-project opportunity cost"], False
+            bonus, bonus_reasons = self._reachability_bonus(state, self._standard_project_delta(label))
+            return score + bonus, ["standard-project opportunity cost", *bonus_reasons], False
         if family == "sell_patents":
             return -1.3 if mc > 3 else -0.25, ["avoid destroying option value"], False
         if family == "pass":
@@ -618,7 +797,11 @@ class HeuristicTeacherPolicy:
             chosen_action_index=int(actions[chosen].action_index),
             actions=actions,
             confidence=float(confidence),
-            policy_version="heuristic-teacher.v5" if v4_enabled() else "heuristic-teacher.v1",
+            policy_version=(
+                "heuristic-teacher.v6" if self.reachability and v4_enabled()
+                else "heuristic-teacher.v5" if v4_enabled()
+                else "heuristic-teacher.v1"
+            ),
             used_fallback=bool(fallback),
             is_forced=bool(is_forced),
         )

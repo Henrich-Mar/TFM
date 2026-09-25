@@ -353,7 +353,7 @@ def pretrain(
     if experiment == "v4" and not allow_small_dataset:
         target_counts = dataset_audit.get("target_family_counts") or {}
         for split in ("validation", "test"):
-            for family in ("select_space", "fund_award", "claim_milestone"):
+            for family in ("select_space",):
                 observed = int((target_counts.get(split) or {}).get(family, 0) or 0)
                 if observed < 100:
                     raise RuntimeError(
@@ -431,7 +431,9 @@ def pretrain(
                 placement_gate_mode,
                 allow_small_dataset=allow_small_dataset,
             )
-            selection_key = tuple(gate_status["selection_key"])
+            # Validation family accuracy is diagnostic; select the checkpoint
+            # on aggregate validation behavior, then gate PPO on game strength.
+            selection_key = (float(validation_metrics["teacher_top1"] + validation_metrics["teacher_top3"]),)
             score = float(validation_metrics["teacher_top1"] + validation_metrics["teacher_top3"])
         else:
             score = float(

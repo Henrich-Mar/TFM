@@ -59,6 +59,7 @@ def pretrain_v4(
     init_checkpoint: str | None = None,
     placement_gate_mode: str = "top1",
     placement_diagnostic_qualified: bool = False,
+    keep_action_tail: bool = False,
 ) -> dict:
     os.environ["TFM_RL_V4"] = "1"
     os.environ["TFM_RL_V3"] = "1"
@@ -82,7 +83,7 @@ def pretrain_v4(
         experiment="v4",
         track_families=True,
         init_checkpoint=init_checkpoint,
-        reinit_action_tail=True,
+        reinit_action_tail=not keep_action_tail,
         placement_gate_mode=placement_gate_mode,
         placement_diagnostic_qualified=placement_diagnostic_qualified,
     )
@@ -103,6 +104,7 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=20260923)
     parser.add_argument("--allow-small-dataset", action="store_true")
+    parser.add_argument("--keep-action-tail", action="store_true", help="Keep the action projection tail from the warm-start checkpoint")
     parser.add_argument(
         "--init-checkpoint",
         default=os.getenv("V4_INIT_CHECKPOINT", "/app/v4/bootstrap/warm_start.pth"),
@@ -128,6 +130,7 @@ def main() -> None:
         init_checkpoint=args.init_checkpoint,
         placement_gate_mode=placement_mode,
         placement_diagnostic_qualified=placement_qualified,
+        keep_action_tail=args.keep_action_tail,
     )
     print(report["ppo_gate_passed"])
 

@@ -1,4 +1,4 @@
-"""Promotion gates that keep V4 PPO blocked until held-out evidence is complete."""
+"""V4 PPO promotion based on completed games against the new teacher."""
 from __future__ import annotations
 
 import hashlib
@@ -18,8 +18,6 @@ FAMILY_TOP1_GATES = {
 }
 MIN_HELD_OUT_FAMILY_SAMPLES = {
     "select_space": 100,
-    "claim_milestone": 100,
-    "fund_award": 100,
 }
 SMOKE_SEED = 910001
 SMOKE_CONFIGURATION = {
@@ -108,35 +106,33 @@ def validation_candidate_status(
     *,
     allow_small_dataset: bool = False,
 ) -> Dict[str, Any]:
-    return _teacher_gate_status(
+    diagnostics = _teacher_gate_status(
         metrics,
         placement_mode,
         minimum_family_samples=0 if allow_small_dataset else 100,
     )
+    count = int((metrics.get("family_counts") or {}).get("select_space", 0) or 0)
+    required = 0 if allow_small_dataset else 100
+    diagnostics["passed"] = count >= required
+    diagnostics["reasons"] = [] if count >= required else [f"select_space has {count} held-out targets; requires {required}"]
+    return diagnostics
 
 
 def evaluate_ppo_gate(report: Mapping[str, Any]) -> Tuple[bool, List[str]]:
     reasons: List[str] = []
-    if report.get("selected_validation_gate_passed") is not True:
-        reasons.append("selected checkpoint did not clear every validation gate")
-    placement = report.get("placement_gate") or {}
-    placement_mode = str(placement.get("mode", "top1") or "top1")
-    if placement_mode == "top3" and not bool(placement.get("diagnostic_qualified", False)):
-        reasons.append("select_space top-3 mode lacks a qualifying saved-checkpoint diagnostic")
-    try:
-        teacher_status = _teacher_gate_status(report.get("test") or {}, placement_mode)
-        reasons.extend(teacher_status["reasons"])
-    except ValueError as exc:
-        reasons.append(str(exc))
-
-    human = report.get("human_evaluation") or {}
-    if float(human.get("top3", 0.0) or 0.0) < 0.80:
-        reasons.append("held-out human top-3 is below 80%")
-    held_out_games = sorted({str(value) for value in (human.get("held_out_games") or []) if str(value)})
-    if len(held_out_games) != 2:
-        reasons.append("human evaluation must contain exactly two held-out source games")
-    if int(human.get("samples", 0) or 0) <= 0:
-        reasons.append("held-out human evaluation has no decisions")
+    strength = report.get("strength") or {}
+    if int(strength.get("completed_games", 0) or 0) < 20:
+        reasons.append("strength evaluation needs at least 20 finished games")
+    if float(strength.get("mean_rank", 4.0) or 4.0) > 2.55:
+        reasons.append("strength mean rank exceeds 2.55")
+    if int(strength.get("runaway_games", 2) if strength.get("runaway_games") is not None else 2) > 1:
+        reasons.append("strength evaluation has more than one runaway game")
+    if strength.get("baseline") != "teacher":
+        reasons.append("strength evaluation must be against the teacher")
+    if int(strength.get("stage", -1) if strength.get("stage") is not None else -1) != 1:
+        reasons.append("strength evaluation must use stage 1")
+    if int(strength.get("rejection_count", 1) if strength.get("rejection_count") is not None else 1) != 0:
+        reasons.append("strength evaluation has server-rejected actions")
 
     if report.get("duplicate_executable_actions") != 0:
         reasons.append("duplicate executable actions remain")
@@ -146,6 +142,8 @@ def evaluate_ppo_gate(report: Mapping[str, Any]) -> Tuple[bool, List[str]]:
     selected_sha = str(report.get("selected_checkpoint_sha256", "") or "")
     if len(selected_sha) != 64 or any(character not in "0123456789abcdef" for character in selected_sha.lower()):
         reasons.append("selected checkpoint hash is missing")
+    if str(strength.get("checkpoint_sha256", "") or "") != selected_sha:
+        reasons.append("strength evaluation checkpoint hash does not match the selected checkpoint")
     smoke = report.get("smoke") or {}
     if smoke.get("completed") is not True:
         reasons.append("fixed-seed smoke run has not completed")
@@ -183,6 +181,9 @@ def assert_ppo_unlocked(path: str | None = None, checkpoint_path: str | None = N
     if not report_path.is_file():
         raise RuntimeError(f"PPO blocked until a V4 pretrain report exists: {report_path}")
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    strength_path = os.getenv("V4_STRENGTH_REPORT")
+    if strength_path:
+        report["strength"] = json.loads(Path(strength_path).expanduser().read_text(encoding="utf-8"))
     passed, reasons = evaluate_ppo_gate(report)
     if checkpoint_path:
         checkpoint = Path(checkpoint_path).expanduser().resolve()

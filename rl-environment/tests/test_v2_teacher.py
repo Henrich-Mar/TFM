@@ -17,6 +17,69 @@ def _descriptor(index: int, family: str, label: str = "") -> dict:
     return {"action_index": index, "action_position": index, "family": family, "label": label, "decoded_action": {}}
 
 
+def test_builder_reachability_and_closed_tracks() -> None:
+    state = {
+        "thisPlayer": {"name": "A1", "color": "red", "megaCredits": 30},
+        "game": {"generation": 5, "milestones": [{
+            "name": "Builder", "scores": [{"color": "red", "score": 7}, {"color": "blue", "score": 3}],
+        }]},
+        "waitingFor": {"cards": [{"name": "Equal Building", "cost": 10}, {"name": "Equal Other", "cost": 10}]},
+    }
+    teacher = HeuristicTeacherPolicy(sample=False)
+    teacher._reachability_metadata = {
+        "Equal Building": {"type": "automated"}, "Equal Other": {"type": "automated"},
+    }
+    teacher._card_ranker._get_card_tags = lambda name, fallback=None: {"building": name == "Equal Building"}
+    building = _descriptor(0, "play_card")
+    building["card_name"] = "Equal Building"
+    other = _descriptor(1, "play_card")
+    other["card_name"] = "Equal Other"
+    assert teacher._score_card(state, building)[0] > teacher._score_card(state, other)[0]
+    baseline = HeuristicTeacherPolicy(sample=False, reachability=False)
+    baseline._card_ranker._get_card_tags = teacher._card_ranker._get_card_tags
+    original = baseline._score_card(state, building)[0]
+    state["game"]["milestones"][0]["playerColor"] = "blue"
+    assert teacher._score_card(state, building)[0] == baseline._score_card(state, building)[0]
+    assert baseline._score_card(state, building)[0] == original
+    state["game"]["milestones"].extend([{"name": "Mayor", "color": "green"}, {"name": "Gardener", "color": "yellow"}, {"name": "Terraformer", "color": "blue"}])
+    state["game"]["milestones"][0].pop("playerColor")
+    assert teacher._score_card(state, building)[0] == baseline._score_card(state, building)[0]
+
+
+def test_reachability_rejects_impossible_terraformer_and_funded_award() -> None:
+    teacher = HeuristicTeacherPolicy(sample=False)
+    state = {"thisPlayer": {"color": "red"}, "game": {"generation": 13, "milestones": [
+        {"name": "Terraformer", "scores": [{"color": "red", "score": 15}]},
+    ], "awards": [{"name": "Scientist", "color": "blue", "scores": [
+        {"color": "red", "score": 3}, {"color": "blue", "score": 4},
+    ]}]}}
+    assert teacher._reachability_bonus(state, {"terraformer": 1, "scientist": 1}) == 0
+    state["game"]["milestones"] = []
+    assert teacher._reachability_bonus(state, {"scientist": 1}) == 0
+
+
+def test_reachability_applies_to_card_subset_and_standard_project(monkeypatch) -> None:
+    import scoring
+    monkeypatch.setattr(scoring, "_card_quality", lambda card, player: 1.0)
+    state = {
+        "thisPlayer": {"name": "A1", "color": "red", "megaCredits": 30},
+        "game": {"generation": 5, "milestones": [
+            {"name": "Builder", "scores": [{"color": "red", "score": 7}]},
+            {"name": "Mayor", "scores": [{"color": "red", "score": 2}]},
+        ]},
+        "waitingFor": {"cards": [{"name": "Building", "cost": 10}]},
+    }
+    enhanced = HeuristicTeacherPolicy(reachability=True)
+    enhanced._reachability_metadata = {"Building": {"type": "automated"}}
+    enhanced._card_ranker._get_card_tags = lambda name, fallback=None: {"building": True}
+    old = HeuristicTeacherPolicy(reachability=False)
+    selected = _descriptor(0, "card_subset")
+    selected["decoded_action"] = {"cards": ["Building"]}
+    assert enhanced._score_card_subset(state, selected)[0] > old._score_card_subset(state, selected)[0]
+    city = _descriptor(1, "standard_project", "City")
+    assert enhanced._score_descriptor(state, city)[0] > old._score_descriptor(state, city)[0]
+
+
 def test_teacher_prefers_leading_award_over_trailing_scientist() -> None:
     teacher = HeuristicTeacherPolicy(seed=3, sample=False)
     state = {
@@ -348,4 +411,3 @@ def test_teacher_startup_prefers_keep_roi_over_cash_drain() -> None:
     cheap_score = next(item.score for item in result.actions if item.action_index == 850)
     expensive_score = next(item.score for item in result.actions if item.action_index == 851)
     assert cheap_score > expensive_score
-

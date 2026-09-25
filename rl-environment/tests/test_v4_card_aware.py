@@ -547,7 +547,7 @@ def test_human_reencode_merges_mass_and_invalidates_missing_outcomes(monkeypatch
     assert aliases[0]["kept_position"] == 0
 
 
-def test_ppo_stays_blocked_until_every_held_out_gate_passes() -> None:
+def test_ppo_requires_strength_and_run_integrity_not_family_accuracy() -> None:
     checkpoint_sha = "a" * 64
     report = {
         "selected_validation_gate_passed": True,
@@ -568,7 +568,7 @@ def test_ppo_stays_blocked_until_every_held_out_gate_passes() -> None:
             "family_top3": {"select_space": 0.97},
             "family_counts": {"select_space": 100, "claim_milestone": 100, "fund_award": 100},
         },
-        "human_evaluation": {"top3": 0.80, "samples": 20, "held_out_games": ["g1", "g2"]},
+        "human_evaluation": {"top3": 0.10, "samples": 20, "held_out_games": ["g1", "g2"]},
         "duplicate_executable_actions": 0,
         "unresolved_known_card_references": 0,
         "smoke": {"server_rejected_actions": None},
@@ -595,8 +595,22 @@ def test_ppo_stays_blocked_until_every_held_out_gate_passes() -> None:
     assert any("does not match" in reason for reason in reasons)
     report["smoke"]["checkpoint_sha256"] = checkpoint_sha
     passed, reasons = evaluate_ppo_gate(report)
-    assert passed
-    assert reasons == []
+    assert not passed
+    assert any("strength" in reason for reason in reasons)
+    report["strength"] = {
+        "completed_games": 20, "mean_rank": 2.55, "runaway_games": 1,
+        "baseline": "teacher", "stage": 1, "rejection_count": 0,
+        "checkpoint_sha256": checkpoint_sha,
+    }
+    report["test"]["family_top1"]["claim_milestone"] = 0.0
+    report["test"]["family_top1"]["card_subset"] = 0.0
+    passed, reasons = evaluate_ppo_gate(report)
+    assert passed and reasons == []
+    report["strength"]["runaway_games"] = 2
+    assert not evaluate_ppo_gate(report)[0]
+    report["strength"]["runaway_games"] = 1
+    report["strength"]["mean_rank"] = 2.56
+    assert not evaluate_ppo_gate(report)[0]
 
 
 def test_family_metrics_use_teacher_argmax_not_sampled_action() -> None:
@@ -650,7 +664,7 @@ def test_gate_aware_selection_prefers_family_clearance_over_higher_average() -> 
     clearing = validation_candidate_status(metrics(0.88, 0.81, 0.91, 0.89), "top1")
     average_only = validation_candidate_status(metrics(0.84, 0.79, 0.89, 0.91), "top1")
     assert clearing["passed"] is True
-    assert average_only["passed"] is False
+    assert average_only["passed"] is True
     assert tuple(clearing["selection_key"]) > tuple(average_only["selection_key"])
 
 

@@ -18,6 +18,7 @@ from .action_decoder import (
     _startup_plan_contents,
 )
 from .v4_flags import v4_enabled
+from .card_catalog import load_metadata, resolve_behavior
 
 
 @dataclass(frozen=True)
@@ -111,14 +112,17 @@ class HeuristicTeacherPolicy:
         "sell_patents", "pass", "card_prompt", "other",
     }
 
-    def __init__(self, seed: int = 0, temperature: float = 0.18, sample: bool = True) -> None:
+    def __init__(self, seed: int = 0, temperature: float = 0.18, sample: bool = True,
+                 reachability: bool = True) -> None:
         self.rng = random.Random(int(seed))
         self.temperature = max(1e-4, float(temperature))
         self.sample = bool(sample)
+        self.reachability = bool(reachability)
         self.decisions = 0
         self.fallbacks = 0
         self._card_ranker = StateEncoder()
         self._active_card_rankings: Dict[str, Dict[str, Any]] = {}
+        self._reachability_metadata: Optional[Dict[str, Dict[str, Any]]] = None
 
     @property
     def fallback_rate(self) -> float:
@@ -130,6 +134,71 @@ class HeuristicTeacherPolicy:
             return float(value)
         except Exception:
             return float(default)
+
+    def _card_progress(self, name: str, tags: set[str]) -> Dict[str, float]:
+        if self._reachability_metadata is None:
+            self._reachability_metadata = load_metadata()
+        meta = self._reachability_metadata.get(name, {})
+        if not isinstance(meta, dict) or not meta:
+            return {}
+        effects = resolve_behavior(meta).get("immediate", {})
+        global_steps = effects.get("global", {}) or {}
+        production = effects.get("production", {}) or {}
+        stock = effects.get("stock", {}) or {}
+        city = max(0.0, self._safe_float(effects.get("place_city", 0)))
+        greenery = max(0.0, self._safe_float(effects.get("place_greenery", 0)))
+        oceans = max(0.0, self._safe_float(global_steps.get("oceans", 0)))
+        tr = sum(max(0.0, self._safe_float(global_steps.get(key, 0))) for key in ("temperature", "oxygen", "oceans"))
+        tr += greenery  # A greenery also raises oxygen when capacity remains.
+        return {
+            "builder": float("building" in tags),
+            "gardener": greenery,
+            "mayor": city,
+            "planner": float(str(meta.get("type", "")).lower() != "event" and "event" not in tags),
+            "terraformer": tr,
+            "landlord": city + greenery + oceans,
+            "banker": max(0.0, self._safe_float(production.get("megacredits", 0))),
+            "scientist": float("science" in tags),
+            "thermalist": max(0.0, self._safe_float(stock.get("heat", 0))),
+            "miner": sum(max(0.0, self._safe_float(stock.get(key, 0))) for key in ("steel", "titanium")),
+        }
+
+    def _reachability_bonus(self, state: Dict[str, Any], delta: Dict[str, float]) -> float:
+        if not self.reachability or not any(value > 0 for value in delta.values()):
+            return 0.0
+        game = state.get("game", {}) or {}
+        player = state.get("thisPlayer", {}) or {}
+        generations_left = max(0.0, 15.0 - self._safe_float(game.get("generation", 1), 1))
+        milestones = [row for row in (game.get("milestones", []) or []) if isinstance(row, dict)]
+        awards = [row for row in (game.get("awards", []) or []) if isinstance(row, dict)]
+        claimed = sum(bool(row.get("playerName") or row.get("playerColor") or row.get("color")) for row in milestones)
+        funded = sum(bool(row.get("playerName") or row.get("playerColor") or row.get("color") or row.get("funded_by")) for row in awards)
+        bonus = 0.0
+        thresholds = {"builder": 8.0, "gardener": 3.0, "mayor": 3.0, "planner": 16.0, "terraformer": 35.0}
+        budgets = {"builder": 2.0, "gardener": 1.0, "mayor": 1.0, "planner": 2.0, "terraformer": 3.0}
+        if claimed < 3:
+            for name, threshold in thresholds.items():
+                row = self._find_milestone(game, name)
+                if not row or row.get("playerName") or row.get("playerColor") or row.get("color"):
+                    continue
+                own, _ = self._milestone_standing(state, row)
+                gap = threshold - own
+                if gap <= 0 or gap > generations_left * budgets[name]:
+                    continue
+                bonus += min(0.8, 0.35 * 5.0 * (own / threshold) / gap * max(0.0, delta.get(name, 0.0)))
+        if funded < 3:
+            for name in ("landlord", "banker", "scientist", "thermalist", "miner"):
+                row = self._find_award(game, name)
+                if not row or row.get("playerName") or row.get("playerColor") or row.get("color") or row.get("funded_by"):
+                    continue
+                own, opponent, projected, _ = self._award_standing(player, row, state)
+                threshold = max(1.0, opponent + 1.0)
+                gap = threshold - own
+                budget = 1.0 if name == "landlord" else (2.0 if name == "scientist" else 3.0)
+                if gap <= 0 or gap > generations_left * budget or projected <= 0:
+                    continue
+                bonus += min(0.8, 0.35 * projected * (own / threshold) / gap * max(0.0, delta.get(name, 0.0)))
+        return bonus
 
     def _score_card(self, state: Dict[str, Any], descriptor: Dict[str, Any]) -> tuple[float, List[str]]:
         waiting = state.get("waitingFor", {}) or {}
@@ -152,6 +221,9 @@ class HeuristicTeacherPolicy:
         phase = max(0.0, min(1.0, generation / 14.0))
         engine_tags = len(tags.intersection({"science", "earth", "building", "space", "plant"}))
         score = affordability + (0.45 * vp * (0.4 + phase)) + (0.12 * engine_tags * (1.2 - phase))
+        if self.reachability and name:
+            bonus = self._reachability_bonus(state, self._card_progress(name, tags))
+            score += bonus
         reused = self._active_card_rankings.get(name, {})
         if reused:
             score += 0.6 * self._safe_float(reused.get("selection_score", 0.0))
@@ -197,6 +269,11 @@ class HeuristicTeacherPolicy:
         score = 0.0
         for card in selected:
             score += float(_card_quality(card, player)) - threshold
+            if self.reachability:
+                name = str(card.get("name", "") or "")
+                tags_map = self._card_ranker._get_card_tags(name, fallback=card.get("tags", {}))
+                tags = {str(tag).lower() for tag, present in tags_map.items() if present}
+                score += self._reachability_bonus(state, self._card_progress(name, tags))
         fee = card_cost * float(len(selected))
         remaining = max(0.0, self._safe_float(player.get("megaCredits", 0)) - fee)
         score -= 0.02 * max(0.0, 14.0 - remaining)
@@ -561,6 +638,17 @@ class HeuristicTeacherPolicy:
                 score += 0.45
             if "power" in label and self._safe_float(player.get("energyProduction", 0)) <= 0:
                 score += 0.25
+            if self.reachability:
+                delta: Dict[str, float] = {}
+                if "city" in label:
+                    delta = {"mayor": 1.0, "landlord": 1.0}
+                elif "greenery" in label:
+                    delta = {"gardener": 1.0, "landlord": 1.0, "terraformer": 1.0}
+                elif "temperature" in label or "asteroid" in label:
+                    delta = {"terraformer": 1.0}
+                elif "ocean" in label or "aquifer" in label:
+                    delta = {"terraformer": 1.0, "landlord": 1.0}
+                score += self._reachability_bonus(state, delta)
             return score, ["standard-project opportunity cost"], False
         if family == "sell_patents":
             return -1.3 if mc > 3 else -0.25, ["avoid destroying option value"], False

@@ -4173,6 +4173,11 @@ class ActionDecoder:
         name = str((project or {}).get('name', '') or '').strip().lower()
         if not name:
             return False
+        warnings = {str(item).strip().lower() for item in ((project or {}).get('warnings') or [])}
+        if 'asteroid' in name and 'maxtemp' in warnings:
+            return True
+        if 'aquifer' in name and 'maxoceans' in warnings:
+            return True
         # These are pure global-parameter standard projects.  The server can
         # still expose them after their parameter is capped, which lets a policy
         # spend actions forever instead of passing for production.
@@ -4242,9 +4247,12 @@ class ActionDecoder:
                         # Prefer concrete card actions instead of generic OR selection.
                         cards = option.get('cards', [])
                         payment_options = option.get('paymentOptions', {})
+                        is_standard_project_menu = 'standard project' in option_title_l
                         affordable_indices = []
                         for j, card in enumerate(cards):
                             if card.get('isDisabled', False):
+                                continue
+                            if is_standard_project_menu and self._is_standard_project_wasteful(card, player_state or {}):
                                 continue
                             reserve_units = _merge_reserve_units(option, card)
                             if player_state and _can_afford_card_with_payment_options(
@@ -4471,10 +4479,13 @@ class ActionDecoder:
                 # {"type":"pass"} - it always requires {type, card, payment}. Never add PASS.
                 payment_options = waiting_for.get('paymentOptions', {})
                 
+                is_standard_project_menu = 'standard project' in _title_text(waiting_for.get('title', '')).lower()
                 # Filter out unaffordable cards
                 affordable_cards = []
                 for i, card in enumerate(cards):
                     if card.get('isDisabled', False):
+                        continue
+                    if is_standard_project_menu and self._is_standard_project_wasteful(card, player_state or {}):
                         continue
                     if player_state:
                         reserve_units = _merge_reserve_units(waiting_for, card)

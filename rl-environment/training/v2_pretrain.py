@@ -302,6 +302,7 @@ def pretrain(
     experiment: str = "v2",
     track_families: bool = False,
     init_checkpoint: str | None = None,
+    reinit_action_tail: bool = False,
     placement_gate_mode: str = "top1",
     placement_diagnostic_qualified: bool = False,
 ) -> Dict[str, Any]:
@@ -381,7 +382,11 @@ def pretrain(
         if experiment != "v4":
             raise RuntimeError("init checkpoints are only supported for v4 pretraining")
         from training.v4_pretrain import load_v4_init_weights
-        loaded_init = load_v4_init_weights(network, init_checkpoint)
+        loaded_init = load_v4_init_weights(
+            network,
+            init_checkpoint,
+            reinit_action_tail=reinit_action_tail,
+        )
     print(
         f"[pretrain] starting: teacher_samples={teacher_total} human_samples={human_total} device={device} "
         f"hidden_size={config.hidden_size} transformer_layers={config.transformer_layers} "

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 
@@ -10,8 +11,25 @@ import torch
 
 from training.v2_pretrain import pretrain
 
+# token_from_features writes the type id at index 0 and the 63 action features
+# at indices 1..63. The 14-value family tail therefore occupies columns 50:64.
+ACTION_TAIL_COLUMN_START = 50
+ACTION_TAIL_COLUMN_END = 64
 
-def load_v4_init_weights(network, checkpoint_path: str) -> str:
+
+def reinitialize_action_tail(network) -> None:
+    """Replace only the projection columns that read the changed family tail."""
+    weight = network.action_projection.weight
+    if weight.shape[1] < ACTION_TAIL_COLUMN_END:
+        raise RuntimeError(
+            f"action projection has {weight.shape[1]} inputs; expected at least {ACTION_TAIL_COLUMN_END}"
+        )
+    bound = 1.0 / math.sqrt(weight.shape[1])
+    with torch.no_grad():
+        weight[:, ACTION_TAIL_COLUMN_START:ACTION_TAIL_COLUMN_END].uniform_(-bound, bound)
+
+
+def load_v4_init_weights(network, checkpoint_path: str, *, reinit_action_tail: bool = False) -> str:
     """Copy warm-started V4 weights. The caller keeps a fresh AdamW optimizer."""
     path = Path(checkpoint_path).expanduser().resolve()
     if not path.is_file():
@@ -23,6 +41,8 @@ def load_v4_init_weights(network, checkpoint_path: str) -> str:
     if not isinstance(state, dict) or not state:
         raise RuntimeError(f"V4 init checkpoint is missing network weights: {path}")
     network.load_state_dict(state)
+    if reinit_action_tail:
+        reinitialize_action_tail(network)
     return str(path)
 
 
@@ -62,6 +82,7 @@ def pretrain_v4(
         experiment="v4",
         track_families=True,
         init_checkpoint=init_checkpoint,
+        reinit_action_tail=True,
         placement_gate_mode=placement_gate_mode,
         placement_diagnostic_qualified=placement_diagnostic_qualified,
     )

@@ -770,6 +770,40 @@ def test_v4_init_checkpoint_copies_warm_start_weights(tmp_path: Path, monkeypatc
     from training.v4_pretrain import load_v4_init_weights
     assert load_v4_init_weights(fresh, str(path)) == str(path.resolve())
     assert torch.equal(fresh.world_projection.weight, source.world_projection.weight)
+
+
+def test_v4_epoch11_reinit_changes_only_action_tail_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TFM_RL_V4", "1")
+    monkeypatch.setenv("TFM_RL_V3", "1")
+    config = AgentConfig(
+        hidden_size=64,
+        recurrent_size=16,
+        transformer_heads=4,
+        transformer_layers=1,
+        planner_token_dim=64,
+    )
+    source = TerraformingMarsNetwork(config)
+    with torch.no_grad():
+        source.action_projection.weight.fill_(0.9)
+        source.action_projection.bias.fill_(0.3)
+        source.world_projection.weight.fill_(0.25)
+    path = tmp_path / "bc_best.pth"
+    torch.save({
+        "experiment_version": "tfm-rl-v4",
+        "card_catalog_sha256": get_catalog().sha256,
+        "network_state_dict": source.state_dict(),
+    }, path)
+    fresh = TerraformingMarsNetwork(config)
+    from training.v4_pretrain import ACTION_TAIL_COLUMN_START, load_v4_init_weights
+    load_v4_init_weights(fresh, str(path), reinit_action_tail=True)
+    kept = fresh.action_projection.weight[:, :ACTION_TAIL_COLUMN_START]
+    tail = fresh.action_projection.weight[:, ACTION_TAIL_COLUMN_START:]
+    assert torch.equal(kept, source.action_projection.weight[:, :ACTION_TAIL_COLUMN_START])
+    assert not torch.equal(tail, source.action_projection.weight[:, ACTION_TAIL_COLUMN_START:])
+    bound = 1.0 / (fresh.action_projection.weight.shape[1] ** 0.5)
+    assert torch.all(tail.abs() <= bound + 1e-6)
+    assert torch.equal(fresh.action_projection.bias, source.action_projection.bias)
+    assert torch.equal(fresh.world_projection.weight, source.world_projection.weight)
     with pytest.raises(CardCatalogError, match="incompatible checkpoint"):
         torch.save({"experiment_version": "tfm-rl-v2", "network_state_dict": source.state_dict()}, path)
         load_v4_init_weights(fresh, str(path))

@@ -152,6 +152,45 @@ def test_nested_standard_project_prompt_excludes_disabled_projects() -> None:
     }
 
 
+def test_nested_standard_project_prompt_masks_asteroid_at_max_temperature() -> None:
+    """The live server nests standard projects as projectCard and still offers Asteroid at +8 C."""
+    decoder = ActionDecoder()
+    player_state = {
+        "waitingFor": {
+            "type": "or",
+            "options": [
+                {"type": "option", "title": "Pass for this generation"},
+                {
+                    "type": "projectCard",
+                    "title": "Standard projects",
+                    "cards": [
+                        {"name": "Power Plant:SP", "calculatedCost": 11},
+                        {"name": "Asteroid:SP", "calculatedCost": 14, "warnings": ["maxtemp"]},
+                        {"name": "Aquifer", "calculatedCost": 18},
+                    ],
+                },
+            ],
+        },
+        "thisPlayer": {"megaCredits": 40},
+        "game": {"temperature": 8, "oxygenLevel": 14, "oceans": 8},
+    }
+
+    labels = [action.description for action in decoder.enumerate_legal_actions(player_state).actions]
+
+    assert not any("Asteroid" in label for label in labels), labels
+    assert any("Aquifer" in label for label in labels), labels
+    assert any("Power Plant" in label for label in labels), labels
+
+
+def test_standard_project_server_warning_masks_asteroid_without_game_temperature() -> None:
+    """The server's maxtemp warning is enough even if the game view lacks temperature."""
+    decoder = ActionDecoder()
+    project = {"name": "Asteroid:SP", "calculatedCost": 14, "warnings": ["maxtemp"]}
+
+    assert decoder._is_standard_project_wasteful(project, {"game": {}})
+    assert not decoder._is_standard_project_wasteful({"name": "Aquifer"}, {"game": {"oceans": 8}})
+
+
 def test_agent_keeps_offered_venus_projects_available() -> None:
     """The decoder should trust offered Venus projects instead of locally pruning them."""
     decoder = ActionDecoder()

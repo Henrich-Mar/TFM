@@ -973,7 +973,8 @@ class RLAgent:
         self.ppo_buffer_max_steps = self._safe_env_int("PPO_BUFFER_MAX_STEPS", default_buffer_max_steps)
         self.state_schema_version = str(os.getenv("STATE_SCHEMA_VERSION", "v1")).strip() or "v1"
         self.strict_on_policy_sampling = str(os.getenv("PPO_STRICT_ON_POLICY", "1")).strip().lower() not in ("0", "false", "no", "off")
-        self.policy_version = 0
+        self._policy_leader: Optional["RLAgent"] = None
+        self._policy_version = 0
         self.exploration_decay_games = max(1, self._safe_env_int("EXPLORATION_DECAY_GAMES", 200))
         self.policy_epsilon_cap = max(0.0, self._safe_env_float("POLICY_EPSILON_CAP", 0.02))
         self.policy_epsilon_floor = max(0.0, self._safe_env_float("POLICY_EPSILON_FLOOR", 0.001))
@@ -4211,6 +4212,45 @@ class RLAgent:
             )
         return calculate_terminal_reward(rank=rank, victory_points=vp, completed=completed)
 
+    @property
+    def policy_version(self) -> int:
+        leader = getattr(self, "_policy_leader", None)
+        if leader is not None:
+            return int(leader._policy_version)
+        return int(getattr(self, "_policy_version", 0))
+
+    @policy_version.setter
+    def policy_version(self, value: int) -> None:
+        leader = getattr(self, "_policy_leader", None)
+        if leader is not None:
+            leader._policy_version = int(value)
+            return
+        self._policy_version = int(value)
+
+    def bind_shared_learner(self, leader: "RLAgent") -> None:
+        """Play and record as ``leader`` without sharing this agent's episode state.
+
+        The seat keeps its own recurrent map and player id. Parameters, the
+        optimizer, the rollout buffer, and the policy version are the leader's,
+        so one PPO update trains every chair and on-policy filtering stays aligned.
+        """
+        if leader is self:
+            raise ValueError("a learning seat cannot bind to itself")
+        self._policy_leader = leader
+        self.network = leader.network
+        self.optimizer = leader.optimizer
+        self.rollout_buffer = leader.rollout_buffer
+        self.rollout_shard_store = leader.rollout_shard_store
+        self.training_lock = leader.training_lock
+        self._model_device_lock = leader._model_device_lock
+        self._inference_device = leader._inference_device
+        self.state_schema_version = leader.state_schema_version
+        self.strict_on_policy_sampling = leader.strict_on_policy_sampling
+        self.train_from_self_play = True
+        self.config.train_from_self_play = True
+        self.ppo_enable = True
+        self.deterministic_actions = False
+
     async def _queue_episode_rollout(self, episode_steps: List[Dict[str, Any]], terminal_reward: float):
         """Queue rollout transitions for coordinator-driven PPO optimization."""
         if not episode_steps:
@@ -4314,6 +4354,8 @@ class RLAgent:
 
     async def optimize_from_rollout_buffer(self, max_steps: Optional[int] = None) -> Dict[str, Any]:
         """Run PPO optimization from buffered rollout data. Offloaded to thread pool to keep event loop responsive."""
+        if getattr(self, "_policy_leader", None) is not None:
+            return {}
         if not self.ppo_enable:
             return {}
 

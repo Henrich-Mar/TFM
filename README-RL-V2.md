@@ -194,9 +194,12 @@ docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --r
 -- CPU 
 docker compose -f docker-compose.rl_hard.yml -f docker-compose.rl_v2.yml run --rm -e V2_ALLOW_RESUME=1 -e PPO_DEVICE=cpu rl-coordinator python -m training.v2_self_play --bc-checkpoint /app/v2/pretrain/bc_best.pth --root /app/v2
 
-The learner starts at Stage 0, benchmarks every 25,000 decisions, promotes only
-against fixed baselines, then advances to Stage 1. Only the main learner writes
-PPO rollouts; teacher, random and champion opponents are frozen.
+The learner starts at Stage 0 and benchmarks every 25,000 decisions. All four
+seats play the live policy and write PPO rollouts into one buffer. After the
+first promotion, 25% of games replace one seat with a frozen past checkpoint.
+Promotion requires a win against that previous checkpoint and against the
+teacher. Stage 0 versus Stage 1 is only the ruleset. Teacher and random
+opponents are evaluation baselines, not training seats.
 Self-play uses `SELFPLAY_CONCURRENCY` simultaneous games per batch (default `2`
 in `docker-compose.rl_v2.yml`). PPO runs only after the entire batch completes,
 so every rollout in that batch came from the same policy. Start at `2`; after a

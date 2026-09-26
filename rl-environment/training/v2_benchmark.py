@@ -200,7 +200,7 @@ async def benchmark(
     vp_low, vp_high = mean_interval(vp_margins)
     if baseline == "random" and int(stage) == 0:
         gate_passed = completed >= math.ceil(0.99 * total) and rejection_count == 0 and first_place_rate >= 0.55
-    elif baseline == "teacher" and int(stage) == 1:
+    elif baseline == "teacher":
         gate_passed = completed >= math.ceil(0.99 * total) and rejection_count == 0 and wilson_lower(wins, completed) > 0.25
     else:
         gate_passed = completed >= math.ceil(0.99 * total) and rejection_count == 0 and (pairwise_points / max(1, pairwise_trials)) >= 0.50

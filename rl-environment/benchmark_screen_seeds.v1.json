@@ -1,0 +1,13 @@
+{
+  "schema_version": "tfm_rl_v2.benchmark_screen_seeds.v1",
+  "seeds": [
+    920003,
+    920021,
+    920039,
+    920051,
+    920069,
+    920083,
+    920101,
+    920117
+  ]
+}

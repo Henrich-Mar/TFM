@@ -1,0 +1,94 @@
+services:
+  tfm-server-1: &alphago_server
+    environment:
+      - RL_ALLOW_FIXED_SEED=1
+      - RL_RECYCLE_ENABLED=1
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-alphago-local-recycle}
+      - GAME_CACHE=sweep=auto;eviction_age=2m;sweep_freq=1m
+      - MAX_GAME_DAYS=1
+  tfm-server-2: *alphago_server
+  tfm-server-3: *alphago_server
+  tfm-server-4: *alphago_server
+
+  postgres:
+    environment:
+      - POSTGRES_DB=tfm_rl_alphago
+    volumes:
+      - postgres_data_alphago:/var/lib/postgresql/data
+
+  rl-coordinator:
+    restart: "no"
+    command:
+      - python
+      - -m
+      - training.v2_self_play
+      - --from-scratch
+      - --root
+      - /app/alphago
+      - --max-decisions
+      - ${ALPHAGO_MAX_DECISIONS:-1000000}
+      - --benchmark-interval
+      - ${ALPHAGO_BENCHMARK_INTERVAL:-100000}
+      - --seed
+      - ${ALPHAGO_SEED:-800000}
+      - --stage
+      - "1"
+    volumes:
+      - ./rl-environment:/app
+      - ./rl-alphago:/app/alphago
+      - ./card_metadata.json:/app/card_metadata.json:ro
+    environment:
+      - TFM_RL_V2=1
+      - TFM_RL_V3=0
+      - TFM_RL_V4=0
+      - V2_RECYCLE_IDLE_SERVERS=0
+      - RL_CONTROL_TOKEN=${TFM_RL_CONTROL_TOKEN:-tfm-alphago-local-recycle}
+      - TFM_RL_V2_ROOT=/app/alphago
+      - V2_ALLOW_RESUME=1
+      - V2_ALLOW_STAGE1=1
+      - RESUME_TRAINING=0
+      - BOOTSTRAP_CHECKPOINT_PATH=
+      - RL_MODELS_DIR=/app/alphago/models
+      - RL_CHECKPOINT_DIR=/app/alphago/checkpoints
+      - PPO_ROLLOUT_SHARD_DIR=/app/alphago/rollouts
+      - V2_TEACHER_DATASET_DIR=/app/alphago/teacher-dataset
+      - V2_BENCHMARK_DIR=/app/alphago/benchmarks
+      - V2_METRICS_DIR=/app/alphago/metrics
+      - RL_LOG_DIR=/app/alphago/logs
+      - POSTGRES_URL=postgresql://tfm:tfm_password@postgres:5432/tfm_rl_alphago
+      - GAME_OPTIONS_FILE=/app/game_options.v2_stage1.json
+      - STATE_SCHEMA_VERSION=v2
+      - PPO_GAMMA=1.0
+      - PPO_GAE_LAMBDA=1.0
+      - PPO_SHAPING_INITIAL_COEF=0.20
+      - PPO_SHAPING_FINAL_COEF=0.05
+      - PPO_SHAPING_ANNEAL_GAMES=3000
+      - PPO_SHAPING_MILESTONES_WEIGHT=2.3
+      - PPO_SHAPING_AWARDS_WEIGHT=1.0
+      - PPO_SHAPING_AWARD_RANK_DROP_WEIGHT=1.5
+      - PPO_STRICT_ON_POLICY=1
+      - PPO_ROLLOUT_STEPS=${ALPHAGO_PPO_ROLLOUT_STEPS:-12288}
+      - PPO_MINIBATCH_SIZE=128
+      - PPO_LEARNING_RATE=0.00010
+      - PPO_LR_MAX=0.00010
+      - BENCHMARK_SCREEN_MIN_COMPLETION_RATIO=${ALPHAGO_SCREEN_MIN_COMPLETION_RATIO:-0.90}
+      - BENCHMARK_SCREEN_TEACHER_MIN_FIRST_PLACE_RATE=${ALPHAGO_SCREEN_TEACHER_MIN_FIRST_PLACE_RATE:-0.25}
+      - BENCHMARK_SCREEN_CHAMPION_MIN_PAIRWISE_SCORE=${ALPHAGO_SCREEN_CHAMPION_MIN_PAIRWISE_SCORE:-0.50}
+      - HISTORY_SNAPSHOT_INTERVAL_UPDATES=${ALPHAGO_HISTORY_SNAPSHOT_INTERVAL_UPDATES:-8}
+      - SELFPLAY_CONCURRENCY=4
+      - BENCHMARK_CONCURRENCY=4
+      - MAX_ACTIVE_GAMES_PER_SERVER=1
+      - AGENT_MAX_EPISODE_STEPS=10000
+      - AGENT_STARTUP_AUTOSUBMIT=0
+      - AGENT_STARTUP_PLAN_SELECTION=best
+      - AGENT_HIDDEN_SIZE=512
+      - AGENT_RECURRENT_SIZE=128
+      - AGENT_TRANSFORMER_HEADS=4
+      - AGENT_TRANSFORMER_LAYERS=3
+      - LEAGUE_ENABLE=0
+      - EVOLUTION_IMMIGRANT_RATIO=0.0
+      - FIXED_BENCHMARK_ENABLED=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+volumes:
+  postgres_data_alphago:

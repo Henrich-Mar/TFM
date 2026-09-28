@@ -46,8 +46,10 @@ def _load_seeds(path: Optional[str] = None) -> List[int]:
     source = Path(path).expanduser().resolve() if path else Path(__file__).resolve().parents[1] / "benchmark_seeds.v1.json"
     payload = json.loads(source.read_text(encoding="utf-8"))
     seeds = [int(item) for item in payload.get("seeds", [])]
-    if len(seeds) != 30 or len(set(seeds)) != 30:
-        raise RuntimeError("v2 benchmark requires exactly 30 unique reserved seeds")
+    if not seeds or len(set(seeds)) != len(seeds):
+        raise RuntimeError(f"benchmark seed file must contain non-empty unique seeds: {source}")
+    if path is None and len(seeds) != 30:
+        raise RuntimeError("v2 promotion benchmark requires exactly 30 unique reserved seeds")
     return seeds
 
 
@@ -86,6 +88,7 @@ async def benchmark(
     output_dir: str,
     seeds_path: Optional[str] = None,
     champion: Optional[str] = None,
+    report_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     initialize_v2_runtime()
     is_v3 = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -227,11 +230,17 @@ async def benchmark(
         "seeds": seeds,
         "seat_rotations": 4,
         "concurrency": concurrency,
+        "report_label": str(report_label or "promotion"),
     }
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     checkpoint_token = Path(checkpoint).stem.replace(" ", "_")
-    target = output / f"benchmark_{checkpoint_token}_stage{stage}_{baseline}.json"
+    label_token = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "_"
+        for character in str(report_label or "").strip()
+    )
+    label_suffix = f"_{label_token}" if label_token else ""
+    target = output / f"benchmark_{checkpoint_token}_stage{stage}_{baseline}{label_suffix}.json"
     target.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(
         f"[benchmark] complete baseline={baseline} stage={stage} "
@@ -250,11 +259,27 @@ def main() -> None:
     parser.add_argument("--champion")
     parser.add_argument("--stage", type=int, choices=(0, 1), required=True)
     parser.add_argument("--seeds")
+    parser.add_argument("--report-label")
     parser.add_argument("--output", default=os.getenv("V2_BENCHMARK_DIR", "/app/v2/benchmarks"))
     args = parser.parse_args()
     if args.baseline == "champion" and not args.champion:
         parser.error("--champion is required for champion baseline")
-    print(json.dumps(asyncio.run(benchmark(args.checkpoint, args.baseline, args.stage, args.output, args.seeds, args.champion)), indent=2))
+    print(
+        json.dumps(
+            asyncio.run(
+                benchmark(
+                    args.checkpoint,
+                    args.baseline,
+                    args.stage,
+                    args.output,
+                    args.seeds,
+                    args.champion,
+                    args.report_label,
+                )
+            ),
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

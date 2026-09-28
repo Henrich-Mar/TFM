@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import random
 import shutil
@@ -69,12 +70,15 @@ class _SelfPlayGame:
 class V2SelfPlayRunner:
     def __init__(
         self,
-        bc_checkpoint: str,
+        bc_checkpoint: Optional[str],
         root: str,
         benchmark_interval: int = 25_000,
         seed: int = 100_000,
         initial_stage: Optional[int] = None,
+        from_scratch: bool = False,
     ) -> None:
+        if from_scratch == bool(bc_checkpoint):
+            raise ValueError("choose exactly one of a BC checkpoint or random initialization")
         self.paths = initialize_v2_runtime()
         self.is_v4 = _experiment_version() == "v4"
         self.is_v3 = self.is_v4 or str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -92,9 +96,10 @@ class V2SelfPlayRunner:
         self.metrics = self.root / "metrics"
         for path in (self.checkpoints, self.benchmarks, self.metrics):
             path.mkdir(parents=True, exist_ok=True)
-        report_path = Path(bc_checkpoint).with_name("pretrain_report.json")
-        if not _pretrain_report_allows_ppo(report_path):
-            raise RuntimeError("PPO is blocked until the BC pretrain_report.json has ppo_gate_passed=true")
+        if bc_checkpoint is not None:
+            report_path = Path(bc_checkpoint).with_name("pretrain_report.json")
+            if not _pretrain_report_allows_ppo(report_path):
+                raise RuntimeError("PPO is blocked until the BC pretrain_report.json has ppo_gate_passed=true")
         self.state_path = self.metrics / "selfplay_state.json"
         self.latest_learner_path = self.checkpoints / "latest_learner.pth"
         resume_state: Dict = {}
@@ -106,7 +111,13 @@ class V2SelfPlayRunner:
             resume_state = json.loads(self.state_path.read_text(encoding="utf-8"))
         learner_source = str(self.latest_learner_path) if resume_state else bc_checkpoint
         self.learner = RLAgent(agent_id=f"{self.version}-main-learner")
-        self.learner.load_model(learner_source)
+        if learner_source is not None:
+            self.learner.load_model(learner_source)
+        else:
+            print(
+                "[selfplay] initializing policy from random weights; no behavior-cloning gate applies",
+                flush=True,
+            )
         self.learner.train_from_self_play = True
         self.learner.config.train_from_self_play = True
         self.learner.ppo_enable = True
@@ -130,11 +141,35 @@ class V2SelfPlayRunner:
 
         assert_stage_allowed(self.stage, context="v2 self-play")
         self.seed_cursor = int(resume_state.get("seed_cursor", seed) or seed)
-        benchmark_seed_payload = json.loads(
-            (Path(__file__).resolve().parents[1] / "benchmark_seeds.v1.json").read_text(encoding="utf-8")
+        environment_root = Path(__file__).resolve().parents[1]
+        benchmark_seed_path = environment_root / "benchmark_seeds.v1.json"
+        configured_screen_seed_path = str(os.getenv("BENCHMARK_SCREEN_SEEDS_PATH", "") or "").strip()
+        self.screen_seed_path = (
+            Path(configured_screen_seed_path).expanduser().resolve()
+            if configured_screen_seed_path
+            else environment_root / "benchmark_screen_seeds.v1.json"
         )
-        self.reserved_benchmark_seeds = {int(item) for item in benchmark_seed_payload.get("seeds", [])}
+        self.reserved_benchmark_seeds = set()
+        for reserved_path in (benchmark_seed_path, self.screen_seed_path):
+            reserved_payload = json.loads(reserved_path.read_text(encoding="utf-8"))
+            self.reserved_benchmark_seeds.update(int(item) for item in reserved_payload.get("seeds", []))
         self.benchmark_interval = max(1, int(benchmark_interval))
+        self.screen_min_completion_ratio = min(
+            1.0,
+            max(0.0, float(os.getenv("BENCHMARK_SCREEN_MIN_COMPLETION_RATIO", "0.90"))),
+        )
+        self.screen_teacher_min_first_place_rate = min(
+            1.0,
+            max(0.0, float(os.getenv("BENCHMARK_SCREEN_TEACHER_MIN_FIRST_PLACE_RATE", "0.25"))),
+        )
+        self.screen_champion_min_pairwise_score = min(
+            1.0,
+            max(0.0, float(os.getenv("BENCHMARK_SCREEN_CHAMPION_MIN_PAIRWISE_SCORE", "0.50"))),
+        )
+        self.history_snapshot_interval_updates = max(
+            1,
+            int(os.getenv("HISTORY_SNAPSHOT_INTERVAL_UPDATES", "8")),
+        )
         try:
             self.selfplay_concurrency = max(1, int(os.getenv("SELFPLAY_CONCURRENCY", "1")))
         except (TypeError, ValueError):
@@ -146,8 +181,14 @@ class V2SelfPlayRunner:
         self.game_count = 0
         self.champion_path = self.checkpoints / "champion.pth"
         if not self.champion_path.is_file():
-            shutil.copy2(bc_checkpoint, self.champion_path)
+            if bc_checkpoint is None:
+                self.learner.save_model(str(self.champion_path))
+            else:
+                shutil.copy2(bc_checkpoint, self.champion_path)
         self.history: List[str] = [str(item) for item in (resume_state.get("history", []) or []) if Path(str(item)).is_file()]
+        self.last_history_snapshot_policy_version = int(
+            resume_state.get("last_history_snapshot_policy_version", 0) or 0
+        )
         self.previous_reports: List[Dict] = list(resume_state.get("reports", []) or [])
         self.historical_pool: List[RLAgent] = []
         self._historical_cursor = 0
@@ -297,6 +338,7 @@ class V2SelfPlayRunner:
             "policy_version": self.learner.policy_version,
             "champion": str(self.champion_path),
             "history": self.history,
+            "last_history_snapshot_policy_version": int(self.last_history_snapshot_policy_version),
             "reports": reports,
         }
         state_temporary = self.state_path.with_name(self.state_path.name + ".tmp")
@@ -313,6 +355,46 @@ class V2SelfPlayRunner:
             return lineup
         lineup[int(rng.randrange(4))] = self._take_historical_seat()
         return lineup
+
+    def _remember_history(self, checkpoint: Path) -> None:
+        checkpoint_text = str(checkpoint)
+        self.history = [item for item in self.history if item != checkpoint_text]
+        self.history.append(checkpoint_text)
+        self.history = self.history[-8:]
+
+    def _maybe_archive_history_snapshot(self, decisions: int) -> Optional[str]:
+        """Add policy diversity on cadence without declaring a new champion."""
+        policy_version = int(self.learner.policy_version)
+        if policy_version - int(self.last_history_snapshot_policy_version) < self.history_snapshot_interval_updates:
+            return None
+        target = self.checkpoints / (
+            f"history_policy_{policy_version:06d}_decisions_{int(decisions):09d}.pth"
+        )
+        temporary = target.with_name(target.name + ".tmp")
+        self.learner.save_model(str(temporary))
+        os.replace(temporary, target)
+        self._remember_history(target)
+        self.last_history_snapshot_policy_version = policy_version
+        self._refresh_frozen_pools()
+        print(
+            f"[selfplay] historical snapshot saved policy_version={policy_version} "
+            f"decisions={decisions} retained={len(self.history)}",
+            flush=True,
+        )
+        return str(target)
+
+    def _screen_report_promising(self, report: Dict, baseline: str) -> bool:
+        planned = max(1, int(report.get("planned_games", 0) or 0))
+        completed = max(0, int(report.get("completed_games", 0) or 0))
+        if completed < math.ceil(self.screen_min_completion_ratio * planned):
+            return False
+        if int(report.get("rejection_count", 0) or 0) != 0:
+            return False
+        if baseline == "teacher":
+            return float(report.get("first_place_rate", 0.0) or 0.0) >= self.screen_teacher_min_first_place_rate
+        if baseline == "champion":
+            return float(report.get("pairwise_score", 0.0) or 0.0) >= self.screen_champion_min_pairwise_score
+        raise ValueError(f"unsupported screening baseline: {baseline}")
 
     def _reserve_selfplay_game(self) -> _SelfPlayGame:
         """Reserve one game using the current, unmodified learner policy."""
@@ -366,18 +448,56 @@ class V2SelfPlayRunner:
         candidate_path = self.checkpoints / f"candidate_{decisions:09d}.pth"
         self.learner.save_model(str(candidate_path))
         shutil.copy2(candidate_path, self.latest_learner_path)
-        teacher_report = await benchmark(
-            str(candidate_path), "teacher", self.stage, str(self.benchmarks)
+        screen_teacher_report = await benchmark(
+            str(candidate_path),
+            "teacher",
+            self.stage,
+            str(self.benchmarks),
+            seeds_path=str(self.screen_seed_path),
+            report_label="screen",
         )
-        regression_report = await benchmark(
-            str(candidate_path), "champion", self.stage, str(self.benchmarks), champion=str(self.champion_path)
+        screen_regression_report = await benchmark(
+            str(candidate_path),
+            "champion",
+            self.stage,
+            str(self.benchmarks),
+            seeds_path=str(self.screen_seed_path),
+            champion=str(self.champion_path),
+            report_label="screen",
         )
+        teacher_screen_passed = self._screen_report_promising(screen_teacher_report, "teacher")
+        regression_screen_passed = self._screen_report_promising(screen_regression_report, "champion")
+        screen_passed = teacher_screen_passed and regression_screen_passed
+        teacher_report: Optional[Dict] = None
+        regression_report: Optional[Dict] = None
+        if screen_passed:
+            teacher_report = await benchmark(
+                str(candidate_path), "teacher", self.stage, str(self.benchmarks)
+            )
+            if bool(teacher_report.get("gate_passed", False)):
+                regression_report = await benchmark(
+                    str(candidate_path),
+                    "champion",
+                    self.stage,
+                    str(self.benchmarks),
+                    champion=str(self.champion_path),
+                )
+        else:
+            print(
+                f"[selfplay] full promotion benchmark skipped teacher_screen={teacher_screen_passed} "
+                f"champion_screen={regression_screen_passed}",
+                flush=True,
+            )
         promoted = False
-        if bool(teacher_report.get("gate_passed", False)) and bool(regression_report.get("gate_passed", False)):
+        if (
+            teacher_report is not None
+            and regression_report is not None
+            and bool(teacher_report.get("gate_passed", False))
+            and bool(regression_report.get("gate_passed", False))
+        ):
             historical = self.checkpoints / f"champion_{decisions:09d}.pth"
             shutil.copy2(self.champion_path, historical)
-            self.history.append(str(historical))
-            self.history = self.history[-8:]
+            self._remember_history(historical)
             shutil.copy2(candidate_path, self.champion_path)
             if self.stage == 0:
                 from v2_runtime import stage1_unlocked
@@ -398,6 +518,9 @@ class V2SelfPlayRunner:
             "stage": self.stage,
             "candidate": str(candidate_path),
             "promoted": promoted,
+            "screen_passed": screen_passed,
+            "screen_teacher": screen_teacher_report,
+            "screen_regression": screen_regression_report,
             "teacher": teacher_report,
             "regression": regression_report,
         }
@@ -444,6 +567,7 @@ class V2SelfPlayRunner:
                         flush=True,
                     )
                     await self.learner.optimize_from_rollout_buffer(self.learner.ppo_rollout_steps)
+                    self._maybe_archive_history_snapshot(decisions)
                     print(
                         f"[selfplay] optimization complete elapsed={time.monotonic() - optimize_started_at:.1f}s "
                         f"policy_version={self.learner.policy_version}",
@@ -499,13 +623,27 @@ class V2SelfPlayRunner:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run four-seat TFM RL self-play")
-    parser.add_argument("--bc-checkpoint", required=True)
+    initialization = parser.add_mutually_exclusive_group(required=True)
+    initialization.add_argument("--bc-checkpoint")
+    initialization.add_argument(
+        "--from-scratch",
+        action="store_true",
+        help="initialize a new policy with random weights and bypass only the BC pretrain gate",
+    )
     parser.add_argument("--root", default=os.getenv("TFM_RL_V2_ROOT", "/app/v2"))
     parser.add_argument("--max-decisions", type=int, default=1_000_000)
     parser.add_argument("--benchmark-interval", type=int, default=25_000)
     parser.add_argument("--seed", type=int, default=100_000)
+    parser.add_argument("--stage", type=int, choices=(0, 1), default=0)
     args = parser.parse_args()
-    runner = V2SelfPlayRunner(args.bc_checkpoint, args.root, args.benchmark_interval, args.seed)
+    runner = V2SelfPlayRunner(
+        args.bc_checkpoint,
+        args.root,
+        args.benchmark_interval,
+        args.seed,
+        initial_stage=args.stage,
+        from_scratch=args.from_scratch,
+    )
     asyncio.run(runner.run(args.max_decisions))
 
 

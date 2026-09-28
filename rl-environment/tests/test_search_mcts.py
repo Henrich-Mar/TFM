@@ -365,6 +365,24 @@ def test_no_candidates_returns_no_signal():
     assert outcome.simulations_selected == 0
 
 
+def test_adaptive_early_stop_triggers_on_small_budget():
+    cfg = _config(
+        simulations_per_move=8,
+        leaf_batch=1,
+        early_stop=True,
+        early_stop_min_simulations=16,  # Should adapt down to budget // 2 = 4
+        puct_c=0.0,
+    )
+    outcome, _ = _run(
+        {"d1p0": 0.9, "d1p1": -0.9},
+        cfg,
+        priors=(0.8, 0.2),
+    )
+    assert outcome is not None
+    assert outcome.early_stopped is True
+    assert outcome.simulations_selected < 8
+
+
 def _config(**overrides) -> SearchConfig:
     cfg = SearchConfig(
         enabled=True,

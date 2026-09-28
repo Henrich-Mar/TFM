@@ -32,6 +32,7 @@ class EvalItem:
     player_id: str
     turn_count: int = 0
     recurrent_in: Optional[torch.Tensor] = None
+    state_digest: Optional[str] = None
 
 
 @dataclass
@@ -55,11 +56,14 @@ class PositionEvaluator:
         digest = hashlib.sha256()
         digest.update(str(item.player_id).encode("utf-8", errors="replace"))
         digest.update(str(int(item.turn_count)).encode("ascii"))
-        digest.update(
-            json.dumps(item.player_state, sort_keys=True, separators=(",", ":"), default=str).encode(
-                "utf-8", errors="replace"
+        if item.state_digest:
+            digest.update(str(item.state_digest).encode("ascii"))
+        else:
+            digest.update(
+                json.dumps(item.player_state, sort_keys=True, separators=(",", ":"), default=str).encode(
+                    "utf-8", errors="replace"
+                )
             )
-        )
         if isinstance(item.recurrent_in, torch.Tensor):
             digest.update(item.recurrent_in.detach().float().cpu().reshape(-1).numpy().tobytes())
         return digest.hexdigest()

@@ -122,6 +122,7 @@ def render_entry(entry: Dict[str, Any]) -> str:
 
 
 async def inspect(args: argparse.Namespace) -> Dict[str, Any]:
+    os.environ.setdefault("TM_GAME_TIMEOUT_SEC", "1800")
     initialize_v2_runtime()
     cfg = SearchConfig.from_env()
     cfg.enabled = True

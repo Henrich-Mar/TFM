@@ -55,6 +55,7 @@ class Branch:
     value: Optional[float] = None
     invalid_reason: str = ""
     sent_steps: int = 0
+    state_digest: str = ""
     # Tree integration: the handler receives (branch, state, eval) and returns
     # a full step dict ({playerId, input}) to descend, or None to stop.
     on_own_decision: Optional[Any] = None
@@ -183,6 +184,7 @@ class BranchRunner:
                 player_id=str(prompt_player),
                 turn_count=int(branch.turn_counts.get(str(prompt_player), 0)),
                 recurrent_in=PositionEvaluator.memory_for(branch.memory, str(prompt_player)),
+                state_digest=branch.state_digest,
             )
             rows.append((branch, item, strategic_own, prompt_state))
         if not rows:
@@ -335,6 +337,8 @@ class BranchRunner:
             branch.invalid_reason = "missing_result"
             return
         branch.sent_steps = len(branch.steps)
+        if getattr(result, "state_digest", None):
+            branch.state_digest = str(result.state_digest)
         if result.status == "next_prompt" and result.next_prompt is not None:
             branch.prompt = result.next_prompt
             branch.status = "active"

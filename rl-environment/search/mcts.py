@@ -145,6 +145,7 @@ class MctsSearch:
         value: float,
         memory: Dict[str, Any],
         turn_counts: Dict[str, int],
+        root_digest: str = "",
     ) -> SearchNode:
         root = SearchNode(
             depth=0,
@@ -153,6 +154,7 @@ class MctsSearch:
             value_estimate=float(value),
             memory={pid: tensor.clone() for pid, tensor in memory.items()},
             turn_counts=dict(turn_counts),
+            state_digest=str(root_digest or ""),
         )
         root.edges = _candidate_edges(
             root,
@@ -242,7 +244,8 @@ class MctsSearch:
     def _winner_is_locked(self, root: SearchNode, remaining: int) -> bool:
         """Stop only when no allocation of the remaining visits can change first place."""
         cfg = self.config
-        if not cfg.early_stop or remaining <= 0 or root.visits < int(cfg.early_stop_min_simulations):
+        min_sims = min(int(cfg.early_stop_min_simulations), max(4, self.simulation_budget // 2))
+        if not cfg.early_stop or remaining <= 0 or root.visits < min_sims:
             return False
         live = sorted(root.live_edges(), key=lambda edge: int(edge.visits), reverse=True)
         if not live:
@@ -271,6 +274,7 @@ class MctsSearch:
             on_own_decision=self._make_handler(root),
             trail=[edge],
             nodes=[root],
+            state_digest=str(root.state_digest or ""),
         )
 
     def _backprop(self, branches: List[Branch]) -> None:
@@ -343,6 +347,7 @@ class MctsSearch:
             value_estimate=float(result.value),
             memory=memory,
             turn_counts=dict(branch.turn_counts),
+            state_digest=str(getattr(branch, "state_digest", "") or ""),
         )
         if child.depth < int(self.config.max_root_turns_depth):
             child.edges = _candidate_edges(
@@ -393,6 +398,7 @@ async def decide_puct(
     lowercase_mc: bool,
     evaluator: Optional[PositionEvaluator] = None,
     simulation_budget: Optional[int] = None,
+    root_digest: str = "",
 ) -> Optional[MctsOutcome]:
     search = MctsSearch(
         agent=agent,
@@ -411,6 +417,7 @@ async def decide_puct(
         root_value,
         branch_memory,
         turn_counts,
+        root_digest=root_digest,
     )
     if not root.edges:
         return MctsOutcome(chosen_position=-1, chosen_index=-1, root_visits=0)

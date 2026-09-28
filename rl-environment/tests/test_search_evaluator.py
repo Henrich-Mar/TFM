@@ -164,3 +164,18 @@ def test_forward_exception_falls_back_to_per_item_without_killing_batch():
     evaluator._forward_batch = flaky
     outcomes = evaluator.evaluate_batch(items)
     assert all(outcome is not None for outcome in outcomes)
+
+
+def test_state_digest_cache_hit_and_fast_path():
+    agent = _make_agent()
+    _stub_agent(agent, [1, 2])
+    evaluator = PositionEvaluator(agent)
+    state = {"waitingFor": {"type": "or", "options": [{}, {}]}}
+    # When state_digest is provided, it avoids falling back to json.dumps
+    item1 = EvalItem(player_state=state, player_id="p1", state_digest="digest_abc123")
+    item2 = EvalItem(player_state=state, player_id="p1", state_digest="digest_abc123")
+    item3 = EvalItem(player_state=state, player_id="p1", state_digest="digest_diff456")
+    results = evaluator.evaluate_batch([item1, item2, item3])
+    assert len(results) == 3
+    assert evaluator.cache_hits == 1
+    assert evaluator.cache_misses == 2

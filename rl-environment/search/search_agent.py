@@ -315,6 +315,7 @@ class SearchPolicy:
                 lowercase_mc=root.lowercase_mc,
                 evaluator=evaluator,
                 simulation_budget=simulation_budget,
+                root_digest=root.root_digest,
             )
         else:
             outcome = await decide_lookahead(

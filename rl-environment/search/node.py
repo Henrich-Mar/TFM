@@ -84,6 +84,7 @@ class SearchNode:
     visits: int = 0
     value_sum: float = 0.0
     probes: int = 0
+    state_digest: str = ""
 
     @property
     def q(self) -> float:

@@ -182,6 +182,8 @@ def test_replay_parses_all_statuses():
                 "branchId": "b0",
                 "status": "next_prompt",
                 "appliedSteps": 1,
+                "newStepsApplied": 1,
+                "reusedSteps": 0,
                 "stateDigest": "a" * 64,
                 "nextPrompt": {
                     "playerId": "p2",
@@ -192,6 +194,8 @@ def test_replay_parses_all_statuses():
                 "branchId": "b1",
                 "status": "terminal",
                 "appliedSteps": 4,
+                "newStepsApplied": 1,
+                "reusedSteps": 3,
                 "stateDigest": "b" * 64,
                 "terminal": {
                     "players": [
@@ -231,6 +235,10 @@ def test_replay_parses_all_statuses():
     assert by_id["b3"].status == "boundary"
     assert client.stats.replays == 1
     assert client.stats.applied_steps == 7
+    assert client.stats.new_steps_applied == 4
+    assert client.stats.reused_steps == 3
+    assert client.stats.replay_amplification() == pytest.approx(1.75)
+    assert client.stats.replay_payload_bytes > 0
 
 
 def test_replay_rejects_unknown_branch_status():

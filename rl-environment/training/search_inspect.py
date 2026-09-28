@@ -54,6 +54,7 @@ class TracingSearchPolicy(SearchPolicy):
             entry["legal_action_count"] = len(decision.meta.get("legal_actions", []))
             entry["root_value"] = decision.meta.get("value_old")
             entry["mcts"] = decision.meta.get("mcts", {})
+            entry["search_telemetry"] = decision.meta.get("search_telemetry", {})
         else:
             deltas = {
                 key: int(self.stats.get(key, 0) - before.get(key, 0))
@@ -209,6 +210,13 @@ async def inspect(args: argparse.Namespace) -> Dict[str, Any]:
                     "puct_c": cfg.puct_c,
                     "selection": cfg.selection,
                     "seed": cfg.seed,
+                    "root_prompt_types": cfg.root_prompt_types,
+                    "adaptive_simulations": cfg.adaptive_simulations,
+                    "simulations_two_actions": cfg.simulations_two_actions,
+                    "simulations_four_actions": cfg.simulations_four_actions,
+                    "leaf_batch": cfg.leaf_batch,
+                    "early_stop": cfg.early_stop,
+                    "early_stop_min_simulations": cfg.early_stop_min_simulations,
                 },
                 "game_seed": args.game_seed,
                 "seat": args.seat,

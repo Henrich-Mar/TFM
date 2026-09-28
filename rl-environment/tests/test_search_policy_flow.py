@@ -204,9 +204,14 @@ def test_lookahead_decision_metadata_shape():
         assert meta["recurrent_state_out"] == [0.5, 0.5, 0.5, 0.5]
         assert meta["mcts"]["mode"] == "lookahead"
         assert meta["mcts"]["valid_samples"] == 6
+        assert sum(meta["search_policy_target"]) == pytest.approx(1.0)
+        assert len(meta["search_policy_target"]) == 3
+        assert meta["chosen_action_position"] == 2
         assert policy.stats["searched"] == 1
         client = FakePolicyClient.instances[-1]
         assert client.closed_sessions == ["ses-42"]
+        assert client.aclose_calls == 0
+        asyncio.run(policy.aclose())
         assert client.aclose_calls == 1
 
     _patched(body)()

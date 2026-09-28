@@ -1993,6 +1993,7 @@ class RLAgent:
         episode_steps: List[Dict[str, Any]] = []
         episode_oversized = False
         recorder_finalized = False
+        search_replay_finalized = False
         counter_snapshot_before = self._snapshot_hate_draft_counters()
         game_outcome: Dict[str, Any] = {"completed": False, "rank": 4, "vp": 0}
         max_transport_retries = max(1, self._safe_env_int("AGENT_TRANSPORT_RETRY_LIMIT", 6))
@@ -2125,15 +2126,26 @@ class RLAgent:
                 self.decision_recorder.finish_episode(game_instance.game_id, self.id, recorder_outcome)
                 recorder_finalized = True
 
-            # Queue PPO trajectory for coordinator-driven optimization.
-            if self.train_from_self_play and game_outcome.get("completed", False) and not episode_oversized:
-                reward = self._compute_terminal_reward(
+            terminal_reward: Optional[float] = None
+            if game_outcome.get("completed", False):
+                terminal_reward = self._compute_terminal_reward(
                     game_outcome.get("rank", 4),
                     game_outcome.get("vp", 0),
-                    game_outcome.get("completed", False),
+                    True,
                     game_outcome.get("vp_mean", game_outcome.get("vp", 0)),
+                ) * self.self_play_reward_scale
+            if self.search_policy is not None and hasattr(self.search_policy, "finish_episode"):
+                self.search_policy.finish_episode(
+                    game_instance.game_id,
+                    player_id,
+                    game_outcome,
+                    terminal_reward,
                 )
-                reward *= self.self_play_reward_scale
+                search_replay_finalized = True
+
+            # Queue PPO trajectory for coordinator-driven optimization.
+            if self.train_from_self_play and game_outcome.get("completed", False) and not episode_oversized:
+                reward = float(terminal_reward if terminal_reward is not None else 0.0)
                 if self.ppo_enable:
                     await self._queue_episode_rollout(episode_steps, reward)
                 else:
@@ -2181,10 +2193,27 @@ class RLAgent:
                     )
                 except Exception:
                     logger.debug("Failed to discard incomplete recorded episode", exc_info=True)
+            if (
+                self.search_policy is not None
+                and not search_replay_finalized
+                and hasattr(self.search_policy, "discard_episode")
+            ):
+                try:
+                    self.search_policy.discard_episode(
+                        game_instance.game_id,
+                        str(locals().get("player_id", "") or ""),
+                    )
+                except Exception:
+                    logger.debug("Failed to discard incomplete search replay episode", exc_info=True)
             try:
                 self._clear_recurrent_state_for_player(locals().get("player_id"))
             except Exception:
                 pass
+            if self.search_policy is not None and hasattr(self.search_policy, "aclose"):
+                try:
+                    await self.search_policy.aclose()
+                except Exception:
+                    logger.debug("Failed to close search transport", exc_info=True)
 
     async def _sleep_if_needed(self, seconds: float):
         delay = max(0.0, float(seconds or 0.0))
@@ -2538,6 +2567,19 @@ class RLAgent:
                                 action_meta,
                                 seed=getattr(game_instance, "rl_seed", None),
                             )
+                        if (
+                            action_meta.get("action_source") == "mcts-search"
+                            and self.search_policy is not None
+                            and hasattr(self.search_policy, "record_accepted")
+                        ):
+                            try:
+                                self.search_policy.record_accepted(
+                                    game_instance.game_id,
+                                    player_id,
+                                    action_meta,
+                                )
+                            except Exception:
+                                logger.warning("Failed to stage accepted search replay target", exc_info=True)
                     logger.debug(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
                     if sampled_from_policy and policy_action_idx is not None:
                         if action_meta is not None:

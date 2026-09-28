@@ -19,6 +19,9 @@ from typing import Dict, List, Optional, Tuple
 
 from game_interface import GameServerCluster
 from models.agent import RLAgent
+from search.config import SearchConfig
+from search.replay_store import SearchReplayStore
+from search.search_agent import SearchPolicy
 from tournament_manager import TournamentManager
 from training.v2_benchmark import benchmark
 from v2_runtime import initialize_v2_runtime
@@ -65,6 +68,7 @@ class _SelfPlayGame:
     seed: int
     stage: int
     lineup: List[RLAgent]
+    search_training: bool = False
 
 
 class V2SelfPlayRunner:
@@ -179,6 +183,26 @@ class V2SelfPlayRunner:
         self.next_benchmark_decision = ((resumed_decisions // self.benchmark_interval) + 1) * self.benchmark_interval
         self.progress_path = self.metrics / "selfplay_progress.json"
         self.game_count = 0
+        self.search_game_count = 0
+        try:
+            self.search_selfplay_fraction = min(
+                1.0,
+                max(0.0, float(os.getenv("ALPHAGO_SEARCH_SELFPLAY_FRACTION", "0"))),
+            )
+        except (TypeError, ValueError):
+            self.search_selfplay_fraction = 0.0
+        self.search_replay_store: Optional[SearchReplayStore] = None
+        if self.search_selfplay_fraction > 0.0:
+            replay_dir = Path(
+                os.getenv("ALPHAGO_SEARCH_REPLAY_DIR", str(self.root / "search-replay"))
+            ).expanduser()
+            try:
+                search_replay_max_shards = max(
+                    1, int(os.getenv("ALPHAGO_SEARCH_REPLAY_MAX_SHARDS", "2048"))
+                )
+            except (TypeError, ValueError):
+                search_replay_max_shards = 2048
+            self.search_replay_store = SearchReplayStore(replay_dir, max_shards=search_replay_max_shards)
         self.champion_path = self.checkpoints / "champion.pth"
         if not self.champion_path.is_file():
             if bc_checkpoint is None:
@@ -212,7 +236,8 @@ class V2SelfPlayRunner:
             flush=True,
         )
         print(
-            "[selfplay] lineup=live_policy:4 historical_seat=25%_of_games_after_promotion",
+            "[selfplay] lineup=live_policy:4 historical_seat=25%_of_games_after_promotion "
+            f"search_game_fraction={self.search_selfplay_fraction:.3f}",
             flush=True,
         )
 
@@ -310,6 +335,7 @@ class V2SelfPlayRunner:
             "status": str(status),
             "stage": int(self.stage),
             "games": int(self.game_count),
+            "search_games": int(self.search_game_count),
             "decisions": int(self._total_decisions()),
             "next_benchmark_decision": int(self.next_benchmark_decision),
             "seed_cursor": int(self.seed_cursor),
@@ -405,19 +431,79 @@ class V2SelfPlayRunner:
             seed = self.seed_cursor
             self.seed_cursor += 1
         stage = self.stage
-        lineup = self._lineup(seed)
-        return _SelfPlayGame(number=self.game_count, seed=seed, stage=stage, lineup=lineup)
+        search_training = (
+            getattr(self, "search_replay_store", None) is not None
+            and random.Random(int(seed) ^ 0xA17FA60).random()
+            < float(getattr(self, "search_selfplay_fraction", 0.0))
+        )
+        lineup = self._take_learning_seats(4) if search_training else self._lineup(seed)
+        if search_training:
+            self.search_game_count += 1
+            for seat_index, seat in enumerate(lineup):
+                config = SearchConfig.from_env()
+                config.enabled = True
+                config.selection = str(
+                    os.getenv("ALPHAGO_SEARCH_SELFPLAY_SELECTION", "temperature")
+                ).strip().lower()
+                try:
+                    config.temperature = float(os.getenv("ALPHAGO_SEARCH_SELFPLAY_TEMPERATURE", "1.0"))
+                    config.temperature_until_generation = int(
+                        os.getenv("ALPHAGO_SEARCH_SELFPLAY_TEMPERATURE_GENERATIONS", "4")
+                    )
+                except (TypeError, ValueError):
+                    config.temperature = 1.0
+                    config.temperature_until_generation = 4
+                try:
+                    config.root_noise_alpha = float(
+                        os.getenv("ALPHAGO_SEARCH_SELFPLAY_ROOT_NOISE_ALPHA", "0.05")
+                    )
+                    config.root_noise_weight = float(
+                        os.getenv("ALPHAGO_SEARCH_SELFPLAY_ROOT_NOISE_WEIGHT", "0.25")
+                    )
+                except (TypeError, ValueError):
+                    config.root_noise_alpha = 0.05
+                    config.root_noise_weight = 0.25
+                config.seed = int(seed) * 4 + seat_index
+                config.normalize()
+                try:
+                    replay_max_invalid_rate = float(
+                        os.getenv("ALPHAGO_SEARCH_REPLAY_MAX_INVALID_RATE", "0.10")
+                    )
+                except (TypeError, ValueError):
+                    replay_max_invalid_rate = 0.10
+                seat.search_policy = SearchPolicy(
+                    seat,
+                    config,
+                    replay_store=self.search_replay_store,
+                    replay_max_invalid_rate=replay_max_invalid_rate,
+                )
+                # Search-generated games belong exclusively to the distillation
+                # stream; even fallback policy actions must not enter strict PPO.
+                seat.train_from_self_play = False
+        return _SelfPlayGame(
+            number=self.game_count,
+            seed=seed,
+            stage=stage,
+            lineup=lineup,
+            search_training=search_training,
+        )
 
     async def _run_selfplay_game(self, game: _SelfPlayGame) -> Tuple[_SelfPlayGame, float]:
         """Run one pre-reserved game; PPO updates happen only after its batch completes."""
         started_at = time.monotonic()
-        await self.manager._run_single_game(
-            game.lineup,
-            tournament_id=f"{getattr(self, 'version', 'v2')}_selfplay_stage{game.stage}_{game.seed}",
-            game_seed=game.seed,
-            players_beginner=(game.stage == 0),
-        )
-        return game, time.monotonic() - started_at
+        try:
+            await self.manager._run_single_game(
+                game.lineup,
+                tournament_id=f"{getattr(self, 'version', 'v2')}_selfplay_stage{game.stage}_{game.seed}",
+                game_seed=game.seed,
+                players_beginner=(game.stage == 0),
+            )
+            return game, time.monotonic() - started_at
+        finally:
+            if game.search_training:
+                for seat in game.lineup:
+                    seat.search_policy = None
+                    seat.train_from_self_play = True
 
     async def _run_selfplay_batch(self) -> List[Tuple[_SelfPlayGame, float]]:
         """Run one batch on the current weights. PPO runs only after every game returns."""
@@ -426,7 +512,8 @@ class V2SelfPlayRunner:
         for game in games:
             print(
                 f"[selfplay] starting game={game.number} seed={game.seed} "
-                f"stage={game.stage} decisions={self._total_decisions()}",
+                f"stage={game.stage} search_training={game.search_training} "
+                f"decisions={self._total_decisions()}",
                 flush=True,
             )
         results = await asyncio.gather(

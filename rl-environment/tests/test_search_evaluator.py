@@ -103,6 +103,8 @@ def test_evaluate_batch_matches_single_item_forwards():
     assert abs(batch[1].value - single.value) < 1e-5
     for a, b in zip(batch[0].probabilities, single.probabilities):
         assert abs(a - b) < 1e-5
+    assert evaluator.cache_misses == 1
+    assert evaluator.cache_hits == 2
 
 
 def test_live_recurrent_memory_is_never_mutated():

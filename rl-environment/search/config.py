@@ -61,7 +61,7 @@ class SearchConfig:
     simulations_per_move: int = 32
     max_root_turns_depth: int = 2
     puct_c: float = 1.5
-    leaf_batch: int = 16
+    leaf_batch: int = 32
     max_rollout_steps: int = MAX_STEPS_PER_BRANCH
     max_replay_rounds: int = 40
     request_timeout_sec: float = 30.0
@@ -72,10 +72,16 @@ class SearchConfig:
     require_determinized: bool = True
     stats_log_every: int = 50
     root_noise_alpha: float = 0.05
-    root_noise_weight: float = 0.25
+    root_noise_weight: float = 0.0
     edge_kill_failures: int = 3
     value_horizon: int = 0
-    root_prompt_types: str = "or"
+    root_prompt_types: str = "or,card,space"
+    adaptive_simulations: bool = True
+    simulations_two_actions: int = 8
+    simulations_four_actions: int = 16
+    early_stop: bool = True
+    early_stop_min_simulations: int = 16
+    temperature_until_generation: int = 0
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -88,7 +94,7 @@ class SearchConfig:
             simulations_per_move=_env_int("ALPHAGO_SEARCH_SIMULATIONS", 32),
             max_root_turns_depth=_env_int("ALPHAGO_SEARCH_DEPTH", 2),
             puct_c=_env_float("ALPHAGO_SEARCH_PUCT_C", 1.5),
-            leaf_batch=_env_int("ALPHAGO_SEARCH_LEAF_BATCH", 16),
+            leaf_batch=_env_int("ALPHAGO_SEARCH_LEAF_BATCH", 32),
             max_rollout_steps=_env_int("ALPHAGO_SEARCH_MAX_ROLLOUT_STEPS", MAX_STEPS_PER_BRANCH),
             max_replay_rounds=_env_int("ALPHAGO_SEARCH_MAX_REPLAY_ROUNDS", 40),
             request_timeout_sec=_env_float("ALPHAGO_SEARCH_REQUEST_TIMEOUT_SEC", 30.0),
@@ -99,10 +105,16 @@ class SearchConfig:
             require_determinized=_env_bool("ALPHAGO_SEARCH_REQUIRE_DETERMINIZED", True),
             stats_log_every=_env_int("ALPHAGO_SEARCH_STATS_LOG_EVERY", 50),
             root_noise_alpha=_env_float("ALPHAGO_SEARCH_ROOT_NOISE_ALPHA", 0.05),
-            root_noise_weight=_env_float("ALPHAGO_SEARCH_ROOT_NOISE_WEIGHT", 0.25),
+            root_noise_weight=_env_float("ALPHAGO_SEARCH_ROOT_NOISE_WEIGHT", 0.0),
             edge_kill_failures=_env_int("ALPHAGO_SEARCH_EDGE_KILL_FAILURES", 3),
             value_horizon=_env_int("ALPHAGO_SEARCH_VALUE_HORIZON", 0),
-            root_prompt_types=_env_str("ALPHAGO_SEARCH_ROOT_PROMPTS", "or"),
+            root_prompt_types=_env_str("ALPHAGO_SEARCH_ROOT_PROMPTS", "or,card,space"),
+            adaptive_simulations=_env_bool("ALPHAGO_SEARCH_ADAPTIVE_SIMULATIONS", True),
+            simulations_two_actions=_env_int("ALPHAGO_SEARCH_SIMULATIONS_TWO_ACTIONS", 8),
+            simulations_four_actions=_env_int("ALPHAGO_SEARCH_SIMULATIONS_FOUR_ACTIONS", 16),
+            early_stop=_env_bool("ALPHAGO_SEARCH_EARLY_STOP", True),
+            early_stop_min_simulations=_env_int("ALPHAGO_SEARCH_EARLY_STOP_MIN_SIMULATIONS", 16),
+            temperature_until_generation=_env_int("ALPHAGO_SEARCH_TEMPERATURE_UNTIL_GENERATION", 0),
         )
         cfg.normalize()
         return cfg
@@ -133,9 +145,37 @@ class SearchConfig:
         self.root_noise_weight = min(1.0, max(0.0, float(self.root_noise_weight)))
         self.edge_kill_failures = max(1, min(int(self.edge_kill_failures), 8))
         self.value_horizon = max(0, min(int(self.value_horizon), 8))
+        self.simulations_two_actions = max(1, min(int(self.simulations_two_actions), self.simulations_per_move))
+        self.simulations_four_actions = max(
+            self.simulations_two_actions,
+            min(int(self.simulations_four_actions), self.simulations_per_move),
+        )
+        self.early_stop_min_simulations = max(
+            1,
+            min(int(self.early_stop_min_simulations), self.simulations_per_move),
+        )
+        self.temperature_until_generation = max(0, int(self.temperature_until_generation))
         types = {t.strip() for t in str(self.root_prompt_types or "").split(",") if t.strip()}
-        self.root_prompt_types = ",".join(sorted(types)) if types else "or"
+        self.root_prompt_types = ",".join(sorted(types)) if types else "card,or,space"
 
     @property
     def lookahead_branch_count(self) -> int:
         return int(self.top_k) * int(self.determinizations)
+
+    def simulation_budget(self, legal_action_count: int) -> int:
+        """Return the PUCT budget for a root with ``legal_action_count``.
+
+        Forced roots are handled by :class:`SearchPolicy` before a simulator
+        session is opened. Keeping the zero result here makes the rule explicit
+        and lets tests and future callers share the same policy.
+        """
+        legal = max(0, int(legal_action_count))
+        if legal <= 1:
+            return 0
+        if not self.adaptive_simulations:
+            return int(self.simulations_per_move)
+        if legal == 2:
+            return int(self.simulations_two_actions)
+        if legal <= 4:
+            return int(self.simulations_four_actions)
+        return int(self.simulations_per_move)

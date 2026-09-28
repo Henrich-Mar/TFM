@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -114,7 +115,9 @@ class BranchRunner:
         self.lowercase_mc = bool(lowercase_mc)
 
     async def run(self, branches: List[Branch]) -> List[Branch]:
+        rounds_used = 0
         for _round_no in range(int(self.config.max_replay_rounds)):
+            rounds_used += 1
             unsettled = [b for b in branches if not b.settled]
             if not unsettled:
                 break
@@ -127,12 +130,30 @@ class BranchRunner:
             needing_prompt = [b for b in unsettled if not b.settled and b.prompt is not None]
             if needing_prompt:
                 loop = asyncio.get_running_loop()
+                inference_started = time.perf_counter()
+                cache_hits_before = int(getattr(self.evaluator, "cache_hits", 0))
+                cache_misses_before = int(getattr(self.evaluator, "cache_misses", 0))
                 await loop.run_in_executor(_get_inference_executor(), self._advance_prompts_sync, needing_prompt)
+                self.client.stats.inference_sec += time.perf_counter() - inference_started
+                self.client.stats.prompt_evaluations += len(needing_prompt)
+                self.client.stats.eval_cache_hits += max(
+                    0, int(getattr(self.evaluator, "cache_hits", 0)) - cache_hits_before
+                )
+                self.client.stats.eval_cache_misses += max(
+                    0, int(getattr(self.evaluator, "cache_misses", 0)) - cache_misses_before
+                )
             self._resolve_own_decisions([b for b in branches if b.status == "own_pending"])
             unsent = [b for b in unsettled if not b.settled and len(b.steps) > b.sent_steps]
             if unsent:
                 await self._replay(unsent)
         for branch in branches:
+            if not branch.settled:
+                branch.status = "invalid"
+                branch.invalid_reason = (
+                    "replay_round_limit"
+                    if rounds_used >= int(self.config.max_replay_rounds)
+                    else "rollout_stalled"
+                )
             if branch.status == "terminal":
                 branch.value = terminal_value_from_players(self.root_player_id, branch.terminal_players)
                 if branch.value is None:

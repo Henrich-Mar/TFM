@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 import zlib
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -41,6 +43,9 @@ class MctsOutcome:
     simulations_selected: int = 0
     valid_rollouts: int = 0
     killed_edges: int = 0
+    simulation_budget: int = 0
+    early_stopped: bool = False
+    invalid_reasons: Dict[str, int] = field(default_factory=dict)
 
     def summary(self) -> Dict[str, Any]:
         selected = max(1, int(self.simulations_selected))
@@ -52,6 +57,9 @@ class MctsOutcome:
             "invalid_rollouts": int(self.invalid_rollouts),
             "invalid_rate": round(float(self.invalid_rollouts) / selected, 4),
             "killed_edges": int(self.killed_edges),
+            "simulation_budget": int(self.simulation_budget),
+            "early_stopped": bool(self.early_stopped),
+            "invalid_reasons": dict(self.invalid_reasons),
             "candidates": self.candidates,
         }
 
@@ -125,6 +133,9 @@ class MctsSearch:
         self.valid_rollouts = 0
         self.simulations_selected = 0
         self.killed_edges = 0
+        self.invalid_reasons: Counter[str] = Counter()
+        self.simulation_budget = 0
+        self.early_stopped = False
 
     def build_root(
         self,
@@ -175,10 +186,12 @@ class MctsSearch:
     # batched search loop
     # ------------------------------------------------------------------
 
-    async def search(self, root: SearchNode) -> None:
+    async def search(self, root: SearchNode, simulation_budget: Optional[int] = None) -> None:
         self.apply_root_noise(root)
         cfg = self.config
-        remaining = int(cfg.simulations_per_move)
+        budget = int(cfg.simulations_per_move if simulation_budget is None else simulation_budget)
+        self.simulation_budget = max(0, budget)
+        remaining = self.simulation_budget
         while remaining > 0:
             for edge in root.edges:
                 edge.probes = 0
@@ -193,9 +206,9 @@ class MctsSearch:
             # pick per edge); afterwards spend whole batches on the PUCT
             # choice instead of one sequential replay per simulation.
             if unvisited:
-                round_slots = min(remaining, len(live))
+                round_slots = min(remaining, len(live), int(cfg.leaf_batch))
             else:
-                round_slots = remaining
+                round_slots = min(remaining, int(cfg.leaf_batch))
             picks: List[SearchEdge] = []
             for _slot in range(round_slots):
                 edge = self._select(root)
@@ -222,6 +235,21 @@ class MctsSearch:
             )
             self._backprop(branches)
             remaining -= len(picks)
+            if self._winner_is_locked(root, remaining):
+                self.early_stopped = True
+                break
+
+    def _winner_is_locked(self, root: SearchNode, remaining: int) -> bool:
+        """Stop only when no allocation of the remaining visits can change first place."""
+        cfg = self.config
+        if not cfg.early_stop or remaining <= 0 or root.visits < int(cfg.early_stop_min_simulations):
+            return False
+        live = sorted(root.live_edges(), key=lambda edge: int(edge.visits), reverse=True)
+        if not live:
+            return False
+        if len(live) == 1:
+            return True
+        return int(live[0].visits) > int(live[1].visits) + int(remaining)
 
     def _select(self, root: SearchNode) -> Optional[SearchEdge]:
         edge = root.select(float(self.config.puct_c), fpu=root.value_estimate)
@@ -257,6 +285,7 @@ class MctsSearch:
                     edge.record(float(value))
                 continue
             self.invalid_rollouts += 1
+            self.invalid_reasons[str(branch.invalid_reason or branch.status or "unknown")] += 1
             if branch.trail:
                 edge = branch.trail[-1]
                 if edge.record_failure(cfg.edge_kill_failures):
@@ -363,6 +392,7 @@ async def decide_puct(
     config: SearchConfig,
     lowercase_mc: bool,
     evaluator: Optional[PositionEvaluator] = None,
+    simulation_budget: Optional[int] = None,
 ) -> Optional[MctsOutcome]:
     search = MctsSearch(
         agent=agent,
@@ -383,14 +413,29 @@ async def decide_puct(
         turn_counts,
     )
     if not root.edges:
-        return None
-    await search.search(root)
+        return MctsOutcome(chosen_position=-1, chosen_index=-1, root_visits=0)
+    await search.search(root, simulation_budget=simulation_budget)
     live = root.live_edges()
-    if not live:
-        return None
-    chosen = max(live, key=lambda edge: (int(edge.visits), float(edge.q), float(edge.prior)))
-    if chosen.visits <= 0:
-        return None
+    chosen = max(live, key=lambda edge: (int(edge.visits), float(edge.q), float(edge.prior))) if live else None
+    if chosen is None or chosen.visits <= 0:
+        return MctsOutcome(
+            chosen_position=-1,
+            chosen_index=-1,
+            root_visits=int(root.visits),
+            candidates=root.tree(),
+            invalid_rollouts=int(search.invalid_rollouts),
+            simulations_selected=int(search.simulations_selected),
+            valid_rollouts=int(search.valid_rollouts),
+            killed_edges=int(search.killed_edges),
+            simulation_budget=int(search.simulation_budget),
+            early_stopped=bool(search.early_stopped),
+            invalid_reasons=dict(search.invalid_reasons),
+        )
+    if config.selection == "temperature" and len(live) > 1:
+        temperature = max(1e-3, float(config.temperature))
+        weights = [math.pow(max(1e-9, float(edge.visits)), 1.0 / temperature) for edge in live]
+        rng = random.Random(f"puct-select:{config.seed}:{session_id}")
+        chosen = rng.choices(live, weights=weights, k=1)[0]
     return MctsOutcome(
         chosen_position=int(chosen.position),
         chosen_index=int(chosen.action_index),
@@ -400,4 +445,7 @@ async def decide_puct(
         simulations_selected=int(search.simulations_selected),
         valid_rollouts=int(search.valid_rollouts),
         killed_edges=int(search.killed_edges),
+        simulation_budget=int(search.simulation_budget),
+        early_stopped=bool(search.early_stopped),
+        invalid_reasons=dict(search.invalid_reasons),
     )

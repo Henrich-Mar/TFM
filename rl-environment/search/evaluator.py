@@ -8,6 +8,9 @@ their own recurrent maps, and all forwards run under ``torch.no_grad``.
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -43,6 +46,39 @@ class EvalResult:
 class PositionEvaluator:
     def __init__(self, agent: Any) -> None:
         self.agent = agent
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self._cache: OrderedDict[str, EvalResult] = OrderedDict()
+        self._cache_limit = 512
+
+    def _cache_key(self, item: EvalItem) -> str:
+        digest = hashlib.sha256()
+        digest.update(str(item.player_id).encode("utf-8", errors="replace"))
+        digest.update(str(int(item.turn_count)).encode("ascii"))
+        digest.update(
+            json.dumps(item.player_state, sort_keys=True, separators=(",", ":"), default=str).encode(
+                "utf-8", errors="replace"
+            )
+        )
+        if isinstance(item.recurrent_in, torch.Tensor):
+            digest.update(item.recurrent_in.detach().float().cpu().reshape(-1).numpy().tobytes())
+        return digest.hexdigest()
+
+    @staticmethod
+    def _clone_result(result: EvalResult) -> EvalResult:
+        return EvalResult(
+            descriptors=list(result.descriptors),
+            probabilities=list(result.probabilities),
+            value=float(result.value),
+            recurrent_out=result.recurrent_out.clone() if isinstance(result.recurrent_out, torch.Tensor) else result.recurrent_out,
+            phase_index=int(result.phase_index),
+        )
+
+    def _remember(self, key: str, result: EvalResult) -> None:
+        self._cache[key] = self._clone_result(result)
+        self._cache.move_to_end(key)
+        while len(self._cache) > self._cache_limit:
+            self._cache.popitem(last=False)
 
     # ------------------------------------------------------------------
     # recurrent memory helpers (branch-local copies of live memory)
@@ -112,22 +148,41 @@ class PositionEvaluator:
         legal action set (those branches are dropped by the caller)."""
         results: List[Optional[EvalResult]] = [None] * len(items)
         rows: List[tuple] = []
+        duplicate_indices: Dict[str, List[int]] = {}
         for index, item in enumerate(items):
+            key = self._cache_key(item)
+            cached = self._cache.get(key)
+            if cached is not None:
+                self.cache_hits += 1
+                self._cache.move_to_end(key)
+                results[index] = self._clone_result(cached)
+                continue
+            if key in duplicate_indices:
+                self.cache_hits += 1
+                duplicate_indices[key].append(index)
+                continue
+            self.cache_misses += 1
+            duplicate_indices[key] = [index]
             encoded = self._encode(item)
             if encoded is not None:
-                rows.append((index, encoded))
+                rows.append((index, key, encoded))
         if not rows:
             return results
         try:
-            outputs = self._forward_batch([row for _, row in rows])
-            for (index, _), output in zip(rows, outputs):
-                results[index] = output
+            outputs = self._forward_batch([row for _, _, row in rows])
+            for (index, key, _), output in zip(rows, outputs):
+                self._remember(key, output)
+                for duplicate_index in duplicate_indices[key]:
+                    results[duplicate_index] = self._clone_result(output)
             return results
         except Exception as exc:
             logger.debug("batched search forward failed (%s); falling back to per-item", exc)
-        for index, row in rows:
+        for index, key, row in rows:
             try:
-                results[index] = self._forward_batch([row])[0]
+                output = self._forward_batch([row])[0]
+                self._remember(key, output)
+                for duplicate_index in duplicate_indices[key]:
+                    results[duplicate_index] = self._clone_result(output)
             except Exception as fallback_exc:
                 logger.debug("search evaluation forward failed for one leaf: %s", fallback_exc)
         return results

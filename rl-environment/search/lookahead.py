@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from .config import SearchConfig
@@ -26,12 +27,14 @@ class LookaheadOutcome:
     candidates: List[Dict[str, Any]] = field(default_factory=list)
     valid_samples: int = 0
     invalid_samples: int = 0
+    invalid_reasons: Dict[str, int] = field(default_factory=dict)
 
     def summary(self) -> Dict[str, Any]:
         return {
             "mode": "lookahead",
             "valid_samples": self.valid_samples,
             "invalid_samples": self.invalid_samples,
+            "invalid_reasons": dict(self.invalid_reasons),
             "candidates": self.candidates,
         }
 
@@ -90,12 +93,14 @@ async def decide_lookahead(
 
     per_candidate: Dict[int, List[float]] = {}
     invalid = 0
+    invalid_reasons: Counter[str] = Counter()
     for branch in branches:
         position = int(branch.branch_id.split("-")[1])
         if branch.status in {"leaf", "terminal"} and branch.value is not None:
             per_candidate.setdefault(position, []).append(float(branch.value))
         else:
             invalid += 1
+            invalid_reasons[str(branch.invalid_reason or branch.status or "unknown")] += 1
 
     scored: List[Dict[str, Any]] = []
     ranked_positions: List[int] = []
@@ -122,6 +127,7 @@ async def decide_lookahead(
             candidates=scored,
             valid_samples=0,
             invalid_samples=invalid,
+            invalid_reasons=dict(invalid_reasons),
         )
 
     rng = None
@@ -152,4 +158,5 @@ async def decide_lookahead(
         candidates=scored,
         valid_samples=sum(len(values) for values in per_candidate.values()),
         invalid_samples=invalid,
+        invalid_reasons=dict(invalid_reasons),
     )

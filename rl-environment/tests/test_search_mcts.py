@@ -252,6 +252,26 @@ def test_search_batches_replays_per_round():
     assert max(client.calls) >= 2
 
 
+def test_leaf_batch_caps_each_selection_round():
+    outcome, client = _run(
+        {"d1p0": 0.9, "d1p1": 0.1},
+        _config(simulations_per_move=8, leaf_batch=3),
+    )
+    assert outcome is not None
+    assert max(client.calls) <= 3
+    assert outcome.simulations_selected == 8
+
+
+def test_early_stop_when_visit_winner_cannot_be_caught():
+    outcome, _ = _run(
+        {"d1p0": 0.9, "d1p1": 0.1},
+        _config(simulations_per_move=20, leaf_batch=2, early_stop=True, early_stop_min_simulations=4),
+    )
+    assert outcome is not None
+    assert outcome.early_stopped is True
+    assert outcome.simulations_selected < outcome.simulation_budget
+
+
 def test_search_is_deterministic_for_same_seed():
     first, _ = _run({"d1p0": 0.5, "d1p1": 0.25}, _config(puct_c=1.5))
     second, _ = _run({"d1p0": 0.5, "d1p1": 0.25}, _config(puct_c=1.5))
@@ -307,7 +327,7 @@ def test_rejected_line_is_killed_and_traffic_moves():
     assert outcome.chosen_index == 200
 
 
-def test_transient_rejection_does_not_pollute_value():
+def test_transient_rejection_does_not_pollute_value_and_success_resets_failure_streak():
     # The coverage round visits edges prior-first: edge 0 (prior 0.6) is the
     # first slot. Its first sim is rejected; the kill cap must absorb it and
     # Q must reflect only the later successful rollouts, not a parent-mean
@@ -320,7 +340,7 @@ def test_transient_rejection_does_not_pollute_value():
     assert outcome is not None
     edge0 = next(row for row in outcome.candidates if row["action_index"] == 100)
     assert edge0["dead"] is False
-    assert edge0["failures"] == 1
+    assert edge0["failures"] == 0
     assert edge0["visits"] >= 1
     assert edge0["q"] == edge0["q"] and edge0["q"] >= 0.5
     assert outcome.killed_edges == 0
@@ -328,7 +348,10 @@ def test_transient_rejection_does_not_pollute_value():
 
 def test_every_line_dead_returns_no_signal():
     outcome, _ = _run({}, _config(edge_kill_failures=1), reject_positions={(1, 0), (1, 1)})
-    assert outcome is None
+    assert outcome is not None
+    assert outcome.chosen_position == -1
+    assert outcome.invalid_rollouts == 2
+    assert outcome.killed_edges == 2
 
 
 def test_no_candidates_returns_no_signal():
@@ -337,7 +360,9 @@ def test_no_candidates_returns_no_signal():
         _config(),
         candidates=[{"action_index": 100, "action_position": 0, "label": "x", "decoded_action": None}],
     )
-    assert outcome is None
+    assert outcome is not None
+    assert outcome.chosen_position == -1
+    assert outcome.simulations_selected == 0
 
 
 def _config(**overrides) -> SearchConfig:

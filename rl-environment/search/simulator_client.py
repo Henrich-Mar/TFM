@@ -84,6 +84,8 @@ class BranchResult:
     error_code: str = ""
     error_step_index: int = -1
     error_message: str = ""
+    new_steps_applied: int = 0
+    reused_steps: int = 0
 
     @property
     def usable(self) -> bool:
@@ -97,6 +99,16 @@ class SearchClientStats:
     closes: int = 0
     replay_batch_sec: List[float] = field(default_factory=list)
     applied_steps: int = 0
+    new_steps_applied: int = 0
+    reused_steps: int = 0
+    replay_payload_bytes: int = 0
+    inference_sec: float = 0.0
+    prompt_evaluations: int = 0
+    eval_cache_hits: int = 0
+    eval_cache_misses: int = 0
+    requested_branches: int = 0
+    requested_path_steps: int = 0
+    max_path_steps: int = 0
     failures: Dict[str, int] = field(default_factory=dict)
 
     def record_failure(self, code: str) -> None:
@@ -113,6 +125,17 @@ class SearchClientStats:
             return 0.0
         return self.applied_steps / total
 
+    def new_transitions_per_sec(self) -> float:
+        total = sum(self.replay_batch_sec)
+        if total <= 0.0:
+            return 0.0
+        return self.new_steps_applied / total
+
+    def replay_amplification(self) -> float:
+        if self.new_steps_applied <= 0:
+            return 0.0
+        return self.applied_steps / self.new_steps_applied
+
     def snapshot(self) -> Dict[str, Any]:
         return {
             "starts": self.starts,
@@ -120,7 +143,20 @@ class SearchClientStats:
             "closes": self.closes,
             "mean_batch_sec": round(self.mean_batch_sec(), 4),
             "applied_steps": self.applied_steps,
+            "new_steps_applied": self.new_steps_applied,
+            "reused_steps": self.reused_steps,
+            "replay_payload_bytes": self.replay_payload_bytes,
             "applied_inputs_per_sec": round(self.applied_inputs_per_sec(), 2),
+            "new_transitions_per_sec": round(self.new_transitions_per_sec(), 2),
+            "replay_amplification": round(self.replay_amplification(), 3),
+            "inference_sec": round(float(self.inference_sec), 4),
+            "prompt_evaluations": int(self.prompt_evaluations),
+            "eval_cache_hits": int(self.eval_cache_hits),
+            "eval_cache_misses": int(self.eval_cache_misses),
+            "mean_requested_path_steps": round(
+                self.requested_path_steps / max(1, self.requested_branches), 3
+            ),
+            "max_path_steps": int(self.max_path_steps),
             "failures": dict(self.failures),
         }
 
@@ -246,6 +282,11 @@ class SearchClient:
                     f"branch {branch.get('branchId')!r} exceeds {MAX_STEPS_PER_BRANCH} steps",
                 )
         payload = {"sessionId": str(session_id), "branches": list(branches)}
+        path_lengths = [len(branch.get("steps", []) or []) for branch in branches]
+        self.stats.requested_branches += len(path_lengths)
+        self.stats.requested_path_steps += sum(path_lengths)
+        self.stats.max_path_steps = max([self.stats.max_path_steps, *path_lengths])
+        self.stats.replay_payload_bytes += len(json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8"))
         started = time.perf_counter()
         data = await self._post(ROUTE_REPLAY, payload)
         elapsed = time.perf_counter() - started
@@ -259,6 +300,8 @@ class SearchClient:
                 raise SearchProtocolError("invalid_replay_response", "branch result is not an object")
             result = self._parse_branch_result(item)
             applied += int(result.applied_steps or 0)
+            self.stats.new_steps_applied += int(result.new_steps_applied or 0)
+            self.stats.reused_steps += int(result.reused_steps or 0)
             results.append(result)
         self.stats.replays += 1
         self.stats.replay_batch_sec.append(float(elapsed))
@@ -292,6 +335,8 @@ class SearchClient:
             error_code=str(error.get("code", "") or ""),
             error_step_index=int(error.get("stepIndex", -1) if isinstance(error.get("stepIndex"), (int, float)) else -1),
             error_message=str(error.get("message", "") or ""),
+            new_steps_applied=int(item.get("newStepsApplied", item.get("appliedSteps", 0)) or 0),
+            reused_steps=int(item.get("reusedSteps", 0) or 0),
         )
 
     async def close(self, session_id: str) -> bool:

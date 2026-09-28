@@ -116,6 +116,7 @@ $env:ALPHAGO_RL_SEARCH_ENABLED="1"
 $env:ALPHAGO_RL_SEARCH_DETERMINIZATION_ENABLED="1"
 $env:ALPHAGO_SEARCH_ENABLED="1"      # coordinator-side consumer
 $env:ALPHAGO_SEARCH_MODE="lookahead" # or "puct"
+$env:ALPHAGO_SEARCH_ROOT_PROMPTS="or,card,space"
 docker compose -f docker-compose.rl_hard.yml -f docker-compose.alphago.yml up -d --force-recreate
 ```
 
@@ -140,7 +141,18 @@ The report gains a `search` block:
 gate in [aplhago-mcts.md](aplhago-mcts.md). Tuning controls:
 `ALPHAGO_SEARCH_TOP_K`, `ALPHAGO_SEARCH_DETERMINIZATIONS`,
 `ALPHAGO_SEARCH_SIMULATIONS`, `ALPHAGO_SEARCH_DEPTH`,
-`ALPHAGO_SEARCH_PUCT_C`, `ALPHAGO_SEARCH_SELECTION`, `ALPHAGO_SEARCH_SEED`.
+`ALPHAGO_SEARCH_PUCT_C`, `ALPHAGO_SEARCH_SELECTION`, `ALPHAGO_SEARCH_SEED`,
+`ALPHAGO_SEARCH_ADAPTIVE_SIMULATIONS`,
+`ALPHAGO_SEARCH_SIMULATIONS_TWO_ACTIONS`,
+`ALPHAGO_SEARCH_SIMULATIONS_FOUR_ACTIONS`, `ALPHAGO_SEARCH_LEAF_BATCH`, and
+`ALPHAGO_SEARCH_EARLY_STOP`. Self-play collection is additionally controlled
+by `ALPHAGO_SEARCH_SELFPLAY_FRACTION`, `ALPHAGO_SEARCH_REPLAY_DIR`,
+`ALPHAGO_SEARCH_REPLAY_MAX_SHARDS`, and
+`ALPHAGO_SEARCH_REPLAY_MAX_INVALID_RATE`.
+`ALPHAGO_SEARCH_ROOT_PROMPTS` defaults to `or,card,space`: top-level action
+menus, Research card purchasing, and Action-phase tile placement. Card and
+space continuations are rebuilt by replaying accepted inputs from the preceding
+stable action root; drafting and initial-card selection remain unsupported.
 The client keeps the default 8 candidates × 8 determinizations inside the
 server's 64-branch batch limit. If the search service is off, full, or a root
 is not reconstructible, the candidate silently falls back to plain policy
@@ -164,6 +176,176 @@ Traces land in `rl-alphago/metrics/mcts_trace_seed<seed>_seat<n>.txt` plus a
 JSON with the full visit distribution per decision. Keep
 `ALPHAGO_SEARCH_ENABLED=0` for normal training runs: search is evaluation and
 inspection tooling, and searched actions never train the PPO policy.
+
+### What the seed 920003 trace says
+
+The trace in `rl-alphago/metrics/mcts_trace_seed920003_seat0.json` is useful as
+a performance diagnostic, but it is not a strength benchmark: it covers one
+seat in one game, the game did not complete, and the final ranks/VP are only
+failure placeholders. Its aggregate results are:
+
+| Metric | Observed | Interpretation |
+| --- | ---: | --- |
+| Recorded decisions | 37 | 34 searched, one ineligible, two timed out |
+| Mean search time | 19.1075 s | Approximately 11.8 minutes were spent in search |
+| Mean replay-batch time | 0.23 s | Individual server batches are not unusually slow |
+| Selected simulations | 1,088 | Every successful root requested all 32 simulations |
+| Invalid simulations | 177 (16.27%) | Above the MCTS plan's 10% health gate |
+| Killed tree edges | 10 | Invalid paths are concentrated, not uniformly random |
+| Reported applied inputs/s | 344.61 | Above the 100/s server gate, but includes replayed path prefixes |
+| Search changed the policy top choice | 21/34 (61.8%) | Search is influential; reducing candidate coverage is risky |
+
+The invalid simulations are strongly concentrated in small roots. The two
+one-action roots consumed 64 simulations and rejected 51 of them (79.7%). The
+six two-action roots consumed another 192 simulations and rejected 72 (37.5%).
+Together, roots with at most two legal actions caused 123 of all 177 invalid
+simulations (69.5%). By prompt type, `or` roots rejected 21.3%, `space` roots
+10.2%, and Research `card` roots only 3.1%.
+
+The main latency problem is replay amplification. `search/rollout.py` grows a
+branch one input at a time, while every replay request sends its complete path.
+`SearchSimulationService.ts` then restores the immutable root, determinizes it,
+and reapplies the full path. A path of length `L` therefore applies roughly
+`1 + 2 + ... + L` inputs and requires serial Python/HTTP/server rounds. The
+current PUCT loop commonly runs one batch for first-visit coverage and another
+for the remaining budget, each with as many as 40 replay rounds. Raising the
+45-second decision timeout would hide this cost rather than fix it.
+
+The following speed work is now implemented:
+
+1. Per-decision telemetry reports replay rounds, replayed inputs, new inputs,
+   path-length distribution, Python inference time, HTTP/server time, timeout
+   reason, invalid-reason counts, exact-evaluation cache hits, and payload size.
+   Both `applied_inputs_per_sec` and `new_transitions_per_sec` are retained; the
+   former counts logical paths while the latter counts newly executed inputs.
+2. Search bypasses roots with one legal action and uses an adaptive simulation
+   budget for small roots (for example 8 simulations for two actions, 16 for
+   three or four, and 32 above that). Do not
+   reduce `top_k` first: this trace changed the policy's preferred move in 61.8%
+   of searched roots, and actions outside `top_k` already receive no visits.
+3. The v1 replay request remains backward compatible, but the server now keeps
+   each branch's determinized game in the session. Repeated requests reuse the
+   accepted prefix and execute only appended inputs. A divergent prefix falls
+   back to an immutable-root rebuild. Session close/TTL releases all cached
+   games, and simulation still has zero database/cache side effects.
+4. One HTTP client and keep-alive connection is reused for all searched
+   decisions in a game. Exact evaluations are deduplicated with a bounded cache
+   keyed by observation, player, turn count, and recurrent state. Cross-game
+   GPU batching remains a future optimization; within-decision leaf evaluation
+   is already batched.
+5. `leaf_batch` is now a real PUCT control, with early stopping when the visit
+   leader cannot be overtaken. Smaller leaf batches provide fresher Q feedback
+   but add serial rounds; larger batches favor throughput. Report the trade-off
+   rather than assuming one setting is best.
+6. Evaluation defaults to zero root Dirichlet noise and argmax selection.
+   Search self-play has separate noise and temperature controls, and PUCT now
+   supports visit-temperature selection instead of always taking the maximum.
+
+Before search is allowed to generate training games, require completed
+fixed-seed traces, no decision timeouts, less than 10% invalid simulations
+(target less than 5%), and a measured end-to-end speedup. Also run paired
+search-on/search-off games using the same checkpoint, seats, and seeds: changing
+the action frequently is not evidence that the change is stronger.
+
+## Upgrade path: search-generated self-play
+
+Turning search on inside the existing PPO runner is not sufficient. PPO is
+configured as strict on-policy training, while an MCTS action is sampled from
+the search visit distribution rather than from the stored policy distribution.
+Mixing those actions directly into the PPO buffer gives the loss the wrong
+behavior-policy probability. Keep `exclude_from_rollout=true` until one of the
+following explicit training paths exists.
+
+The implemented first step is search distillation. A configurable fraction of
+self-play games can run all four live seats with search and store supervised
+records under `rl-alphago/search-replay/`. Those games are excluded in their
+entirety from PPO, including decisions where search falls back to the policy.
+Each committed record contains:
+
+- the searching player's information-set observation and recurrent input;
+- all legal action descriptors and a normalized visit target
+  `pi(a) = N(a) / sum_b N(b)` (not only the chosen action);
+- the root value/Q diagnostics, determinization count, invalid rate, and search
+  configuration for auditability; and
+- the final terminal reward `z` from that player's perspective once the game
+  completes. Incomplete games must not produce value targets.
+
+Only completed episodes with no timeout/error fallback and an aggregate invalid
+rate at or below `ALPHAGO_SEARCH_REPLAY_MAX_INVALID_RATE` are committed. Shards
+are atomic, schema-versioned, bounded by a configurable window, and include the
+policy version, seed-derived search configuration, seat, and terminal result.
+
+Start a conservative 5% collection pilot with:
+
+```powershell
+$env:ALPHAGO_RL_SEARCH_ENABLED="1"
+$env:ALPHAGO_RL_SEARCH_DETERMINIZATION_ENABLED="1"
+$env:ALPHAGO_SEARCH_MODE="puct"
+$env:ALPHAGO_SEARCH_SELFPLAY_FRACTION="0.05"
+$env:ALPHAGO_SEARCH_REPLAY_MAX_INVALID_RATE="0.10"
+docker compose -f docker-compose.rl_hard.yml -f docker-compose.alphago.yml up -d --force-recreate
+```
+
+Search games use `ALPHAGO_SEARCH_SELFPLAY_SELECTION=temperature`, root noise
+weight `0.25`, and visit temperature `1.0` through generation four by default;
+later generations switch to argmax. Ordinary PPO games and the default
+`ALPHAGO_SEARCH_SELFPLAY_FRACTION=0` behavior are unchanged.
+
+Distill completed shards into a separate candidate rather than mutating the
+live PPO learner or its on-policy buffer:
+
+```powershell
+docker compose -f docker-compose.rl_hard.yml -f docker-compose.alphago.yml run --rm --no-deps `
+  rl-coordinator python -m training.search_distill `
+  --checkpoint /app/alphago/checkpoints/latest_learner.pth `
+  --replay-dir /app/alphago/search-replay `
+  --output /app/alphago/checkpoints/search_distilled_candidate.pth `
+  --epochs 1 --batch-size 64 --learning-rate 1e-5
+```
+
+The trainer minimizes policy cross-entropy against `pi` plus a weighted Huber
+value loss against `z`, writes a report beside the candidate, and increments
+its policy version. Benchmark this candidate against both its source checkpoint
+and the champion before promotion. It is never loaded automatically into the
+running PPO learner.
+
+The full AlphaGo-Zero-style path is a separate trainer, not a PPO option:
+
+```text
+current network -> information-set MCTS actors -> (observation, pi, z) replay
+        ^                                                   |
+        |                                                   v
+   promoted model <- paired gates <- candidate <- policy + value training
+```
+
+For that trainer:
+
+1. Let every live seat use the same frozen actor checkpoint for the duration of
+   a game. Sample from visit counts early in the game and switch to argmax later.
+2. Train the policy head from the full legal-action visit distribution and the
+   value head from terminal outcomes, retaining the existing auxiliary losses
+   only when their labels remain valid.
+3. Use a bounded replay window spanning several recent policy versions. Keep
+   policy version, search configuration, game seed, seat, and schema version in
+   every shard so stale or incompatible data can be quarantined.
+4. Freeze a candidate for evaluation and use the existing teacher/champion
+   screens and full promotion gates. Never let evaluation games enter replay.
+5. Preserve the historical opponent pool to reduce four-player cycling, but
+   identify which seats used which frozen checkpoint in every training game.
+
+Terraforming Mars is an imperfect-information game, so these actors are closer
+to information-set MCTS than to the original perfect-information AlphaGo Zero
+loop. Every simulation must determinize from only the searching player's root
+information, the network must receive only that player's normal observation,
+and visit targets must aggregate multiple determinizations. Do not cache or
+reuse a node across states unless its key includes the complete information set
+available to that player. Candidate truncation also needs attention before full
+self-play: a permanently excluded low-prior legal move can never gain visits or
+become a positive policy target.
+
+The current safe default remains `ALPHAGO_SEARCH_SELFPLAY_FRACTION=0`. Increasing
+the fraction is an explicit data-collection choice and should follow completed
+fixed-seed traces plus paired search-on/search-off strength measurements.
 
 ## Start training
 

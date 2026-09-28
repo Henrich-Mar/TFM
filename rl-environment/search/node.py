@@ -45,6 +45,9 @@ class SearchEdge:
     def record(self, value: float) -> None:
         self.visits += 1
         self.value_sum += float(value)
+        # Failure pruning is intentionally consecutive: any successful sample
+        # proves the edge remains executable under at least one fresh rollout.
+        self.failures = 0
 
     def record_failure(self, kill_after: int) -> bool:
         """Count a rollout failure; return True when this call killed the edge."""

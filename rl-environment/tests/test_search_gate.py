@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from search.config import MAX_BRANCHES_PER_BATCH, SearchConfig  # noqa: E402
-from search.prompts import is_strategic_prompt, strategic_options  # noqa: E402
+from search.prompts import is_search_root, is_strategic_prompt, strategic_options  # noqa: E402
 from search.search_agent import SearchPolicy  # noqa: E402
 from models.agent import AgentConfig, RLAgent  # noqa: E402
 
@@ -37,6 +37,40 @@ def test_continuation_prompts_are_not_strategic():
     assert not is_strategic_prompt({"waitingFor": None})
     assert not is_strategic_prompt({})
     assert strategic_options(None) == []
+
+
+def test_research_card_purchase_and_action_space_are_search_roots_when_enabled():
+    card_state = {
+        "game": {"phase": "research"},
+        "waitingFor": {"type": "card", "cards": [{"name": "A"}, {"name": "B"}], "min": 0, "max": 2},
+    }
+    space_state = {
+        "game": {"phase": "action"},
+        "waitingFor": {"type": "space", "spaces": ["01", "02"]},
+    }
+    assert is_search_root(card_state, "or,card,space")
+    assert is_search_root(space_state, "or,card,space")
+    assert not is_search_root(card_state, "or")
+    assert not is_search_root(space_state, "or")
+
+
+def test_card_and_space_roots_are_phase_scoped_and_require_a_choice():
+    assert not is_search_root(
+        {"game": {"phase": "action"}, "waitingFor": {"type": "card", "cards": [{"name": "A"}], "min": 0, "max": 1}},
+        "or,card,space",
+    )
+    assert not is_search_root(
+        {"game": {"phase": "research"}, "waitingFor": {"type": "space", "spaces": ["01", "02"]}},
+        "or,card,space",
+    )
+    assert not is_search_root(
+        {"game": {"phase": "action"}, "waitingFor": {"type": "space", "spaces": ["01"]}},
+        "or,card,space",
+    )
+    assert not is_search_root(
+        {"game": {"phase": "research"}, "waitingFor": {"type": "card", "cards": [{"name": "A"}], "min": 0, "max": 0}},
+        "or,card,space",
+    )
 
 
 def test_gate_rejects_non_strategic_and_disabled_before_touching_server():
@@ -72,6 +106,17 @@ def test_gate_rejects_non_strategic_and_disabled_before_touching_server():
     )
     assert decision is None
     assert disabled.stats["eligible_roots"] == 0
+
+
+def test_adaptive_simulation_budgets_skip_forced_and_scale_small_roots():
+    cfg = SearchConfig(simulations_per_move=32, adaptive_simulations=True)
+    cfg.normalize()
+    assert cfg.simulation_budget(1) == 0
+    assert cfg.simulation_budget(2) == 8
+    assert cfg.simulation_budget(4) == 16
+    assert cfg.simulation_budget(5) == 32
+    cfg.adaptive_simulations = False
+    assert cfg.simulation_budget(2) == 32
 
 
 def test_config_reads_env_and_clamps_branch_budget(monkeypatch):

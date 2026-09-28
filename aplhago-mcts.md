@@ -133,7 +133,8 @@ SearchBranchResult
   PUCT spending, ≤64 branches per replay request) with Dirichlet root noise and
   FPU fallback for unvisited edges.
 - `search_agent.py` — `SearchPolicy.decide` gates on strategic top-level
-  prompts, runs one search per decision under a timeout, and returns a
+  action menus, Research card-purchase prompts, and Action-phase tile-placement
+  prompts; it runs one search per eligible decision under a timeout and returns a
   searched action with visit/prior metadata. Any failure degrades to plain
   policy sampling.
 
@@ -153,9 +154,11 @@ Environment controls: `ALPHAGO_SEARCH_ENABLED`, `ALPHAGO_SEARCH_MODE`
 Dirichlet noise, default 0.05/0.25), `ALPHAGO_SEARCH_EDGE_KILL_FAILURES`
 (consecutive rollout failures before an edge is pruned, default 3),
 `ALPHAGO_SEARCH_VALUE_HORIZON` (extra policy-sampled own turns after the tree
-is exhausted, default 0), and `ALPHAGO_SEARCH_ROOT_PROMPTS` (comma list
-widening searchable roots beyond `or`, e.g. `or,card`; rollout leaves always
-stay `or`). The client clamps `top_k × determinizations` to the 64-branch
+is exhausted, default 0), and `ALPHAGO_SEARCH_ROOT_PROMPTS` (comma list,
+default `or,card,space`; rollout tree leaves always stay `or`). Card/space roots
+are reconstructed from the last stable action snapshot plus the accepted-input
+journal because their live callbacks are not serializable. Drafting remains
+unsupported. The client clamps `top_k × determinizations` to the 64-branch
 batch limit.
 
 Benchmark and trace output now reports per-decision and aggregated rollout

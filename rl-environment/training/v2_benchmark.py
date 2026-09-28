@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from game_interface import GameServerCluster
 from models.agent import RLAgent
 from models.decision_policy import HeuristicTeacherPolicy, RandomLegalPolicy
+from search import SearchConfig, SearchPolicy
 from tournament_manager import TournamentManager
 from v2_runtime import initialize_v2_runtime
 
@@ -96,6 +97,15 @@ async def benchmark(
     candidate = _frozen_neural(checkpoint, f"{version}-candidate")
     if is_v3:
         candidate.set_v3_feature_scale(1.0)
+    search_config = SearchConfig.from_env()
+    if search_config.enabled:
+        candidate.search_policy = SearchPolicy(candidate, search_config)
+        print(
+            f"[benchmark] MCTS search enabled mode={search_config.mode} "
+            f"top_k={search_config.top_k} determinizations={search_config.determinizations} "
+            f"simulations={search_config.simulations_per_move} depth={search_config.max_root_turns_depth}",
+            flush=True,
+        )
     seeds = _load_seeds(seeds_path)
     cluster = GameServerCluster([item.strip() for item in os.getenv("GAME_SERVERS", "localhost:8080").split(",") if item.strip()])
     try:
@@ -231,6 +241,11 @@ async def benchmark(
         "seat_rotations": 4,
         "concurrency": concurrency,
         "report_label": str(report_label or "promotion"),
+        "search": (
+            candidate.search_policy.snapshot_stats()
+            if getattr(candidate, "search_policy", None) is not None
+            else {"enabled": False}
+        ),
     }
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)

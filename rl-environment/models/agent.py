@@ -907,10 +907,12 @@ class RLAgent:
         agent_id: str = None,
         decision_policy: Optional[DecisionPolicy] = None,
         decision_recorder: Optional[Any] = None,
+        search_policy: Optional[Any] = None,
     ):
         self.id = agent_id or str(uuid.uuid4())
         self.decision_policy = decision_policy
         self.decision_recorder = decision_recorder
+        self.search_policy = search_policy
         self.deterministic_actions = False
         if config is None:
             config = self.build_env_config()
@@ -2399,18 +2401,30 @@ class RLAgent:
                     self._log_stuck_context(game_instance, player_id, player_state, "startup_setup_rejected")
                     await self._sleep_if_needed(self.failure_pause_sec)
 
-            # 1. Try a policy-driven action
-            policy_action, policy_action_idx, sampled_from_policy, action_meta = await self._get_action_from_network(
-                planner_state,
-                player_state,
-                filtered_action_descriptors,
-                raw_available_actions,
+            # 1. Try a searched action at eligible strategic roots, else the policy.
+            policy_action, policy_action_idx, sampled_from_policy, action_meta = await self._get_action_from_search(
+                game_instance=game_instance,
                 player_id=player_id,
-                force_random=False,
+                player_state=player_state,
+                planner_state=planner_state,
+                action_descriptors=filtered_action_descriptors,
+                raw_available_actions=raw_available_actions,
             )
+            if policy_action is None:
+                policy_action, policy_action_idx, sampled_from_policy, action_meta = await self._get_action_from_network(
+                    planner_state,
+                    player_state,
+                    filtered_action_descriptors,
+                    raw_available_actions,
+                    player_id=player_id,
+                    force_random=False,
+                )
             if policy_action:
                 guided_snapshot_id = ""
-                execution_action_source = "teacher" if self.decision_policy is not None else "policy"
+                execution_action_source = str(
+                    (action_meta or {}).get("action_source")
+                    or ("teacher" if self.decision_policy is not None else "policy")
+                )
                 policy_action, policy_action_idx, execution_action_source = self._apply_teacher_shard_replay_override(
                     legal_descriptors=raw_action_descriptors,
                     policy_action=policy_action,
@@ -2425,6 +2439,8 @@ class RLAgent:
                 self._bump_decision_stat('policy_attempts')
                 if sampled_from_policy:
                     self._bump_decision_stat('policy_sampled_actions')
+                elif isinstance(action_meta, dict) and action_meta.get("action_source") == "mcts-search":
+                    self._bump_decision_stat('mcts_search_actions')
                 else:
                     self._bump_decision_stat('epsilon_random_actions')
                 logger.debug(f"Agent {self.id[:8]} attempting policy action: {policy_action}")
@@ -3716,6 +3732,50 @@ class RLAgent:
                 _move_network_and_optimizer_to(self.network, self.optimizer, cpu)
                 self._inference_device = cpu
                 return self._sync_forward_impl(planner_state, phase_index, recurrent_state, cpu)
+
+    async def _get_action_from_search(
+        self,
+        game_instance: GameInstance,
+        player_id: str,
+        player_state: Dict[str, Any],
+        planner_state: Dict[str, Any],
+        action_descriptors: List[Dict[str, Any]],
+        raw_available_actions: List[int],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[int], bool, Optional[Dict[str, Any]]]:
+        """Ask the MCTS search policy for an action at eligible strategic roots.
+
+        Returns the same shape as ``_get_action_from_network``.  A ``None``
+        action means search declined this prompt and the caller must fall back
+        to ordinary policy sampling.
+        """
+        if self.search_policy is None:
+            return None, None, False, None
+        try:
+            decision = await self.search_policy.decide(
+                game_instance=game_instance,
+                player_id=player_id,
+                player_state=player_state,
+                planner_state=planner_state,
+                action_descriptors=action_descriptors,
+                raw_available_actions=raw_available_actions,
+            )
+        except Exception as exc:
+            logger.warning("Search policy errored for agent %s: %s", self.id[:8], exc)
+            return None, None, False, None
+        if decision is None:
+            return None, None, False, None
+        payload = getattr(decision, "decoded_action", None)
+        meta = getattr(decision, "meta", None)
+        action_index = getattr(decision, "action_index", None)
+        if (
+            not isinstance(payload, dict)
+            or not payload
+            or action_index is None
+            or not isinstance(meta, dict)
+            or not meta
+        ):
+            return None, None, False, None
+        return dict(payload), int(action_index), False, meta
 
     async def _get_action_from_network(
         self,

@@ -5,6 +5,10 @@ Terraforming Mars games. All live seats share the same network, optimizer, and
 rollout buffer. It is inspired by AlphaGo Zero's self-play loop, but it uses PPO
 without Monte Carlo tree search.
 
+The TypeScript search-simulation foundation for the next MCTS phase is
+documented in [aplhago-mcts.md](aplhago-mcts.md). It ships disabled and does
+not change the current PPO training loop.
+
 The profile now uses inexpensive screening benchmarks during training and runs
 the full promotion suite only for promising candidates. This keeps routine
 work near an 80/10/10 split between self-play, teacher screening, and champion
@@ -95,6 +99,71 @@ This means approximately 6.25% of training seats are historical after the
 first snapshot, while 93.75% remain live-policy seats. Training therefore gains
 opponent diversity even when a from-scratch learner has not beaten the teacher
 yet.
+
+## Optional MCTS search for benchmarks (disabled by default)
+
+The Python search consumer ([aplhago-mcts.md](aplhago-mcts.md)) can let a
+frozen benchmark candidate search its strategic top-level prompts with
+determinized rollouts through the game server's `/api/rl/search` service.
+Search is evaluation-only: searched actions never enter the PPO buffer, and
+self-play training does not use it.
+
+Search requires the servers to run the search service with determinization
+enabled, because opponent continuations need fair hidden-information samples:
+
+```powershell
+$env:ALPHAGO_RL_SEARCH_ENABLED="1"
+$env:ALPHAGO_RL_SEARCH_DETERMINIZATION_ENABLED="1"
+$env:ALPHAGO_SEARCH_ENABLED="1"      # coordinator-side consumer
+$env:ALPHAGO_SEARCH_MODE="lookahead" # or "puct"
+docker compose -f docker-compose.rl_hard.yml -f docker-compose.alphago.yml up -d --force-recreate
+```
+
+Then run a searched candidate with the ordinary benchmark entry point, for
+example `python -m training.v2_benchmark --checkpoint ... --baseline teacher ...`.
+The report gains a `search` block:
+
+```json
+{
+  "search": {
+    "enabled": true,
+    "mode": "lookahead",
+    "searched_decisions": 1810,
+    "search_fallbacks": 12,
+    "mean_replay_batch_sec": 0.21,
+    "applied_inputs_per_sec": 132.5
+  }
+}
+```
+
+`applied_inputs_per_sec` is the measured feed for the 100 inputs/s hardware
+gate in [aplhago-mcts.md](aplhago-mcts.md). Tuning controls:
+`ALPHAGO_SEARCH_TOP_K`, `ALPHAGO_SEARCH_DETERMINIZATIONS`,
+`ALPHAGO_SEARCH_SIMULATIONS`, `ALPHAGO_SEARCH_DEPTH`,
+`ALPHAGO_SEARCH_PUCT_C`, `ALPHAGO_SEARCH_SELECTION`, `ALPHAGO_SEARCH_SEED`.
+The client keeps the default 8 candidates × 8 determinizations inside the
+server's 64-branch batch limit. If the search service is off, full, or a root
+is not reconstructible, the candidate silently falls back to plain policy
+sampling — completion and rejection rates stay the promotion criteria.
+
+For a strict A/B of search versus sampling, run the same checkpoint and seeds
+once with `ALPHAGO_SEARCH_ENABLED=0` and once with it set; weights, seats, and
+seeds are identical, so any difference comes from search alone.
+
+To see one decision at a time, `training.search_inspect` plays a single
+fixed-seed game and prints/saves each searched tree (`P` prior, `N` visits,
+`V` mean simulated value, `*` chosen):
+
+```powershell
+docker compose -f docker-compose.rl_hard.yml -f docker-compose.alphago.yml run --rm --no-deps `
+  -e GAME_SERVERS=tfm-server-1:8080 rl-coordinator python -m training.search_inspect `
+  --checkpoint /app/alphago/checkpoints/latest_learner.pth --game-seed 920003 --mode puct
+```
+
+Traces land in `rl-alphago/metrics/mcts_trace_seed<seed>_seat<n>.txt` plus a
+JSON with the full visit distribution per decision. Keep
+`ALPHAGO_SEARCH_ENABLED=0` for normal training runs: search is evaluation and
+inspection tooling, and searched actions never train the PPO policy.
 
 ## Start training
 

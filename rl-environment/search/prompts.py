@@ -1,0 +1,62 @@
+"""Prompt classification for search roots and rollout continuations."""
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+
+STRATEGIC_PROMPT_TYPE = "or"
+
+
+def waiting_for(player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(player_state, dict):
+        return {}
+    waiting = player_state.get("waitingFor")
+    return waiting if isinstance(waiting, dict) else {}
+
+
+def prompt_type(player_state: Optional[Dict[str, Any]]) -> str:
+    return str(waiting_for(player_state).get("type", "") or "").strip().lower()
+
+
+def strategic_options(player_state: Optional[Dict[str, Any]]) -> list:
+    """Options of a top-level ``or`` prompt, or an empty list for any other type."""
+    waiting = waiting_for(player_state)
+    if str(waiting.get("type", "") or "").strip().lower() != STRATEGIC_PROMPT_TYPE:
+        return []
+    options = waiting.get("options")
+    return options if isinstance(options, list) else []
+
+
+def is_strategic_prompt(player_state: Optional[Dict[str, Any]]) -> bool:
+    """A root is searchable only at a top-level action-selection prompt.
+
+    Forced choices, payments, placements, and other continuation prompts stay
+    policy-only, matching the Phase 2 macro-action design.
+    """
+    return len(strategic_options(player_state)) >= 2
+
+
+def is_search_root(player_state: Optional[Dict[str, Any]], root_prompt_types: str = "or") -> bool:
+    """Root gate for ``SearchPolicy.decide``, wider than rollout leaves.
+
+    ``root_prompt_types`` is a comma-separated list (default ``"or"``).  Extra
+    prompt types (``card``, ``space``) can be opted in once their prompts are
+    known to round-trip through the simulator; rollout leaves and continuations
+    always use :func:`is_strategic_prompt` regardless.
+    """
+    allowed = {t.strip().lower() for t in str(root_prompt_types or "or").split(",") if t.strip()}
+    if allowed == {STRATEGIC_PROMPT_TYPE}:
+        return is_strategic_prompt(player_state)
+    waiting = waiting_for(player_state)
+    prompt = str(waiting.get("type", "") or "").strip().lower()
+    if prompt not in allowed:
+        return False
+    options = waiting.get("options")
+    return isinstance(options, list) and len(options) >= 2
+
+
+def is_terminal_prompt(player_state: Optional[Dict[str, Any]]) -> bool:
+    waiting = waiting_for(player_state)
+    if not waiting:
+        return True
+    waiting_type = prompt_type(player_state)
+    return waiting_type in {"", "nothing", "pass"} and not waiting.get("options")

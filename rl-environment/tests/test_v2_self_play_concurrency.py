@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import numpy as np
+import pytest
 import torch
 
 from models.agent import RLAgent
@@ -118,9 +120,16 @@ def _runner_with_seats(seats: list) -> V2SelfPlayRunner:
     runner = object.__new__(V2SelfPlayRunner)
     runner.history = []
     runner.historical_pool = []
+    runner.champion_pool = []
+    runner.teacher_pool = []
     runner.learning_seats = seats
     runner._seat_cursor = 0
     runner._historical_cursor = 0
+    runner._champion_cursor = 0
+    runner._teacher_cursor = 0
+    runner.lineup_live_fraction = 1.0
+    runner.lineup_champion_fraction = 0.0
+    runner.lineup_teacher_fraction = 0.0
     return runner
 
 
@@ -143,13 +152,13 @@ def test_empty_history_seats_four_copies_of_the_live_policy() -> None:
     assert all(seat.train_from_self_play and seat.ppo_enable for seat in lineup)
 
 
-def test_quarter_draw_replaces_one_seat_with_frozen_history(monkeypatch) -> None:
+def test_champion_draw_seats_one_learner_against_three_frozen_champions(monkeypatch) -> None:
     class _FixedRandom:
         def __init__(self, seed: int) -> None:
             del seed
 
         def random(self) -> float:
-            return 0.10
+            return 0.50
 
         def randrange(self, stop: int) -> int:
             assert stop == 4
@@ -160,37 +169,50 @@ def test_quarter_draw_replaces_one_seat_with_frozen_history(monkeypatch) -> None
         for seat in range(4)
     ]
     runner = _runner_with_seats(seats)
-    runner.history = ["past.pth"]
-    runner.historical_pool = [
-        SimpleNamespace(id="historical-0", train_from_self_play=False, ppo_enable=False)
+    runner.lineup_live_fraction = 0.40
+    runner.lineup_champion_fraction = 0.40
+    runner.lineup_teacher_fraction = 0.20
+    runner.champion_pool = [
+        SimpleNamespace(id=f"champion-{idx}", train_from_self_play=False, ppo_enable=False)
+        for idx in range(3)
     ]
     monkeypatch.setattr("training.v2_self_play.random.Random", _FixedRandom)
 
     lineup = runner._lineup(9)
 
-    assert lineup[2].id == "historical-0"
-    assert lineup[2].train_from_self_play is False
-    assert lineup[2].ppo_enable is False
-    assert [seat.id for seat in lineup if seat.train_from_self_play] == ["self-0", "self-1", "self-3"]
+    assert lineup[2].id == "self-0"
+    assert [seat.id for seat in lineup if not seat.train_from_self_play] == [
+        "champion-0", "champion-1", "champion-2"
+    ]
+    assert [seat.id for seat in lineup if seat.train_from_self_play] == ["self-0"]
 
 
-def test_history_keeps_four_learning_seats_when_the_draw_misses(monkeypatch) -> None:
-    class _Miss:
+def test_teacher_draw_seats_one_learner_against_three_teachers(monkeypatch) -> None:
+    class _TeacherDraw:
         def __init__(self, seed: int) -> None:
             del seed
 
         def random(self) -> float:
-            return 0.25
+            return 0.95
+
+        def randrange(self, stop: int) -> int:
+            assert stop == 4
+            return 1
 
     seats = [SimpleNamespace(id=f"self-{seat}", train_from_self_play=True) for seat in range(4)]
     runner = _runner_with_seats(seats)
-    runner.history = ["past.pth"]
-    runner.historical_pool = [SimpleNamespace(id="historical-0", train_from_self_play=False)]
-    monkeypatch.setattr("training.v2_self_play.random.Random", _Miss)
+    runner.lineup_live_fraction = 0.40
+    runner.lineup_champion_fraction = 0.40
+    runner.lineup_teacher_fraction = 0.20
+    runner.teacher_pool = [
+        SimpleNamespace(id=f"teacher-{idx}", train_from_self_play=False)
+        for idx in range(3)
+    ]
+    monkeypatch.setattr("training.v2_self_play.random.Random", _TeacherDraw)
 
     lineup = runner._lineup(9)
 
-    assert [seat.id for seat in lineup] == ["self-0", "self-1", "self-2", "self-3"]
+    assert [seat.id for seat in lineup] == ["teacher-0", "self-0", "teacher-1", "teacher-2"]
 
 
 def test_learning_seat_rollout_uses_leader_buffer_and_policy_version(monkeypatch) -> None:
@@ -245,36 +267,47 @@ def test_historical_seat_weights_stay_fixed_when_leader_updates(tmp_path: Path) 
     assert frozen.deterministic_actions is True
 
 
-def test_historical_pool_loads_every_retained_checkpoint(monkeypatch) -> None:
+def test_unpromoted_history_is_not_loaded_into_training_pool(monkeypatch) -> None:
     def fake_frozen(path: str, agent_id: str):
         return SimpleNamespace(path=path, id=agent_id)
 
     monkeypatch.setattr("training.v2_self_play._frozen_checkpoint_agent", fake_frozen)
+    monkeypatch.setattr("training.v2_self_play._shared_teacher_pool", lambda count, seed: [])
     runner = object.__new__(V2SelfPlayRunner)
     runner.selfplay_concurrency = 2
     runner.history = [f"champ-{idx}.pth" for idx in range(8)]
+    runner.load_unpromoted_history = False
+    runner.champion_path = Path("missing-champion.pth")
     runner.is_v3 = False
     runner._refresh_frozen_pools()
 
-    assert [seat.path for seat in runner.historical_pool] == [f"champ-{idx}.pth" for idx in range(8)]
-    seated = [runner._take_historical_seat().path for _ in range(8)]
-    assert seated == [f"champ-{idx}.pth" for idx in range(8)]
+    assert runner.historical_pool == []
 
 
-def test_historical_pool_duplicates_a_short_window_for_concurrent_games(monkeypatch) -> None:
+def test_trusted_pools_allocate_three_opponents_per_concurrent_game(monkeypatch, tmp_path: Path) -> None:
     def fake_frozen(path: str, agent_id: str):
         return SimpleNamespace(path=path, id=agent_id)
 
-    monkeypatch.setattr("training.v2_self_play._frozen_checkpoint_agent", fake_frozen)
+    champion = tmp_path / "champion.pth"
+    champion.write_bytes(b"checkpoint")
+    monkeypatch.setattr(
+        "training.v2_self_play._shared_champion_pool",
+        lambda path, count: [SimpleNamespace(path=path, id=f"champion-{idx}") for idx in range(count)],
+    )
+    monkeypatch.setattr(
+        "training.v2_self_play._shared_teacher_pool",
+        lambda count, seed: [SimpleNamespace(id=f"teacher-{idx}") for idx in range(count)],
+    )
     runner = object.__new__(V2SelfPlayRunner)
     runner.selfplay_concurrency = 4
     runner.history = ["only.pth"]
+    runner.load_unpromoted_history = False
+    runner.champion_path = champion
     runner.is_v3 = False
     runner._refresh_frozen_pools()
 
-    seated = [runner._take_historical_seat() for _ in range(4)]
-    assert [seat.path for seat in seated] == ["only.pth"] * 4
-    assert len({id(seat) for seat in seated}) == 4
+    assert len(runner.champion_pool) == 12
+    assert len(runner.teacher_pool) == 12
 
 
 def test_screen_requires_completion_no_rejections_and_baseline_threshold() -> None:
@@ -313,7 +346,7 @@ def test_history_snapshot_is_independent_of_promotion_cadence(tmp_path: Path) ->
     assert Path(archived).is_file()
     assert runner.history == [archived]
     assert runner.last_history_snapshot_policy_version == 8
-    assert refreshes == [True]
+    assert refreshes == []
     runner.learner.policy_version = 9
     assert runner._maybe_archive_history_snapshot(112_000) is None
 
@@ -395,3 +428,80 @@ def test_failed_full_teacher_gate_skips_full_champion_gate(monkeypatch, tmp_path
     assert report["teacher"]["gate_passed"] is False
     assert report["regression"] is None
     assert report["promoted"] is False
+
+
+def test_catastrophic_champion_screen_restores_trusted_policy(tmp_path: Path) -> None:
+    class _RollbackLearner:
+        def __init__(self) -> None:
+            self.policy_version = 12
+            self.games_played = 0
+            self.loaded: list[str] = []
+
+        async def quarantine_rollout_buffer(self, label: str) -> dict:
+            assert label == "rollback_policy_000012"
+            return {"steps": 55, "path": str(tmp_path / "quarantine")}
+
+        def load_model(self, path: str) -> None:
+            self.loaded.append(path)
+            self.policy_version = 7
+
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.learner = _RollbackLearner()
+    runner.champion_path = tmp_path / "champion.pth"
+    runner.champion_path.write_bytes(b"champion")
+    runner.champion_promotions = 1
+    runner.consecutive_champion_screen_failures = 0
+    runner.screen_champion_min_pairwise_score = 0.50
+    runner.rollback_pairwise_floor = 0.35
+    runner.rollback_failure_limit = 2
+    runner.lifetime_games = 100
+    runner.learning_seats = []
+    runner._rebind_learning_seats = lambda: None
+    runner._refresh_frozen_pools = lambda: None
+
+    event = asyncio.run(
+        runner._maybe_rollback_from_screen({"pairwise_score": 0.20}, decisions=900_000)
+    )
+
+    assert event["applied"] is True
+    assert event["quarantined_rollout_steps"] == 55
+    assert runner.learner.loaded == [str(runner.champion_path)]
+    assert runner.learner.policy_version == 13
+    assert runner.learner.games_played == 100
+    assert runner.consecutive_champion_screen_failures == 0
+
+
+def test_shared_seat_reward_schedule_uses_leader_global_games(monkeypatch) -> None:
+    monkeypatch.setenv("PPO_SHAPING_INITIAL_COEF", "0.20")
+    monkeypatch.setenv("PPO_SHAPING_FINAL_COEF", "0.05")
+    monkeypatch.setenv("PPO_SHAPING_ANNEAL_GAMES", "3000")
+    leader = RLAgent(agent_id="leader")
+    seat = RLAgent(agent_id="seat")
+    seat.bind_shared_learner(leader)
+    seat.games_played = 0
+    leader.games_played = 1500
+
+    assert seat._current_reward_shaping_coef() == pytest.approx(0.125)
+
+
+def test_ppo_metrics_record_lineups_and_reset_update_window(tmp_path: Path) -> None:
+    learner = SimpleNamespace(
+        policy_version=17,
+        _current_reward_shaping_coef=lambda: 0.12,
+        _current_ppo_entropy_coef=lambda: 0.003,
+    )
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.version = "v2"
+    runner.learner = learner
+    runner.lifetime_games = 250
+    runner.ppo_metrics_path = tmp_path / "ppo_updates.jsonl"
+    runner.lineup_games_since_update = {"live": 4, "champion": 3, "teacher": 1, "search": 0}
+
+    runner._append_ppo_metrics({"ppo/approx_kl": 0.008}, decisions=900_000, elapsed=12.5)
+
+    payload = json.loads(runner.ppo_metrics_path.read_text(encoding="utf-8"))
+    assert payload["policy_version"] == 17
+    assert payload["decisions"] == 900_000
+    assert payload["lineups"] == {"live": 4, "champion": 3, "teacher": 1, "search": 0}
+    assert payload["ppo/approx_kl"] == pytest.approx(0.008)
+    assert all(value == 0 for value in runner.lineup_games_since_update.values())

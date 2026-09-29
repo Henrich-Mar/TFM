@@ -117,3 +117,16 @@ def test_rollout_store_quarantines_mismatched_policy_without_deleting(tmp_path: 
     assert result["shards"] == 1
     assert store.queued_step_count() == 2
     assert len(list((store.agent_dir / "quarantine_incompatible").glob("rollout_*.pkl.gz"))) == 1
+
+
+def test_rollout_store_quarantines_every_active_shard_for_recovery(tmp_path: Path) -> None:
+    store = RolloutShardStore(str(tmp_path), "learner")
+    store.append_steps([_step(index) for index in range(5)])
+
+    result = store.quarantine_all("recovery-test")
+
+    assert result["steps"] == 5
+    assert result["shards"] > 0
+    assert store.queued_step_count() == 0
+    assert not list(store.agent_dir.glob("rollout_*.pkl.gz"))
+    assert len(list(Path(result["path"]).glob("rollout_*.pkl.gz"))) == result["shards"]

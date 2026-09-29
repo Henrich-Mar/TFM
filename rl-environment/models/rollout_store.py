@@ -157,6 +157,28 @@ class RolloutShardStore:
         self._queued_steps = 0
         return cleared
 
+    def quarantine_all(self, label: str) -> dict:
+        """Move every active shard to a recoverable quarantine directory."""
+        safe_label = _safe_agent_token(label)
+        quarantine_dir = self.agent_dir / f"quarantine_{safe_label}"
+        moved_shards = 0
+        moved_steps = 0
+        for path, meta in list(self._iter_shards()):
+            parsed_count = int(meta[2]) if meta is not None else 0
+            quarantine_dir.mkdir(parents=True, exist_ok=True)
+            target = quarantine_dir / path.name
+            if target.exists():
+                target = quarantine_dir / f"{path.stem}_{time.time_ns()}{path.suffix}"
+            os.replace(path, target)
+            moved_shards += 1
+            moved_steps += parsed_count
+        self._queued_steps = max(0, self._queued_steps - moved_steps)
+        return {
+            "shards": int(moved_shards),
+            "steps": int(moved_steps),
+            "path": str(quarantine_dir),
+        }
+
     def quarantine_incompatible(self, expected_schema_version: str, policy_version: int) -> dict:
         """Move stale episode shards out of the active FIFO without deleting them."""
         quarantine_dir = self.agent_dir / "quarantine_incompatible"

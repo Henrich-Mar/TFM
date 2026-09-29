@@ -21,11 +21,14 @@ The important defaults are:
 | Setting | Default | Meaning |
 | --- | ---: | --- |
 | `PPO_ROLLOUT_STEPS` | 12,288 | Decisions collected before one PPO update |
+| PPO learning rate | 0.00005 | Conservative post-champion update size |
+| PPO epochs / minibatch | 2 / 512 | Limits repeated fitting of one rollout |
 | Benchmark interval | 100,000 decisions | Cadence for the light screen |
 | Screen seeds | 8 | 32 games per baseline after four seat rotations |
 | History snapshot interval | 8 PPO updates | Cadence for adding a frozen past policy |
-| Retained historical policies | 8 | Opponent-diversity window |
-| Historical game probability | 25% | One of four seats is historical in selected games |
+| Live self-play games | 40% | Four seats use the current policy |
+| Champion games | 40% | One live seat plays three frozen champion seats |
+| Teacher games | 20% | One live seat plays three heuristic-teacher seats |
 
 In the initial run, one complete self-play game produced approximately 406
 decisions. At that rate, 100,000 decisions gives approximately 246 self-play
@@ -84,21 +87,22 @@ benchmark_candidate_000200000_stage1_champion.json
 If a screen fails, the last two files are not produced. If the full teacher
 gate fails, the full champion file is not produced.
 
-## Historical opponents versus the champion
+## Trusted opponents versus diagnostic history
 
-The champion and the historical pool now have separate responsibilities:
+The champion, teacher, and historical snapshots have separate responsibilities:
 
 - `champion.pth` changes only after both strict promotion gates pass.
-- Every eight successful PPO updates, the live learner is also archived as a
-  non-champion historical snapshot.
-- The last eight historical checkpoints are eligible as frozen opponents.
-- In 25% of self-play games, one of four live seats is replaced by one frozen
-  historical seat.
+- Every eight successful PPO updates, the live learner is archived as a
+  diagnostic snapshot, but unpromoted snapshots are not trusted as opponents.
+- Forty percent of games remain four-seat live self-play. Forty percent place
+  one live learner against three champion seats, and twenty percent place one
+  live learner against three heuristic teachers.
+- Frozen seats never write PPO rollouts. Seat placement and matchup choice are
+  deterministic from the game seed.
 
-This means approximately 6.25% of training seats are historical after the
-first snapshot, while 93.75% remain live-policy seats. Training therefore gains
-opponent diversity even when a from-scratch learner has not beaten the teacher
-yet.
+This keeps most collected actions on-policy while continuously anchoring the
+learner to externally measurable strength. Promotion refreshes the trusted
+champion pool; periodic learner snapshots cannot silently replace it.
 
 ## Optional MCTS search for benchmarks (disabled by default)
 
@@ -382,6 +386,25 @@ If the old coordinator is interrupted during a benchmark, completed training
 is retained, but that partially completed benchmark is not added to the state
 report history.
 
+## Recover a regressed learner
+
+Recovery is an explicit one-shot operation. It backs up the current learner and
+state, quarantines queued on-policy rollouts, preserves cumulative counters, and
+assigns a fresh policy version:
+
+```powershell
+docker compose -f docker-compose.rl_hard.yml -f docker-compose.alphago.yml run --rm --no-deps `
+  rl-coordinator python -m training.v2_recover `
+  --root /app/alphago `
+  --checkpoint /app/alphago/checkpoints/candidate_000800867.pth
+```
+
+During subsequent training, a champion screen below pairwise score `0.35`
+triggers immediate rollback. Two consecutive screens below `0.50` also trigger
+rollback. Failed-policy rollout shards are quarantined rather than deleted.
+Per-update PPO diagnostics are appended to
+`rl-alphago/metrics/ppo_updates.jsonl`.
+
 ## Continue beyond one million decisions
 
 The decision target is cumulative:
@@ -403,6 +426,9 @@ $env:ALPHAGO_HISTORY_SNAPSHOT_INTERVAL_UPDATES=8
 $env:ALPHAGO_SCREEN_MIN_COMPLETION_RATIO=0.90
 $env:ALPHAGO_SCREEN_TEACHER_MIN_FIRST_PLACE_RATE=0.25
 $env:ALPHAGO_SCREEN_CHAMPION_MIN_PAIRWISE_SCORE=0.50
+$env:ALPHAGO_SELFPLAY_LIVE_FRACTION=0.40
+$env:ALPHAGO_SELFPLAY_CHAMPION_FRACTION=0.40
+$env:ALPHAGO_SELFPLAY_TEACHER_FRACTION=0.20
 
 docker compose -f docker-compose.rl_hard.yml -f docker-compose.alphago.yml up -d --force-recreate rl-coordinator
 ```
@@ -413,7 +439,8 @@ Recommended ranges:
 | --- | ---: | --- |
 | Benchmark interval | 100k-200k decisions | Larger values favor self-play throughput |
 | PPO rollout | 12,288-16,384 decisions | Larger values improve batch diversity but update less often |
-| History snapshot cadence | 8-16 updates | Smaller values adapt the opponent pool faster |
+| History snapshot cadence | 8-16 updates | Smaller values retain denser diagnostic history |
+| Champion-game fraction | 0.30-0.50 | Larger values resist forgetting but collect fewer live actions per game |
 | Teacher screen threshold | 0.25-0.30 | Higher values run fewer full gates |
 
 Keep `PPO_ROLLOUT_STEPS=12288` unless PPO metrics show that the batch is too

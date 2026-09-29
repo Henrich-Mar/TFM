@@ -14,6 +14,7 @@ import os
 import time
 import hashlib
 import re
+import copy
 from typing import Dict, Any, List, Optional, Tuple
 import uuid
 from dataclasses import dataclass, asdict
@@ -281,9 +282,30 @@ def _run_ppo_update_sync(
             )
         except Exception as exc:
             if requested_device.type != "cpu" and _is_cuda_oom(exc):
+                # The traceback retains the failed minibatch and its autograd
+                # graph.  Break that reference before moving the model and
+                # optimizer to system RAM; otherwise a CUDA OOM can turn into
+                # a Docker/host OOM during the fallback itself.
+                exc.__traceback__ = None
+                fallback_hparams = copy.copy(agent.ppo_hparams)
+                try:
+                    fallback_cap = max(
+                        1,
+                        int(os.getenv("PPO_CPU_FALLBACK_MINIBATCH_SIZE", "16")),
+                    )
+                except (TypeError, ValueError):
+                    fallback_cap = 16
+                original_minibatch = max(
+                    1,
+                    int(getattr(agent.ppo_hparams, "minibatch_size", fallback_cap)),
+                )
+                fallback_hparams.minibatch_size = min(original_minibatch, fallback_cap)
                 logger.warning(
-                    "CUDA OOM during PPO update for agent %s; retrying on CPU.",
+                    "CUDA OOM during PPO update for agent %s; retrying on CPU "
+                    "with minibatch_size=%d (CUDA minibatch_size=%d).",
                     agent.id[:8],
+                    int(fallback_hparams.minibatch_size),
+                    int(original_minibatch),
                 )
                 try:
                     agent.optimizer.zero_grad(set_to_none=True)
@@ -295,7 +317,7 @@ def _run_ppo_update_sync(
                     network=agent.network,
                     optimizer=agent.optimizer,
                     steps=steps,
-                    ppo=agent.ppo_hparams,
+                    ppo=fallback_hparams,
                     policy_temperature=policy_temp,
                     ppo_device_override=torch.device("cpu"),
                 )
@@ -2918,7 +2940,9 @@ class RLAgent:
         initial = max(0.0, float(self.reward_shaping_initial_coef))
         final = max(0.0, float(self.reward_shaping_final_coef))
         anneal_games = max(1, int(self.reward_shaping_anneal_games))
-        progress = max(0.0, min(1.0, float(self.games_played) / float(anneal_games)))
+        leader = getattr(self, "_policy_leader", None)
+        games_played = int(getattr(leader, "games_played", self.games_played))
+        progress = max(0.0, min(1.0, float(games_played) / float(anneal_games)))
         return float(initial + ((final - initial) * progress))
 
     @staticmethod
@@ -4530,7 +4554,11 @@ class RLAgent:
         anneal_games = max(1, int(self.ppo_entropy_coef_anneal_games))
         if abs(start - end) <= 1e-12:
             return float(start)
-        games_played = max(0.0, float(getattr(self, "games_played", 0)))
+        leader = getattr(self, "_policy_leader", None)
+        games_played = max(
+            0.0,
+            float(getattr(leader, "games_played", getattr(self, "games_played", 0))),
+        )
         progress = min(1.0, games_played / float(anneal_games))
         return float(start + ((end - start) * progress))
 
@@ -4573,6 +4601,22 @@ class RLAgent:
             if self.rollout_shard_store is not None:
                 cleared += int(self.rollout_shard_store.clear())
             return cleared
+
+    async def quarantine_rollout_buffer(self, label: str) -> Dict[str, Any]:
+        """Remove queued rollouts from training while retaining disk shards for audit."""
+        async with self.training_lock:
+            memory_steps = int(len(self.rollout_buffer))
+            self.rollout_buffer.clear()
+            disk_result = {"shards": 0, "steps": 0, "path": ""}
+            if self.rollout_shard_store is not None:
+                disk_result = self.rollout_shard_store.quarantine_all(label)
+            return {
+                "memory_steps": memory_steps,
+                "disk_steps": int(disk_result.get("steps", 0)),
+                "steps": memory_steps + int(disk_result.get("steps", 0)),
+                "shards": int(disk_result.get("shards", 0)),
+                "path": str(disk_result.get("path", "")),
+            }
 
     async def _train_from_episode(self, episode_steps: List[Dict[str, Any]], terminal_reward: float):
         """Policy/value update from one self-play episode with terminal reward."""

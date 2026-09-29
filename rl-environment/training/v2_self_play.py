@@ -1,7 +1,7 @@
 """Four-seat PPO self-play for TFM RL v2.
 
-Every chair plays the live policy and writes into one rollout buffer. After the
-first promotion, one chair is a frozen past checkpoint on 25% of games.
+Live seats share one policy and rollout buffer. Seeded matchup scheduling mixes
+four-seat self-play with one live learner against three trusted frozen opponents.
 """
 from __future__ import annotations
 
@@ -15,10 +15,11 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from game_interface import GameServerCluster
 from models.agent import RLAgent
+from models.decision_policy import HeuristicTeacherPolicy
 from search.config import SearchConfig
 from search.replay_store import SearchReplayStore
 from search.search_agent import SearchPolicy
@@ -45,6 +46,46 @@ def _frozen_checkpoint_agent(path: str, agent_id: str) -> RLAgent:
     return agent
 
 
+def _bind_frozen_seat(leader: RLAgent, agent_id: str, *, decision_policy=None) -> RLAgent:
+    """Create independent seat memory while sharing immutable network weights."""
+    seat = RLAgent(agent_id=agent_id, config=leader.config, decision_policy=decision_policy)
+    seat.bind_shared_learner(leader)
+    seat.train_from_self_play = False
+    seat.config.train_from_self_play = False
+    seat.ppo_enable = False
+    seat.deterministic_actions = True
+    return seat
+
+
+def _shared_champion_pool(path: str, count: int) -> List[RLAgent]:
+    leader = _frozen_checkpoint_agent(path, "champion-0")
+    seats = [leader]
+    for index in range(1, max(1, int(count))):
+        seats.append(_bind_frozen_seat(leader, f"champion-{index}"))
+    return seats
+
+
+def _shared_teacher_pool(count: int, seed: int) -> List[RLAgent]:
+    leader = RLAgent(
+        agent_id="teacher-0",
+        decision_policy=HeuristicTeacherPolicy(int(seed), sample=False),
+    )
+    leader.train_from_self_play = False
+    leader.config.train_from_self_play = False
+    leader.ppo_enable = False
+    leader.deterministic_actions = True
+    seats = [leader]
+    for index in range(1, max(1, int(count))):
+        seats.append(
+            _bind_frozen_seat(
+                leader,
+                f"teacher-{index}",
+                decision_policy=HeuristicTeacherPolicy(int(seed) + index, sample=False),
+            )
+        )
+    return seats
+
+
 def _experiment_version() -> str:
     if str(os.getenv("TFM_RL_V4", "0")).strip().lower() in {"1", "true", "yes", "on"}:
         return "v4"
@@ -69,6 +110,7 @@ class _SelfPlayGame:
     stage: int
     lineup: List[RLAgent]
     search_training: bool = False
+    lineup_kind: str = "live"
 
 
 class V2SelfPlayRunner:
@@ -174,6 +216,37 @@ class V2SelfPlayRunner:
             1,
             int(os.getenv("HISTORY_SNAPSHOT_INTERVAL_UPDATES", "8")),
         )
+        self.lineup_live_fraction = self._fraction_env("SELFPLAY_LIVE_FRACTION", 0.40)
+        self.lineup_champion_fraction = self._fraction_env("SELFPLAY_CHAMPION_FRACTION", 0.40)
+        self.lineup_teacher_fraction = self._fraction_env("SELFPLAY_TEACHER_FRACTION", 0.20)
+        lineup_total = (
+            self.lineup_live_fraction
+            + self.lineup_champion_fraction
+            + self.lineup_teacher_fraction
+        )
+        if abs(lineup_total - 1.0) > 1e-6:
+            raise ValueError(
+                "SELFPLAY_LIVE_FRACTION + SELFPLAY_CHAMPION_FRACTION + "
+                f"SELFPLAY_TEACHER_FRACTION must equal 1.0; got {lineup_total:.6f}"
+            )
+        self.rollback_pairwise_floor = min(
+            1.0,
+            max(0.0, self._float_env("PPO_ROLLBACK_PAIRWISE_FLOOR", 0.35)),
+        )
+        self.rollback_failure_limit = max(
+            1,
+            int(os.getenv("PPO_ROLLBACK_FAILURE_LIMIT", "2")),
+        )
+        self.consecutive_champion_screen_failures = int(
+            resume_state.get("consecutive_champion_screen_failures", 0) or 0
+        )
+        self.champion_promotions = int(
+            resume_state.get(
+                "champion_promotions",
+                sum(1 for report in (resume_state.get("reports", []) or []) if report.get("promoted")),
+            )
+            or 0
+        )
         try:
             self.selfplay_concurrency = max(1, int(os.getenv("SELFPLAY_CONCURRENCY", "1")))
         except (TypeError, ValueError):
@@ -183,7 +256,14 @@ class V2SelfPlayRunner:
         self.next_benchmark_decision = ((resumed_decisions // self.benchmark_interval) + 1) * self.benchmark_interval
         self.progress_path = self.metrics / "selfplay_progress.json"
         self.game_count = 0
+        self.lifetime_games = max(
+            int(resume_state.get("games", 0) or 0),
+            int(getattr(self.learner, "games_played", 0) or 0),
+        )
+        self.learner.games_played = int(self.lifetime_games)
         self.search_game_count = 0
+        self.lineup_game_counts: Dict[str, int] = {"live": 0, "champion": 0, "teacher": 0, "search": 0}
+        self.lineup_games_since_update: Dict[str, int] = dict(self.lineup_game_counts)
         try:
             self.search_selfplay_fraction = min(
                 1.0,
@@ -214,8 +294,13 @@ class V2SelfPlayRunner:
             resume_state.get("last_history_snapshot_policy_version", 0) or 0
         )
         self.previous_reports: List[Dict] = list(resume_state.get("reports", []) or [])
+        self.recovery_events: List[Dict] = list(resume_state.get("recovery_events", []) or [])
         self.historical_pool: List[RLAgent] = []
+        self.champion_pool: List[RLAgent] = []
+        self.teacher_pool: List[RLAgent] = []
         self._historical_cursor = 0
+        self._champion_cursor = 0
+        self._teacher_cursor = 0
         self._seat_cursor = 0
         seat_count = max(4, int(self.selfplay_concurrency) * 4)
         self.learning_seats = [
@@ -226,6 +311,7 @@ class V2SelfPlayRunner:
         self.cluster = GameServerCluster(servers)
         self.cluster.base_game_options = _load_stage_options(self.stage)
         self.manager = TournamentManager(self.cluster)
+        self.ppo_metrics_path = self.metrics / "ppo_updates.jsonl"
         self._refresh_frozen_pools()
         self._write_progress("started")
         print(
@@ -236,10 +322,23 @@ class V2SelfPlayRunner:
             flush=True,
         )
         print(
-            "[selfplay] lineup=live_policy:4 historical_seat=25%_of_games_after_promotion "
+            f"[selfplay] lineup=live:{self.lineup_live_fraction:.2f} "
+            f"champion_1v3:{self.lineup_champion_fraction:.2f} "
+            f"teacher_1v3:{self.lineup_teacher_fraction:.2f} "
             f"search_game_fraction={self.search_selfplay_fraction:.3f}",
             flush=True,
         )
+
+    @staticmethod
+    def _float_env(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            return float(default)
+
+    @classmethod
+    def _fraction_env(cls, name: str, default: float) -> float:
+        return min(1.0, max(0.0, cls._float_env(name, default)))
 
     def _make_learning_seat(self, agent_id: str) -> RLAgent:
         seat = RLAgent(agent_id=agent_id, config=self.learner.config)
@@ -271,15 +370,31 @@ class V2SelfPlayRunner:
         self._reset_seat_memory(seat)
         return seat
 
-    def _refresh_frozen_pools(self) -> None:
-        """Load every retained checkpoint, with extra copies when games outnumber them.
+    def _take_frozen_seats(self, kind: str, count: int) -> List[RLAgent]:
+        if kind == "champion":
+            pool = self.champion_pool
+            cursor_name = "_champion_cursor"
+        elif kind == "teacher":
+            pool = self.teacher_pool
+            cursor_name = "_teacher_cursor"
+        else:
+            raise ValueError(f"unsupported frozen opponent kind: {kind}")
+        if len(pool) < int(count):
+            raise RuntimeError(f"{kind} pool has {len(pool)} seats; {count} required")
+        cursor = int(getattr(self, cursor_name, 0))
+        picked: List[RLAgent] = []
+        for _ in range(int(count)):
+            seat = pool[cursor % len(pool)]
+            cursor += 1
+            self._reset_seat_memory(seat)
+            picked.append(seat)
+        setattr(self, cursor_name, cursor)
+        return picked
 
-        A batch can seat one frozen opponent per concurrent game. Those chairs
-        must be distinct objects, and every archived champion in the last eight
-        has to be able to sit, not only the oldest few.
-        """
+    def _refresh_frozen_pools(self) -> None:
+        """Refresh trusted champion/teacher seats with independent recurrent memory."""
         recent = self.history[-8:]
-        if not recent:
+        if not recent or not bool(getattr(self, "load_unpromoted_history", False)):
             self.historical_pool = []
         else:
             copies = max(len(recent), int(self.selfplay_concurrency))
@@ -290,7 +405,19 @@ class V2SelfPlayRunner:
                 )
                 for idx in range(copies)
             ]
+        trusted_seats = max(3, int(self.selfplay_concurrency) * 3)
+        champion_path = getattr(self, "champion_path", None)
+        if champion_path is not None and Path(champion_path).is_file():
+            self.champion_pool = _shared_champion_pool(str(champion_path), trusted_seats)
+        else:
+            self.champion_pool = []
+        self.teacher_pool = _shared_teacher_pool(
+            trusted_seats,
+            int(getattr(self, "seed_cursor", 0)) ^ 0x5EA7,
+        )
         self._historical_cursor = 0
+        self._champion_cursor = 0
+        self._teacher_cursor = 0
         self._apply_v3_feature_scale()
 
     def _current_v3_feature_scale(self) -> float:
@@ -309,7 +436,11 @@ class V2SelfPlayRunner:
             return
         scale = self._current_v3_feature_scale()
         self.learner.set_v3_feature_scale(scale)
-        for agent in [*getattr(self, "learning_seats", []), *self.historical_pool]:
+        for agent in [
+            *getattr(self, "learning_seats", []),
+            *self.historical_pool,
+            *getattr(self, "champion_pool", []),
+        ]:
             agent.set_v3_feature_scale(scale)
 
     def _total_decisions(self) -> int:
@@ -334,7 +465,7 @@ class V2SelfPlayRunner:
             "schema_version": f"tfm_rl_{self.version}.selfplay_progress.v1",
             "status": str(status),
             "stage": int(self.stage),
-            "games": int(self.game_count),
+            "games": int(getattr(self, "lifetime_games", self.game_count)),
             "search_games": int(self.search_game_count),
             "decisions": int(self._total_decisions()),
             "next_benchmark_decision": int(self.next_benchmark_decision),
@@ -351,20 +482,27 @@ class V2SelfPlayRunner:
         temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(temporary, self.progress_path)
 
-    def _save_resume_state(self, reports: List[Dict]) -> None:
+    def _save_resume_state(self, reports: List[Dict], *, save_model: bool = True) -> None:
         """Atomically refresh the durable learner and self-play state."""
-        learner_temporary = self.latest_learner_path.with_name(self.latest_learner_path.name + ".tmp")
-        self.learner.save_model(str(learner_temporary))
-        os.replace(learner_temporary, self.latest_learner_path)
+        if save_model:
+            learner_temporary = self.latest_learner_path.with_name(self.latest_learner_path.name + ".tmp")
+            self.learner.save_model(str(learner_temporary))
+            os.replace(learner_temporary, self.latest_learner_path)
         state = {
             "schema_version": f"tfm_rl_{self.version}.selfplay_state.v1",
             "stage": self.stage,
             "decisions": self._total_decisions(),
             "seed_cursor": self.seed_cursor,
             "policy_version": self.learner.policy_version,
+            "games": int(getattr(self, "lifetime_games", self.game_count)),
             "champion": str(self.champion_path),
             "history": self.history,
             "last_history_snapshot_policy_version": int(self.last_history_snapshot_policy_version),
+            "champion_promotions": int(getattr(self, "champion_promotions", 0)),
+            "consecutive_champion_screen_failures": int(
+                getattr(self, "consecutive_champion_screen_failures", 0)
+            ),
+            "recovery_events": list(getattr(self, "recovery_events", [])),
             "reports": reports,
         }
         state_temporary = self.state_path.with_name(self.state_path.name + ".tmp")
@@ -372,15 +510,34 @@ class V2SelfPlayRunner:
         os.replace(state_temporary, self.state_path)
 
     def _lineup(self, game_seed: int) -> List[RLAgent]:
-        """Four live seats. One frozen past checkpoint on 25% of games once history exists."""
-        lineup = self._take_learning_seats(4)
-        if not self.history or not self.historical_pool:
-            return lineup
+        """Choose a deterministic live, champion, or teacher training matchup."""
         rng = random.Random(int(game_seed) ^ 0x5F3759DF)
-        if rng.random() >= 0.25:
-            return lineup
-        lineup[int(rng.randrange(4))] = self._take_historical_seat()
+        draw = rng.random()
+        live_fraction = float(getattr(self, "lineup_live_fraction", 1.0))
+        champion_fraction = float(getattr(self, "lineup_champion_fraction", 0.0))
+        if draw < live_fraction:
+            return self._take_learning_seats(4)
+        if draw < live_fraction + champion_fraction:
+            kind = "champion"
+        else:
+            kind = "teacher"
+        live_seat = int(rng.randrange(4))
+        opponents = self._take_frozen_seats(kind, 3)
+        lineup = list(opponents)
+        lineup.insert(live_seat, self._take_learning_seats(1)[0])
         return lineup
+
+    def _lineup_kind(self, game_seed: int, search_training: bool = False) -> str:
+        if search_training:
+            return "search"
+        draw = random.Random(int(game_seed) ^ 0x5F3759DF).random()
+        live_fraction = float(getattr(self, "lineup_live_fraction", 1.0))
+        champion_fraction = float(getattr(self, "lineup_champion_fraction", 0.0))
+        if draw < live_fraction:
+            return "live"
+        if draw < live_fraction + champion_fraction:
+            return "champion"
+        return "teacher"
 
     def _remember_history(self, checkpoint: Path) -> None:
         checkpoint_text = str(checkpoint)
@@ -389,7 +546,7 @@ class V2SelfPlayRunner:
         self.history = self.history[-8:]
 
     def _maybe_archive_history_snapshot(self, decisions: int) -> Optional[str]:
-        """Add policy diversity on cadence without declaring a new champion."""
+        """Archive learner weights for diagnostics without trusting them as opponents."""
         policy_version = int(self.learner.policy_version)
         if policy_version - int(self.last_history_snapshot_policy_version) < self.history_snapshot_interval_updates:
             return None
@@ -401,13 +558,95 @@ class V2SelfPlayRunner:
         os.replace(temporary, target)
         self._remember_history(target)
         self.last_history_snapshot_policy_version = policy_version
-        self._refresh_frozen_pools()
         print(
             f"[selfplay] historical snapshot saved policy_version={policy_version} "
             f"decisions={decisions} retained={len(self.history)}",
             flush=True,
         )
         return str(target)
+
+    def _append_ppo_metrics(self, metrics: Dict[str, Any], decisions: int, elapsed: float) -> None:
+        payload: Dict[str, Any] = {
+            "schema_version": f"tfm_rl_{self.version}.ppo_update.v1",
+            "timestamp": time.time(),
+            "decisions": int(decisions),
+            "games": int(self.lifetime_games),
+            "policy_version": int(self.learner.policy_version),
+            "elapsed_sec": float(elapsed),
+            "lineups": dict(self.lineup_games_since_update),
+            "reward_shaping_coef": float(self.learner._current_reward_shaping_coef()),
+            "entropy_coef": float(self.learner._current_ppo_entropy_coef()),
+        }
+        for key, value in dict(metrics or {}).items():
+            if isinstance(value, (str, bool, int, float)) or value is None:
+                payload[str(key)] = value
+            elif hasattr(value, "item"):
+                payload[str(key)] = value.item()
+        with self.ppo_metrics_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        self.lineup_games_since_update = {key: 0 for key in self.lineup_games_since_update}
+
+    def _rebind_learning_seats(self) -> None:
+        for seat in self.learning_seats:
+            seat.bind_shared_learner(self.learner)
+            self._reset_seat_memory(seat)
+
+    async def _rollback_to_champion(self, decisions: int, reason: str) -> Dict[str, Any]:
+        failed_version = int(self.learner.policy_version)
+        quarantine = await self.learner.quarantine_rollout_buffer(
+            f"rollback_policy_{failed_version:06d}"
+        )
+        self.learner.load_model(str(self.champion_path))
+        restored_version = int(self.learner.policy_version)
+        self.learner.policy_version = max(failed_version, restored_version) + 1
+        self.learner.games_played = int(self.lifetime_games)
+        self._rebind_learning_seats()
+        self._refresh_frozen_pools()
+        self.consecutive_champion_screen_failures = 0
+        event = {
+            "applied": True,
+            "reason": str(reason),
+            "decisions": int(decisions),
+            "failed_policy_version": failed_version,
+            "restored_checkpoint_policy_version": restored_version,
+            "new_policy_version": int(self.learner.policy_version),
+            "quarantined_rollout_steps": int(quarantine.get("steps", 0)),
+            "quarantine_path": str(quarantine.get("path", "")),
+        }
+        print(
+            f"[selfplay] rollback applied reason={reason} failed_version={failed_version} "
+            f"new_version={self.learner.policy_version} "
+            f"quarantined_rollouts={quarantine.get('steps', 0)}",
+            flush=True,
+        )
+        return event
+
+    async def _maybe_rollback_from_screen(self, report: Dict[str, Any], decisions: int) -> Dict[str, Any]:
+        if int(getattr(self, "champion_promotions", 0)) <= 0:
+            return {"applied": False, "reason": "no_promoted_champion"}
+        pairwise = float(report.get("pairwise_score", 0.0) or 0.0)
+        threshold = float(self.screen_champion_min_pairwise_score)
+        if pairwise >= threshold:
+            self.consecutive_champion_screen_failures = 0
+            return {"applied": False, "reason": "screen_passed"}
+        self.consecutive_champion_screen_failures += 1
+        if pairwise < float(self.rollback_pairwise_floor):
+            return await self._rollback_to_champion(
+                decisions,
+                f"pairwise_{pairwise:.3f}_below_floor_{self.rollback_pairwise_floor:.3f}",
+            )
+        if self.consecutive_champion_screen_failures >= int(self.rollback_failure_limit):
+            return await self._rollback_to_champion(
+                decisions,
+                f"champion_screen_failed_{self.consecutive_champion_screen_failures}_times",
+            )
+        return {
+            "applied": False,
+            "reason": "waiting_for_failure_limit",
+            "consecutive_failures": int(self.consecutive_champion_screen_failures),
+        }
 
     def _screen_report_promising(self, report: Dict, baseline: str) -> bool:
         planned = max(1, int(report.get("planned_games", 0) or 0))
@@ -436,6 +675,7 @@ class V2SelfPlayRunner:
             and random.Random(int(seed) ^ 0xA17FA60).random()
             < float(getattr(self, "search_selfplay_fraction", 0.0))
         )
+        lineup_kind = self._lineup_kind(seed, search_training=search_training)
         lineup = self._take_learning_seats(4) if search_training else self._lineup(seed)
         if search_training:
             self.search_game_count += 1
@@ -486,6 +726,7 @@ class V2SelfPlayRunner:
             stage=stage,
             lineup=lineup,
             search_training=search_training,
+            lineup_kind=lineup_kind,
         )
 
     async def _run_selfplay_game(self, game: _SelfPlayGame) -> Tuple[_SelfPlayGame, float]:
@@ -555,6 +796,7 @@ class V2SelfPlayRunner:
         teacher_screen_passed = self._screen_report_promising(screen_teacher_report, "teacher")
         regression_screen_passed = self._screen_report_promising(screen_regression_report, "champion")
         screen_passed = teacher_screen_passed and regression_screen_passed
+        rollback = await self._maybe_rollback_from_screen(screen_regression_report, decisions)
         teacher_report: Optional[Dict] = None
         regression_report: Optional[Dict] = None
         if screen_passed:
@@ -586,6 +828,8 @@ class V2SelfPlayRunner:
             shutil.copy2(self.champion_path, historical)
             self._remember_history(historical)
             shutil.copy2(candidate_path, self.champion_path)
+            self.champion_promotions = int(getattr(self, "champion_promotions", 0)) + 1
+            self.consecutive_champion_screen_failures = 0
             if self.stage == 0:
                 from v2_runtime import stage1_unlocked
 
@@ -610,6 +854,7 @@ class V2SelfPlayRunner:
             "screen_regression": screen_regression_report,
             "teacher": teacher_report,
             "regression": regression_report,
+            "rollback": rollback,
         }
 
     async def run(self, max_decisions: int, max_games: Optional[int] = None) -> None:
@@ -627,7 +872,14 @@ class V2SelfPlayRunner:
             ):
                 self._write_progress("batch_running")
                 results = await self._run_selfplay_batch()
-                self.learner.games_played = max(int(self.learner.games_played), int(self.game_count))
+                self.lifetime_games += len(results)
+                self.learner.games_played = int(self.lifetime_games)
+                for game, _elapsed in results:
+                    kind = str(getattr(game, "lineup_kind", "live"))
+                    self.lineup_game_counts[kind] = int(self.lineup_game_counts.get(kind, 0)) + 1
+                    self.lineup_games_since_update[kind] = int(
+                        self.lineup_games_since_update.get(kind, 0)
+                    ) + 1
                 # A completed batch has released every cluster slot. Rebooting
                 # the tmpfs-backed dedicated servers here purges all retained
                 # remote games while PPO work proceeds on the GPU.
@@ -647,16 +899,23 @@ class V2SelfPlayRunner:
                         flush=True,
                     )
                     self._write_progress("game_completed", game_seed=game.seed, game_elapsed=game_elapsed)
+                # Rollout shards are already durable. Persist their decision/seed
+                # accounting even when the process exits before the next PPO update.
+                self._save_resume_state(reports, save_model=False)
                 if rollout_size >= int(self.learner.ppo_rollout_steps):
                     optimize_started_at = time.monotonic()
                     print(
                         f"[selfplay] optimizing rollout steps={rollout_size} decisions={decisions}",
                         flush=True,
                     )
-                    await self.learner.optimize_from_rollout_buffer(self.learner.ppo_rollout_steps)
+                    ppo_metrics = await self.learner.optimize_from_rollout_buffer(
+                        self.learner.ppo_rollout_steps
+                    )
                     self._maybe_archive_history_snapshot(decisions)
+                    optimize_elapsed = time.monotonic() - optimize_started_at
+                    self._append_ppo_metrics(ppo_metrics, decisions, optimize_elapsed)
                     print(
-                        f"[selfplay] optimization complete elapsed={time.monotonic() - optimize_started_at:.1f}s "
+                        f"[selfplay] optimization complete elapsed={optimize_elapsed:.1f}s "
                         f"policy_version={self.learner.policy_version}",
                         flush=True,
                     )

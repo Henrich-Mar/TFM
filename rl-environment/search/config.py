@@ -75,7 +75,7 @@ class SearchConfig:
     root_noise_weight: float = 0.0
     edge_kill_failures: int = 3
     value_horizon: int = 0
-    root_prompt_types: str = "or,card,space"
+    root_prompt_types: str = "or,card,space,initialcards"
     adaptive_simulations: bool = True
     simulations_two_actions: int = 8
     simulations_four_actions: int = 16
@@ -108,7 +108,7 @@ class SearchConfig:
             root_noise_weight=_env_float("ALPHAGO_SEARCH_ROOT_NOISE_WEIGHT", 0.0),
             edge_kill_failures=_env_int("ALPHAGO_SEARCH_EDGE_KILL_FAILURES", 3),
             value_horizon=_env_int("ALPHAGO_SEARCH_VALUE_HORIZON", 0),
-            root_prompt_types=_env_str("ALPHAGO_SEARCH_ROOT_PROMPTS", "or,card,space"),
+            root_prompt_types=_env_str("ALPHAGO_SEARCH_ROOT_PROMPTS", "or,card,space,initialcards"),
             adaptive_simulations=_env_bool("ALPHAGO_SEARCH_ADAPTIVE_SIMULATIONS", True),
             simulations_two_actions=_env_int("ALPHAGO_SEARCH_SIMULATIONS_TWO_ACTIONS", 8),
             simulations_four_actions=_env_int("ALPHAGO_SEARCH_SIMULATIONS_FOUR_ACTIONS", 16),
@@ -156,7 +156,7 @@ class SearchConfig:
         )
         self.temperature_until_generation = max(0, int(self.temperature_until_generation))
         types = {t.strip() for t in str(self.root_prompt_types or "").split(",") if t.strip()}
-        self.root_prompt_types = ",".join(sorted(types)) if types else "card,or,space"
+        self.root_prompt_types = ",".join(sorted(types)) if types else "card,initialcards,or,space"
 
     @property
     def lookahead_branch_count(self) -> int:

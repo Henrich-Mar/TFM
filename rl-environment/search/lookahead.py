@@ -28,13 +28,16 @@ class LookaheadOutcome:
     valid_samples: int = 0
     invalid_samples: int = 0
     invalid_reasons: Dict[str, int] = field(default_factory=dict)
+    bootstrapped: Dict[str, int] = field(default_factory=dict)
+    mode: str = "lookahead"
 
     def summary(self) -> Dict[str, Any]:
         return {
-            "mode": "lookahead",
+            "mode": self.mode,
             "valid_samples": self.valid_samples,
             "invalid_samples": self.invalid_samples,
             "invalid_reasons": dict(self.invalid_reasons),
+            "bootstrapped": dict(self.bootstrapped),
             "candidates": self.candidates,
         }
 
@@ -91,13 +94,26 @@ async def decide_lookahead(
         evaluator=evaluator,
     )
 
+    return _rank_lookahead_branches(branches, candidates, priors, config, session_id)
+
+
+def _rank_lookahead_branches(
+    branches: List[Branch],
+    candidates: List[Dict[str, Any]],
+    priors: List[float],
+    config: SearchConfig,
+    session_id: str,
+) -> LookaheadOutcome:
     per_candidate: Dict[int, List[float]] = {}
     invalid = 0
     invalid_reasons: Counter[str] = Counter()
+    bootstrapped: Counter[str] = Counter()
     for branch in branches:
         position = int(branch.branch_id.split("-")[1])
         if branch.status in {"leaf", "terminal"} and branch.value is not None:
             per_candidate.setdefault(position, []).append(float(branch.value))
+            if branch.bootstrap_reason:
+                bootstrapped[str(branch.bootstrap_reason)] += 1
         else:
             invalid += 1
             invalid_reasons[str(branch.invalid_reason or branch.status or "unknown")] += 1
@@ -128,10 +144,9 @@ async def decide_lookahead(
             valid_samples=0,
             invalid_samples=invalid,
             invalid_reasons=dict(invalid_reasons),
+            bootstrapped=dict(bootstrapped),
         )
 
-    rng = None
-    chosen: Optional[int] = None
     if config.selection == "temperature":
         import random
 
@@ -159,4 +174,63 @@ async def decide_lookahead(
         valid_samples=sum(len(values) for values in per_candidate.values()),
         invalid_samples=invalid,
         invalid_reasons=dict(invalid_reasons),
+        bootstrapped=dict(bootstrapped),
     )
+
+
+async def decide_initial_cards(
+    agent: Any,
+    client: SearchClient,
+    base_url: str,
+    session_id: str,
+    root_player_id: str,
+    root_state: Dict[str, Any],
+    candidates: List[Dict[str, Any]],
+    priors: List[float],
+    branch_memory: Dict[str, Any],
+    turn_counts: Dict[str, int],
+    config: SearchConfig,
+    lowercase_mc: bool,
+    evaluator: Optional[PositionEvaluator] = None,
+) -> Optional[LookaheadOutcome]:
+    """Score each opening portfolio once, from the root view after that pick.
+
+    The choice is one corporation plus a project subset. Opponent cards are
+    still hidden and are not simulated. One exact replay per candidate is
+    enough, because a second determinization cannot change that view.
+    """
+    if not candidates:
+        return None
+    branches: List[Branch] = []
+    for position, descriptor in enumerate(candidates):
+        payload = descriptor.get("decoded_action")
+        if not isinstance(payload, dict) or not payload:
+            continue
+        adapted = adapt_step_input(dict(payload), lowercase_mc)
+        branches.append(
+            Branch(
+                branch_id=f"la-{position}-0",
+                mode="exact",
+                determinization_seed=None,
+                steps=[{"playerId": str(root_player_id), "input": adapted}],
+                memory={pid: tensor.clone() for pid, tensor in branch_memory.items()},
+                turn_counts=dict(turn_counts),
+                portfolio_leaf=True,
+            )
+        )
+    if not branches:
+        return None
+    await run_batched(
+        agent=agent,
+        client=client,
+        base_url=base_url,
+        session_id=session_id,
+        root_player_id=root_player_id,
+        branches=branches,
+        config=config,
+        lowercase_mc=lowercase_mc,
+        evaluator=evaluator,
+    )
+    outcome = _rank_lookahead_branches(branches, candidates, priors, config, session_id)
+    outcome.mode = "portfolio"
+    return outcome

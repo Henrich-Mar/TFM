@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
 
 from search.config import SearchConfig  # noqa: E402
 from search.evaluator import EvalResult  # noqa: E402
-from search.lookahead import decide_lookahead  # noqa: E402
+from search.lookahead import decide_initial_cards, decide_lookahead  # noqa: E402
 from search.simulator_client import BranchResult, SearchClient  # noqa: E402
 
 ROOT_PLAYER = "p1"
@@ -270,6 +270,58 @@ def test_terminal_branch_uses_v2_terminal_reward():
     # v2 terminal reward: rank 1 -> 1.0 plus capped VP-margin bonus.
     assert outcome.candidates[2]["mean_value"] > 1.0
     assert outcome.valid_samples == 6
+
+
+def test_initial_cards_score_the_root_view_and_do_not_continue():
+    portfolios = [
+        _descriptor(850, 0, {"type": "initialCards", "responses": [{"type": "card", "cards": ["Credicor"]}]}),
+        _descriptor(851, 1, {"type": "initialCards", "responses": [{"type": "card", "cards": ["Thorgate"]}]}),
+    ]
+
+    def responder(batches):
+        assert len(batches) == 1
+        results = []
+        for branch in batches[-1]:
+            assert branch["mode"] == "exact"
+            assert "determinizationSeed" not in branch
+            assert len(branch["steps"]) == 1
+            position = int(branch["branchId"].split("-")[1])
+            results.append(
+                BranchResult(
+                    branch_id=branch["branchId"],
+                    status="boundary",
+                    applied_steps=1,
+                    state_digest="x",
+                    root_observation={"id": ROOT_PLAYER, "players": [], "waitingFor": None, "_tag": f"corp{position}"},
+                )
+            )
+        return results
+
+    cfg = _config(determinizations=8, top_k=2)
+    client = ScriptedClient(responder)
+    outcome = asyncio.run(
+        decide_initial_cards(
+            agent=None,
+            client=client,
+            base_url="http://fake:8080",
+            session_id="ses-1",
+            root_player_id=ROOT_PLAYER,
+            root_state={"waitingFor": {"type": "initialCards"}},
+            candidates=portfolios,
+            priors=[0.8, 0.2],
+            branch_memory=_memory(),
+            turn_counts={},
+            config=cfg,
+            lowercase_mc=False,
+            evaluator=ScriptedEvaluator({"corp0": 0.1, "corp1": 0.9}),
+        )
+    )
+    assert outcome is not None
+    assert outcome.mode == "portfolio"
+    assert outcome.chosen_position == 1
+    assert outcome.candidates[1]["mean_value"] == 0.9
+    assert outcome.valid_samples == 2
+    assert len(client.batches) == 1
 
 
 def test_all_invalid_returns_no_signal():

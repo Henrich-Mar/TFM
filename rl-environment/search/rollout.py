@@ -10,8 +10,10 @@ descends one more own macro-action, burns a policy-sampled post-tree own turn
 from the value horizon, or stops.  Without a handler the branch stops as a
 ``leaf`` and is valued by the evaluation that produced the decision, which is
 also reused directly as the leaf value.  ``terminal`` branches are scored with
-the terminal reward, and branches are dropped on ``boundary``/``rejected`` or
-when the step limit is reached.
+the terminal reward.  A ``boundary`` or step-limit stop is scored from the
+last root-player value when one exists, because generation turnover and the
+32-step cap are truncations, not illegal moves.  A truncation with no root
+value yet, and every ``rejected`` input, is still dropped.
 """
 from __future__ import annotations
 
@@ -54,6 +56,10 @@ class Branch:
     terminal_players: Optional[List[Dict[str, Any]]] = None
     value: Optional[float] = None
     invalid_reason: str = ""
+    # Last value head output for the searching player. Used when the server
+    # stops the branch at a generation boundary or the step cap.
+    last_root_value: Optional[float] = None
+    bootstrap_reason: str = ""
     sent_steps: int = 0
     state_digest: str = ""
     # Tree integration: the handler receives (branch, state, eval) and returns
@@ -64,6 +70,9 @@ class Branch:
     own_policy_turns: int = 0
     trail: List[Any] = field(default_factory=list)
     nodes: List[Any] = field(default_factory=list)
+    # Opening portfolio: score the root player's view after this one input
+    # and do not play opponents out to the first action menu.
+    portfolio_leaf: bool = False
 
     @property
     def settled(self) -> bool:
@@ -149,12 +158,14 @@ class BranchRunner:
                 await self._replay(unsent)
         for branch in branches:
             if not branch.settled:
-                branch.status = "invalid"
-                branch.invalid_reason = (
+                reason = (
                     "replay_round_limit"
                     if rounds_used >= int(self.config.max_replay_rounds)
                     else "rollout_stalled"
                 )
+                if not self._accept_truncated(branch, reason):
+                    branch.status = "invalid"
+                    branch.invalid_reason = reason
             if branch.status == "terminal":
                 branch.value = terminal_value_from_players(self.root_player_id, branch.terminal_players)
                 if branch.value is None:
@@ -176,8 +187,9 @@ class BranchRunner:
             branch.prompt = None
             strategic_own = str(prompt_player) == self.root_player_id and is_strategic_prompt(prompt_state)
             if not strategic_own and len(branch.steps) >= cfg.max_rollout_steps:
-                branch.status = "invalid"
-                branch.invalid_reason = "step_limit"
+                if not self._accept_truncated(branch, "step_limit"):
+                    branch.status = "invalid"
+                    branch.invalid_reason = "step_limit"
                 continue
             item = EvalItem(
                 player_state=prompt_state,
@@ -197,6 +209,8 @@ class BranchRunner:
                 branch.status = "invalid"
                 branch.invalid_reason = "evaluation_failed"
                 continue
+            if str(item.player_id) == self.root_player_id:
+                branch.last_root_value = float(result.value)
             if strategic_own:
                 # Paused for the tree handler; memory/turn bookkeeping happens
                 # only if the branch actually continues past this decision.
@@ -299,6 +313,56 @@ class BranchRunner:
         branch.leaf_eval = result
         branch.value = float(result.value)
 
+    def _accept_truncated(self, branch: Branch, reason: str) -> bool:
+        """Score a truncated rollout instead of treating it as an illegal move.
+
+        Prefer the last value computed for the searching player during the
+        rollout. A pass that ends the generation never returns another root
+        prompt, so that value is missing: use the value of the tree position
+        that chose the last own action. Lookahead branches have no tree node
+        and stay invalid until a root evaluation exists.
+        """
+        value = branch.last_root_value
+        if value is None:
+            for node in reversed(branch.nodes):
+                estimate = getattr(node, "value_estimate", None)
+                if estimate is not None:
+                    value = float(estimate)
+                    break
+        if value is None:
+            return False
+        branch.status = "leaf"
+        branch.value = float(value)
+        branch.bootstrap_reason = str(reason)
+        branch.invalid_reason = ""
+        return True
+
+    def _score_root_observation(self, branch: Branch, observation: Dict[str, Any]) -> None:
+        """Value the searching player's own view and stop. Used for one-step portfolios."""
+        item = EvalItem(
+            player_state=observation,
+            player_id=self.root_player_id,
+            turn_count=int(branch.turn_counts.get(self.root_player_id, 0)),
+            recurrent_in=PositionEvaluator.memory_for(branch.memory, self.root_player_id),
+            state_digest=branch.state_digest,
+            value_only=True,
+        )
+        started = time.perf_counter()
+        results = self.evaluator.evaluate_batch([item])
+        self.client.stats.inference_sec += time.perf_counter() - started
+        self.client.stats.prompt_evaluations += 1
+        result = results[0] if results else None
+        if result is None:
+            branch.status = "invalid"
+            branch.invalid_reason = "portfolio_evaluation_failed"
+            return
+        value = float(result.value)
+        branch.status = "leaf"
+        branch.value = value
+        branch.leaf_state = observation
+        branch.leaf_eval = result
+        branch.last_root_value = value
+
     def _consume_own_turn(self, branch: Branch) -> None:
         root = self.root_player_id
         PositionEvaluator.update_memory(branch.memory, root, branch.own_eval.recurrent_out)
@@ -339,6 +403,18 @@ class BranchRunner:
         branch.sent_steps = len(branch.steps)
         if getattr(result, "state_digest", None):
             branch.state_digest = str(result.state_digest)
+        if branch.portfolio_leaf:
+            if result.status == "rejected":
+                branch.status = "invalid"
+                branch.invalid_reason = f"rejected:{result.error_code or 'unknown'}"
+                return
+            observation = getattr(result, "root_observation", None)
+            if not isinstance(observation, dict):
+                branch.status = "invalid"
+                branch.invalid_reason = "missing_root_observation"
+                return
+            self._score_root_observation(branch, observation)
+            return
         if result.status == "next_prompt" and result.next_prompt is not None:
             branch.prompt = result.next_prompt
             branch.status = "active"
@@ -348,8 +424,13 @@ class BranchRunner:
             branch.status = "terminal"
             return
         if result.status == "boundary":
-            branch.status = "invalid"
-            branch.invalid_reason = "boundary"
+            # Production, research close, and discard recycling all arrive as
+            # the same status. The server does not say which. A branch that
+            # already evaluated the searching player keeps that value; a
+            # boundary before any root evaluation is still dropped.
+            if not self._accept_truncated(branch, "boundary"):
+                branch.status = "invalid"
+                branch.invalid_reason = "boundary"
             return
         branch.status = "invalid"
         branch.invalid_reason = f"rejected:{result.error_code or 'unknown'}"

@@ -18,9 +18,9 @@ from models.agent import _get_inference_executor
 
 from .config import SearchConfig
 from .evaluator import PositionEvaluator
-from .lookahead import decide_lookahead
+from .lookahead import decide_initial_cards, decide_lookahead
 from .mcts import decide_puct
-from .prompts import is_search_root, prompt_type
+from .prompts import is_initial_cards_prompt, is_search_root, prompt_type
 from .simulator_client import SearchClient, SearchClientStats, SearchServiceError, SearchUnavailableError
 
 logger = logging.getLogger("rl.search")
@@ -67,6 +67,7 @@ class SearchPolicy:
             "killed_edges": 0,
         }
         self.rollout_invalid_reasons: Dict[str, int] = {}
+        self.rollout_bootstrapped: Dict[str, int] = {}
         self.unavailable_by_prompt: Dict[str, int] = {}
         self.client_stats: Dict[str, Any] = {
             "failures": {},
@@ -131,6 +132,7 @@ class SearchPolicy:
             "max_path_steps": int(self.client_stats.get("max_path_steps", 0)),
             "rollout": self.rollout_snapshot(),
             "rollout_invalid_reasons": dict(self.rollout_invalid_reasons),
+            "rollout_bootstrapped": dict(self.rollout_bootstrapped),
             "client_failures": dict(self.client_stats.get("failures", {})),
             "unavailable_by_prompt": dict(self.unavailable_by_prompt),
             "details": dict(self.stats),
@@ -144,6 +146,7 @@ class SearchPolicy:
             "invalid_rollouts": int(self.rollout_stats["invalid_rollouts"]),
             "invalid_rate": round(float(self.rollout_stats["invalid_rollouts"]) / selected, 4),
             "killed_edges": int(self.rollout_stats["killed_edges"]),
+            "bootstrapped": dict(self.rollout_bootstrapped),
         }
 
     def _absorb_outcome(self, outcome: Any) -> None:
@@ -163,6 +166,9 @@ class SearchPolicy:
             for reason, count in dict(summary.get("invalid_reasons", {}) or {}).items():
                 key = str(reason or "unknown")
                 self.rollout_invalid_reasons[key] = int(self.rollout_invalid_reasons.get(key, 0)) + int(count or 0)
+            for reason, count in dict(summary.get("bootstrapped", {}) or {}).items():
+                key = str(reason or "unknown")
+                self.rollout_bootstrapped[key] = int(self.rollout_bootstrapped.get(key, 0)) + int(count or 0)
         except Exception:
             logger.debug("Could not absorb search outcome stats", exc_info=True)
 
@@ -297,7 +303,23 @@ class SearchPolicy:
             turn_counts[player_key] = int(agent._turn_action_count_by_player.get(player_key, 0))
 
         outcome: Any = None
-        if cfg.mode == "puct":
+        if is_initial_cards_prompt(root.observation):
+            outcome = await decide_initial_cards(
+                agent=agent,
+                client=client,
+                base_url=client.base_url,
+                session_id=root.session_id,
+                root_player_id=player_id,
+                root_state=player_state,
+                candidates=candidates,
+                priors=candidate_priors,
+                branch_memory=memory,
+                turn_counts=turn_counts,
+                config=search_cfg,
+                lowercase_mc=root.lowercase_mc,
+                evaluator=evaluator,
+            )
+        elif cfg.mode == "puct":
             simulation_budget = search_cfg.simulation_budget(len(action_descriptors))
             outcome = await decide_puct(
                 agent=agent,

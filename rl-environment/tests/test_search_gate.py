@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from search.config import MAX_BRANCHES_PER_BATCH, SearchConfig  # noqa: E402
-from search.prompts import is_search_root, is_strategic_prompt, strategic_options  # noqa: E402
+from search.prompts import is_initial_cards_prompt, is_search_root, is_strategic_prompt, strategic_options  # noqa: E402
 from search.search_agent import SearchPolicy  # noqa: E402
 from models.agent import AgentConfig, RLAgent  # noqa: E402
 
@@ -52,6 +52,31 @@ def test_research_card_purchase_and_action_space_are_search_roots_when_enabled()
     assert is_search_root(space_state, "or,card,space")
     assert not is_search_root(card_state, "or")
     assert not is_search_root(space_state, "or")
+
+
+def _initial_cards_state() -> dict:
+    return {
+        "game": {"phase": "research"},
+        "waitingFor": {
+            "type": "initialCards",
+            "options": [
+                {"title": "Select corporation", "cards": [{"name": "Credicor"}, {"name": "Thorgate"}], "min": 1, "max": 1},
+                {"title": "Select initial cards to buy", "cards": [{"name": f"c{i}"} for i in range(10)], "min": 0, "max": 10},
+            ],
+        },
+    }
+
+
+def test_initial_cards_are_a_one_step_search_root_when_enabled():
+    state = _initial_cards_state()
+    assert is_initial_cards_prompt(state)
+    assert not is_strategic_prompt(state)
+    assert is_search_root(state, "or,card,space,initialcards")
+    assert not is_search_root(state, "or,card,space")
+    assert not is_search_root(
+        {"game": {"phase": "action"}, "waitingFor": state["waitingFor"]},
+        "or,card,space,initialcards",
+    )
 
 
 def test_card_and_space_roots_are_phase_scoped_and_require_a_choice():

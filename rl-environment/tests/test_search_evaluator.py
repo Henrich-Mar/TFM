@@ -70,6 +70,33 @@ def _stub_agent(agent: RLAgent, action_indices: list[int]) -> None:
     agent._extract_phase_index = lambda _state: 1
 
 
+def test_value_only_scores_a_state_with_no_legal_actions():
+    agent = _make_agent()
+    calls = []
+
+    def encode(_self, _state, _turn=0, descriptors=None):
+        calls.append(list(descriptors or []))
+        return _bundle([])
+
+    def refuse_actions(_self, _state):
+        raise AssertionError("a prompt-less portfolio view has no action list")
+
+    agent.action_decoder = type("DecoderStub", (), {"get_legal_action_descriptors": refuse_actions})()
+    agent.state_encoder = type("EncoderStub", (), {"encode": encode})()
+    agent._extract_phase_index = lambda _state: 0
+    evaluator = PositionEvaluator(agent)
+    result = evaluator.evaluate(
+        EvalItem(
+            player_state={"game": {"phase": "research"}, "waitingFor": None},
+            player_id="p1",
+            value_only=True,
+        )
+    )
+    assert calls == [[]]
+    assert result.descriptors == []
+    assert isinstance(result.value, float)
+
+
 def test_priors_are_renormalized_over_legal_actions():
     agent = _make_agent()
     _stub_agent(agent, [3, 17, 42])

@@ -86,6 +86,7 @@ class BranchResult:
     error_message: str = ""
     new_steps_applied: int = 0
     reused_steps: int = 0
+    root_observation: Optional[Dict[str, Any]] = None
 
     @property
     def usable(self) -> bool:
@@ -337,6 +338,11 @@ class SearchClient:
             error_message=str(error.get("message", "") or ""),
             new_steps_applied=int(item.get("newStepsApplied", item.get("appliedSteps", 0)) or 0),
             reused_steps=int(item.get("reusedSteps", 0) or 0),
+            root_observation=(
+                SearchClient._normalize_observation(item.get("rootObservation"))
+                if isinstance(item.get("rootObservation"), dict)
+                else None
+            ),
         )
 
     async def close(self, session_id: str) -> bool:

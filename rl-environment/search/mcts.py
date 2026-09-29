@@ -10,7 +10,9 @@ hidden deal.  Depth-2 descent matches a child edge to the current leaf
 descriptors by action payload, falling back to a unique label; an unmatched
 child edge simply ends the branch at the leaf value.  Rollout failures cost
 the deepest trail edge a consecutive failure and never enter Q; only
-``edge_kill_failures`` consecutive failures kill an edge.  Dirichlet noise on
+``edge_kill_failures`` consecutive failures kill an edge.  A generation
+boundary or step-cap stop that already has a root-player value is backed up
+as a leaf instead of a failure.  Dirichlet noise on
 the root priors keeps exploration alive against degenerate policies.
 """
 from __future__ import annotations
@@ -46,6 +48,7 @@ class MctsOutcome:
     simulation_budget: int = 0
     early_stopped: bool = False
     invalid_reasons: Dict[str, int] = field(default_factory=dict)
+    bootstrapped: Dict[str, int] = field(default_factory=dict)
 
     def summary(self) -> Dict[str, Any]:
         selected = max(1, int(self.simulations_selected))
@@ -60,6 +63,7 @@ class MctsOutcome:
             "simulation_budget": int(self.simulation_budget),
             "early_stopped": bool(self.early_stopped),
             "invalid_reasons": dict(self.invalid_reasons),
+            "bootstrapped": dict(self.bootstrapped),
             "candidates": self.candidates,
         }
 
@@ -134,6 +138,7 @@ class MctsSearch:
         self.simulations_selected = 0
         self.killed_edges = 0
         self.invalid_reasons: Counter[str] = Counter()
+        self.bootstrapped: Counter[str] = Counter()
         self.simulation_budget = 0
         self.early_stopped = False
 
@@ -283,6 +288,8 @@ class MctsSearch:
             value = branch.value
             if branch.status in {"leaf", "terminal"} and value is not None:
                 self.valid_rollouts += 1
+                if branch.bootstrap_reason:
+                    self.bootstrapped[str(branch.bootstrap_reason)] += 1
                 for node in branch.nodes:
                     node.record(float(value))
                 for edge in branch.trail:
@@ -437,6 +444,7 @@ async def decide_puct(
             simulation_budget=int(search.simulation_budget),
             early_stopped=bool(search.early_stopped),
             invalid_reasons=dict(search.invalid_reasons),
+            bootstrapped=dict(search.bootstrapped),
         )
     if config.selection == "temperature" and len(live) > 1:
         temperature = max(1e-3, float(config.temperature))
@@ -455,4 +463,5 @@ async def decide_puct(
         simulation_budget=int(search.simulation_budget),
         early_stopped=bool(search.early_stopped),
         invalid_reasons=dict(search.invalid_reasons),
+        bootstrapped=dict(search.bootstrapped),
     )

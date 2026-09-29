@@ -80,7 +80,7 @@ def render_entry(entry: Dict[str, Any]) -> str:
         return "\n".join(lines)
     mcts = entry.get("mcts", {}) or {}
     mode = str(mcts.get("mode", "?"))
-    if mode == "lookahead":
+    if mode in {"lookahead", "portfolio"}:
         counts = f"samples valid={mcts.get('valid_samples')} invalid={mcts.get('invalid_samples')}"
     else:
         counts = (
@@ -88,6 +88,10 @@ def render_entry(entry: Dict[str, Any]) -> str:
             f"invalid={mcts.get('invalid_rollouts')} ({float(mcts.get('invalid_rate') or 0.0) * 100.0:.0f}%) "
             f"killed={mcts.get('killed_edges')}"
         )
+        boot = mcts.get("bootstrapped") or {}
+        boot_n = sum(int(value or 0) for value in boot.values()) if isinstance(boot, dict) else 0
+        if boot_n:
+            counts += f" bootstrapped={boot_n}"
     lines.append(
         f"{header} | {mode} {counts} | root_value={float(entry.get('root_value') or 0.0):+.3f}"
         f" | legal={entry.get('legal_action_count')}"

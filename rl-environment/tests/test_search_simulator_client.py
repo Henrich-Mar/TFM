@@ -216,6 +216,7 @@ def test_replay_parses_all_statuses():
                 "status": "boundary",
                 "appliedSteps": 2,
                 "stateDigest": "d" * 64,
+                "rootObservation": {"id": "p1", "players": [], "waitingFor": None, "megaCredits": 42},
             },
         ],
     }
@@ -233,6 +234,8 @@ def test_replay_parses_all_statuses():
     assert by_id["b2"].error_code == "input_rejected"
     assert by_id["b2"].error_step_index == 0
     assert by_id["b3"].status == "boundary"
+    assert by_id["b3"].root_observation["id"] == "p1"
+    assert by_id["b0"].root_observation is None
     assert client.stats.replays == 1
     assert client.stats.applied_steps == 7
     assert client.stats.new_steps_applied == 4

@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 STRATEGIC_PROMPT_TYPE = "or"
-SUPPORTED_ROOT_PROMPT_TYPES = {"or", "card", "space"}
+SUPPORTED_ROOT_PROMPT_TYPES = {"or", "card", "space", "initialcards"}
+INITIAL_CARDS_PROMPT_TYPES = {"initialcards", "selectinitialcards"}
 
 
 def waiting_for(player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -27,6 +28,11 @@ def strategic_options(player_state: Optional[Dict[str, Any]]) -> list:
     return options if isinstance(options, list) else []
 
 
+def is_initial_cards_prompt(player_state: Optional[Dict[str, Any]]) -> bool:
+    """Corporation and opening-project selection. Not a rollout leaf."""
+    return prompt_type(player_state) in INITIAL_CARDS_PROMPT_TYPES
+
+
 def is_strategic_prompt(player_state: Optional[Dict[str, Any]]) -> bool:
     """A root is searchable only at a top-level action-selection prompt.
 
@@ -39,9 +45,11 @@ def is_strategic_prompt(player_state: Optional[Dict[str, Any]]) -> bool:
 def is_search_root(player_state: Optional[Dict[str, Any]], root_prompt_types: str = "or") -> bool:
     """Root gate for ``SearchPolicy.decide``, wider than rollout leaves.
 
-    ``root_prompt_types`` is a comma-separated list. Research ``card`` and
-    Action-phase ``space`` roots are supported in addition to ``or``; rollout
-    leaves and continuations always use :func:`is_strategic_prompt` regardless.
+    ``root_prompt_types`` is a comma-separated list. Research ``card``,
+    Action-phase ``space``, and opening ``initialCards`` roots are supported
+    in addition to ``or``. Rollout leaves and continuations always use
+    :func:`is_strategic_prompt` regardless. ``initialCards`` is a one-step
+    portfolio root, not a multi-turn tree.
     """
     allowed = {
         t.strip().lower()
@@ -52,6 +60,8 @@ def is_search_root(player_state: Optional[Dict[str, Any]], root_prompt_types: st
         return is_strategic_prompt(player_state)
     waiting = waiting_for(player_state)
     prompt = str(waiting.get("type", "") or "").strip().lower()
+    if prompt == "selectinitialcards":
+        prompt = "initialcards"
     if prompt not in allowed:
         return False
     phase = str(((player_state or {}).get("game", {}) or {}).get("phase", "") or "").strip().lower()
@@ -77,6 +87,11 @@ def is_search_root(player_state: Optional[Dict[str, Any]], root_prompt_types: st
         # With one exact subset size, there is a choice only when at least two
         # different combinations exist (0 < k < number of offered cards).
         return 0 < minimum < len(cards)
+    if prompt == "initialcards":
+        options = waiting.get("options")
+        # One corporation choice plus the project-card purchase. A single
+        # legal portfolio is bypassed later by the policy, not by this gate.
+        return phase == "research" and isinstance(options, list) and len(options) >= 2
     return False
 
 

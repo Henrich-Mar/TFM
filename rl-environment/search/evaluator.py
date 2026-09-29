@@ -33,6 +33,9 @@ class EvalItem:
     turn_count: int = 0
     recurrent_in: Optional[torch.Tensor] = None
     state_digest: Optional[str] = None
+    # Score the position even when nobody is waiting. Opening portfolios land
+    # here: the pick has been applied and the root player has no prompt left.
+    value_only: bool = False
 
 
 @dataclass
@@ -121,6 +124,8 @@ class PositionEvaluator:
 
     def _encode(self, item: EvalItem) -> Optional[Dict[str, Any]]:
         agent = self.agent
+        if item.value_only:
+            return self._encode_value_only(item)
         try:
             descriptors = agent.action_decoder.get_legal_action_descriptors(item.player_state)
         except Exception as exc:
@@ -136,6 +141,29 @@ class PositionEvaluator:
             return None
         return {
             "descriptors": descriptors,
+            "phase_index": phase_index,
+            "bundle": bundle,
+            "item": item,
+        }
+
+    def _encode_value_only(self, item: EvalItem) -> Optional[Dict[str, Any]]:
+        """Encode a position that has no legal prompt.
+
+        The value head reads the world and hand summary, not the action rows.
+        An empty action list is only accepted when the bundle is marked
+        terminal, which skips the legal-action guard without changing that
+        summary.
+        """
+        agent = self.agent
+        try:
+            phase_index = int(agent._extract_phase_index(item.player_state))
+            bundle = dict(agent.state_encoder.encode(item.player_state, int(item.turn_count), []))
+        except Exception as exc:
+            logger.warning("search evaluation: value-only encode failed: %s", exc)
+            return None
+        bundle["terminal"] = True
+        return {
+            "descriptors": [],
             "phase_index": phase_index,
             "bundle": bundle,
             "item": item,
@@ -247,8 +275,11 @@ class PositionEvaluator:
         outputs: List[EvalResult] = []
         for position, row in enumerate(rows):
             action_count = int(counts[position])
-            logits_row = policy_logits[position, :action_count]
-            probabilities = F.softmax(logits_row, dim=-1).tolist()
+            if action_count <= 0:
+                probabilities = []
+            else:
+                logits_row = policy_logits[position, :action_count]
+                probabilities = F.softmax(logits_row, dim=-1).tolist()
             row_value = float(value[position].reshape(-1)[0].item())
             row_recurrent = (
                 recurrent_out[position].reshape(-1).clone()

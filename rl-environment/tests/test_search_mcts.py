@@ -354,6 +354,134 @@ def test_every_line_dead_returns_no_signal():
     assert outcome.killed_edges == 2
 
 
+def _run_custom(responder, value_by_tag, config):
+    client = FakeClient(responder)
+    outcome = asyncio.run(
+        decide_puct(
+            agent=None,
+            client=client,
+            base_url="http://fake:8080",
+            session_id="ses-1",
+            root_player_id=ROOT_PLAYER,
+            root_state=_strategic("root"),
+            candidates=[_descriptor(100), _descriptor(200)],
+            priors=[0.6, 0.4],
+            root_value=0.0,
+            branch_memory={ROOT_PLAYER: torch.zeros(4)},
+            turn_counts={},
+            config=config,
+            lowercase_mc=False,
+            evaluator=FakeEvaluator(value_by_tag),
+        )
+    )
+    return outcome
+
+
+def test_generation_boundary_keeps_the_last_root_value():
+    def responder(branches):
+        results = []
+        for branch in branches:
+            if len(branch["steps"]) == 1:
+                results.append(
+                    BranchResult(
+                        branch_id=branch["branchId"],
+                        status="next_prompt",
+                        applied_steps=1,
+                        state_digest="x",
+                        next_prompt=(ROOT_PLAYER, _strategic("d1")),
+                    )
+                )
+            else:
+                results.append(
+                    BranchResult(
+                        branch_id=branch["branchId"],
+                        status="boundary",
+                        applied_steps=len(branch["steps"]),
+                        state_digest="y",
+                    )
+                )
+        return results
+
+    outcome = _run_custom(
+        responder,
+        {"d1": 0.42},
+        _config(max_root_turns_depth=2, simulations_per_move=4, early_stop=False, puct_c=0.0),
+    )
+    assert outcome is not None
+    assert outcome.invalid_rollouts == 0
+    assert outcome.killed_edges == 0
+    assert outcome.valid_rollouts == outcome.simulations_selected
+    assert outcome.bootstrapped.get("boundary") == outcome.simulations_selected
+    assert all(abs(float(row["q"]) - 0.42) < 1e-6 for row in outcome.candidates if row["visits"])
+
+
+def test_pass_boundary_bootstraps_from_the_tree_position():
+    """A pass that closes the generation never yields another root prompt."""
+
+    def responder(branches):
+        return [
+            BranchResult(
+                branch_id=branch["branchId"],
+                status="boundary",
+                applied_steps=0,
+                state_digest="x",
+            )
+            for branch in branches
+        ]
+
+    outcome = _run_custom(
+        responder,
+        {},
+        _config(edge_kill_failures=1, early_stop=False, simulations_per_move=4),
+    )
+    assert outcome is not None
+    assert outcome.invalid_rollouts == 0
+    assert outcome.killed_edges == 0
+    assert outcome.chosen_position != -1
+    assert outcome.bootstrapped.get("boundary") == outcome.simulations_selected
+    assert all(abs(float(row["q"])) < 1e-6 for row in outcome.candidates if row["visits"])
+
+
+def test_step_limit_keeps_the_last_root_value():
+    def responder(branches):
+        results = []
+        for branch in branches:
+            if len(branch["steps"]) == 1:
+                results.append(
+                    BranchResult(
+                        branch_id=branch["branchId"],
+                        status="next_prompt",
+                        applied_steps=1,
+                        state_digest="x",
+                        next_prompt=(
+                            ROOT_PLAYER,
+                            {"waitingFor": {"type": "payment"}, "_tag": "pay"},
+                        ),
+                    )
+                )
+            else:
+                results.append(
+                    BranchResult(
+                        branch_id=branch["branchId"],
+                        status="next_prompt",
+                        applied_steps=len(branch["steps"]),
+                        state_digest="y",
+                        next_prompt=("opponent", {"waitingFor": {"type": "or", "options": [{}, {}]}}),
+                    )
+                )
+        return results
+
+    outcome = _run_custom(
+        responder,
+        {"pay": 0.33},
+        _config(max_rollout_steps=2, simulations_per_move=4, early_stop=False, puct_c=0.0),
+    )
+    assert outcome is not None
+    assert outcome.invalid_rollouts == 0
+    assert outcome.bootstrapped.get("step_limit") == outcome.simulations_selected
+    assert all(abs(float(row["q"]) - 0.33) < 1e-6 for row in outcome.candidates if row["visits"])
+
+
 def test_no_candidates_returns_no_signal():
     outcome, _ = _run(
         {"d1p0": 0.5},

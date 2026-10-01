@@ -22,12 +22,13 @@ The important defaults are:
 | --- | ---: | --- |
 | `PPO_ROLLOUT_STEPS` | 12,288 | Decisions collected before one PPO update |
 | PPO learning rate | 0.00005 | Conservative post-champion update size |
-| PPO epochs / minibatch | 2 / 512 | Limits repeated fitting of one rollout |
+| PPO epochs / minibatch | 2 / 128 | Limits repeated fitting of one rollout; 512 exhausts the 6 GB GPU |
 | Benchmark interval | 100,000 decisions | Cadence for the light screen |
 | Screen seeds | 8 | 32 games per baseline after four seat rotations |
 | History snapshot interval | 8 PPO updates | Cadence for adding a frozen past policy |
 | Live self-play games | 40% | Four seats use the current policy |
-| Champion games | 40% | One live seat plays three frozen champion seats |
+| Champion games | 20% | One live seat plays three frozen champion seats |
+| History games | 20% | One live seat plays three distinct recent snapshots |
 | Teacher games | 20% | One live seat plays three heuristic-teacher seats |
 
 In the initial run, one complete self-play game produced approximately 406
@@ -53,20 +54,36 @@ At every 100,000-decision interval, the runner saves a candidate and performs
 the following steps:
 
 1. Play 32 games against the heuristic teacher using eight dedicated screen
-   seeds and all four candidate seat positions.
-2. Play 32 games against the current champion on the same screen seeds.
+   seeds and all four candidate seat positions. The candidate samples actions
+   the same way as in self-play; the teacher remains a deterministic heuristic.
+2. Play 32 games against the current champion on the same screen seeds. Frozen
+   champion seats stay greedy, matching training. `--stochastic` is a separate
+   diagnostic that samples both sides and is not used for promotion.
 3. Continue only if at least 90% of each screen completed, neither screen had a
    policy rejection, teacher first-place rate is at least 25%, and champion
    pairwise score is at least 0.50.
 4. Run the full 120-game teacher benchmark on 30 separate promotion seeds.
-5. If and only if the full teacher gate passes, run the full 120-game champion
-   benchmark.
+5. If and only if the full teacher gate passes and the candidate is not worse
+   against the teacher than the current champion was, run the full 120-game
+   champion benchmark.
 6. Promote only if both full gates pass.
 
 The full teacher gate requires a 95% Wilson lower bound on first-place rate
-above 25%, at least 99% game completion, and zero policy rejections. The full
-champion gate requires pairwise score of at least 0.50, at least 99% completion,
-and zero policy rejections.
+above 25%, at least 99% game completion, and zero policy rejections. It also
+requires the candidate's teacher pairwise score to be at least the champion's
+teacher pairwise score minus `PROMOTION_TEACHER_PAIRWISE_MARGIN` (default 0).
+Both reports use the same promotion seeds and seat rotations, so the comparison
+is paired. The result is stored as `teacher_relative` in each state report, and
+the champion's teacher report is stored as `champion_teacher_report` in
+`selfplay_state.json`. Without this check, a candidate that only learned to
+exploit the champion could be promoted while regressing against the teacher;
+the 1,700,750 promotion did exactly that (teacher pairwise 0.681 versus 0.708).
+The full champion gate requires pairwise score of at least 0.50, at least 99%
+completion, and zero policy rejections.
+
+After every benchmark the log prints a rolling mean of the last three screens.
+A single 32-game screen has a 95% interval of roughly ±0.15, so use the rolling
+line, not one screen, to judge trends.
 
 Screen seeds are stored in
 `rl-environment/benchmark_screen_seeds.v1.json`. Promotion seeds remain in
@@ -93,16 +110,22 @@ The champion, teacher, and historical snapshots have separate responsibilities:
 
 - `champion.pth` changes only after both strict promotion gates pass.
 - Every eight successful PPO updates, the live learner is archived as a
-  diagnostic snapshot, but unpromoted snapshots are not trusted as opponents.
-- Forty percent of games remain four-seat live self-play. Forty percent place
-  one live learner against three champion seats, and twenty percent place one
-  live learner against three heuristic teachers.
-- Frozen seats never write PPO rollouts. Seat placement and matchup choice are
-  deterministic from the game seed.
+  snapshot. Snapshots are never used for promotion decisions, but the eight
+  most recent snapshots and past champions are training sparring partners.
+- Forty percent of games remain four-seat live self-play. Twenty percent place
+  one live learner against three champion seats, twenty percent against three
+  distinct recent snapshots, and twenty percent against three heuristic
+  teachers. History games fall back to champion games until three snapshots
+  exist. Set `SELFPLAY_HISTORY_FRACTION=0` to disable history opponents.
+- Frozen seats never write PPO rollouts. Seat placement, matchup choice, and
+  snapshot choice are deterministic from the game seed.
 
-This keeps most collected actions on-policy while continuously anchoring the
-learner to externally measurable strength. Promotion refreshes the trusted
-champion pool; periodic learner snapshots cannot silently replace it.
+A single frozen champion opponent invites the learner to exploit that one
+policy instead of getting stronger in general; the history pool spreads that
+pressure across several opponents. Each snapshot loads one frozen network
+shared by one seat per concurrent game, and the pool refreshes when a snapshot
+is archived. Promotion refreshes the trusted champion pool; periodic learner
+snapshots cannot silently replace it.
 
 ## Optional MCTS search for benchmarks (disabled by default)
 
@@ -399,9 +422,16 @@ docker compose -f docker-compose.rl_hard.yml -f docker-compose.alphago.yml run -
   --checkpoint /app/alphago/checkpoints/candidate_000800867.pth
 ```
 
-During subsequent training, a champion screen below pairwise score `0.35`
-triggers immediate rollback. Two consecutive screens below `0.50` also trigger
-rollback. Failed-policy rollout shards are quarantined rather than deleted.
+During subsequent training, a champion screen below pairwise score `0.35`, or
+two consecutive screens below `0.50`, triggers a rollback check. The 32-game
+screen uses only eight distinct deals, so the runner first re-tests the
+candidate on the full 120-game, 30-deal champion benchmark (report label
+`rollback_confirm`, about 20 minutes). The learner rolls back only if that
+full pairwise score is below `PPO_ROLLBACK_CONFIRM_PAIRWISE` (default `0.45`)
+or the run is incomplete or has rejections; otherwise the failure counter
+resets and training continues. Set `PPO_ROLLBACK_CONFIRM_FULL=0` to restore
+immediate rollback. The confirmation reuses the promotion seeds, so it adds
+mild selection pressure on them; it only decides rollbacks, never promotions. Failed-policy rollout shards are quarantined rather than deleted.
 Per-update PPO diagnostics are appended to
 `rl-alphago/metrics/ppo_updates.jsonl`.
 
@@ -427,8 +457,11 @@ $env:ALPHAGO_SCREEN_MIN_COMPLETION_RATIO=0.90
 $env:ALPHAGO_SCREEN_TEACHER_MIN_FIRST_PLACE_RATE=0.25
 $env:ALPHAGO_SCREEN_CHAMPION_MIN_PAIRWISE_SCORE=0.50
 $env:ALPHAGO_SELFPLAY_LIVE_FRACTION=0.40
-$env:ALPHAGO_SELFPLAY_CHAMPION_FRACTION=0.40
+$env:ALPHAGO_SELFPLAY_CHAMPION_FRACTION=0.20
+$env:ALPHAGO_SELFPLAY_HISTORY_FRACTION=0.20
 $env:ALPHAGO_SELFPLAY_TEACHER_FRACTION=0.20
+$env:ALPHAGO_PROMOTION_TEACHER_PAIRWISE_MARGIN=0.0
+$env:ALPHAGO_PPO_EPOCHS=2
 
 docker compose -f docker-compose.rl_hard.yml -f docker-compose.alphago.yml up -d --force-recreate rl-coordinator
 ```
@@ -440,7 +473,9 @@ Recommended ranges:
 | Benchmark interval | 100k-200k decisions | Larger values favor self-play throughput |
 | PPO rollout | 12,288-16,384 decisions | Larger values improve batch diversity but update less often |
 | History snapshot cadence | 8-16 updates | Smaller values retain denser diagnostic history |
-| Champion-game fraction | 0.30-0.50 | Larger values resist forgetting but collect fewer live actions per game |
+| Champion-game fraction | 0.15-0.30 | Larger values resist forgetting but encourage exploiting one opponent |
+| History-game fraction | 0.15-0.30 | Larger values diversify opponents; snapshots may be weaker than the champion |
+| PPO epochs | 2-4 | Measured approx KL is 0.001-0.002 against a 0.01 target; change only as an isolated A/B |
 | Teacher screen threshold | 0.25-0.30 | Higher values run fewer full gates |
 
 Keep `PPO_ROLLOUT_STEPS=12288` unless PPO metrics show that the batch is too

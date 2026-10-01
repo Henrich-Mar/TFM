@@ -218,17 +218,26 @@ class V2SelfPlayRunner:
         )
         self.lineup_live_fraction = self._fraction_env("SELFPLAY_LIVE_FRACTION", 0.40)
         self.lineup_champion_fraction = self._fraction_env("SELFPLAY_CHAMPION_FRACTION", 0.40)
+        self.lineup_history_fraction = self._fraction_env("SELFPLAY_HISTORY_FRACTION", 0.0)
         self.lineup_teacher_fraction = self._fraction_env("SELFPLAY_TEACHER_FRACTION", 0.20)
         lineup_total = (
             self.lineup_live_fraction
             + self.lineup_champion_fraction
+            + self.lineup_history_fraction
             + self.lineup_teacher_fraction
         )
         if abs(lineup_total - 1.0) > 1e-6:
             raise ValueError(
-                "SELFPLAY_LIVE_FRACTION + SELFPLAY_CHAMPION_FRACTION + "
+                "SELFPLAY_LIVE_FRACTION + SELFPLAY_CHAMPION_FRACTION + SELFPLAY_HISTORY_FRACTION + "
                 f"SELFPLAY_TEACHER_FRACTION must equal 1.0; got {lineup_total:.6f}"
             )
+        # History snapshots are training sparring partners only; promotion
+        # still compares exclusively against the trusted champion and teacher.
+        self.load_unpromoted_history = self.lineup_history_fraction > 0.0
+        self.promotion_teacher_pairwise_margin = max(
+            0.0,
+            self._float_env("PROMOTION_TEACHER_PAIRWISE_MARGIN", 0.0),
+        )
         self.rollback_pairwise_floor = min(
             1.0,
             max(0.0, self._float_env("PPO_ROLLBACK_PAIRWISE_FLOOR", 0.35)),
@@ -237,6 +246,16 @@ class V2SelfPlayRunner:
             1,
             int(os.getenv("PPO_ROLLBACK_FAILURE_LIMIT", "2")),
         )
+        self.rollback_confirm_full = str(os.getenv("PPO_ROLLBACK_CONFIRM_FULL", "1")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        self.rollback_confirm_pairwise = min(
+            1.0,
+            max(0.0, self._float_env("PPO_ROLLBACK_CONFIRM_PAIRWISE", 0.45)),
+        )
+        self.benchmark_candidate_stochastic = str(
+            os.getenv("BENCHMARK_CANDIDATE_STOCHASTIC", "0")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self.consecutive_champion_screen_failures = int(
             resume_state.get("consecutive_champion_screen_failures", 0) or 0
         )
@@ -262,7 +281,13 @@ class V2SelfPlayRunner:
         )
         self.learner.games_played = int(self.lifetime_games)
         self.search_game_count = 0
-        self.lineup_game_counts: Dict[str, int] = {"live": 0, "champion": 0, "teacher": 0, "search": 0}
+        self.lineup_game_counts: Dict[str, int] = {
+            "live": 0,
+            "champion": 0,
+            "history": 0,
+            "teacher": 0,
+            "search": 0,
+        }
         self.lineup_games_since_update: Dict[str, int] = dict(self.lineup_game_counts)
         try:
             self.search_selfplay_fraction = min(
@@ -295,7 +320,19 @@ class V2SelfPlayRunner:
         )
         self.previous_reports: List[Dict] = list(resume_state.get("reports", []) or [])
         self.recovery_events: List[Dict] = list(resume_state.get("recovery_events", []) or [])
+        self.champion_teacher_report: Optional[Dict] = resume_state.get("champion_teacher_report")
+        if self.champion_teacher_report is None:
+            promoted_teacher_reports = [
+                report.get("teacher")
+                for report in self.previous_reports
+                if report.get("promoted") and isinstance(report.get("teacher"), dict)
+            ]
+            if promoted_teacher_reports:
+                self.champion_teacher_report = promoted_teacher_reports[-1]
         self.historical_pool: List[RLAgent] = []
+        self.historical_seats_by_snapshot: List[List[RLAgent]] = []
+        self.historical_snapshot_paths: List[str] = []
+        self._historical_snapshot_cursors: List[int] = []
         self.champion_pool: List[RLAgent] = []
         self.teacher_pool: List[RLAgent] = []
         self._historical_cursor = 0
@@ -324,8 +361,18 @@ class V2SelfPlayRunner:
         print(
             f"[selfplay] lineup=live:{self.lineup_live_fraction:.2f} "
             f"champion_1v3:{self.lineup_champion_fraction:.2f} "
+            f"history_1v3:{self.lineup_history_fraction:.2f} "
             f"teacher_1v3:{self.lineup_teacher_fraction:.2f} "
-            f"search_game_fraction={self.search_selfplay_fraction:.3f}",
+            f"search_game_fraction={self.search_selfplay_fraction:.3f} "
+            f"history_snapshots={len(self.historical_snapshot_paths)} "
+            f"eval_candidate={'sample' if self.benchmark_candidate_stochastic else 'argmax'}",
+            flush=True,
+        )
+        champion_teacher = self.champion_teacher_report or {}
+        print(
+            "[selfplay] promotion teacher baseline "
+            f"pairwise={champion_teacher.get('pairwise_score', 'none')} "
+            f"margin={self.promotion_teacher_pairwise_margin:.3f}",
             flush=True,
         )
 
@@ -364,11 +411,59 @@ class V2SelfPlayRunner:
             picked.append(seat)
         return picked
 
-    def _take_historical_seat(self) -> RLAgent:
-        seat = self.historical_pool[self._historical_cursor % len(self.historical_pool)]
-        self._historical_cursor += 1
-        self._reset_seat_memory(seat)
-        return seat
+    def _take_historical_seats(self, rng: random.Random, count: int) -> List[RLAgent]:
+        """Seat ``count`` distinct snapshots so no snapshot plays twice in one game."""
+        pools = self.historical_seats_by_snapshot
+        if len(pools) < int(count):
+            raise RuntimeError(f"history pool has {len(pools)} snapshots; {count} required")
+        picked: List[RLAgent] = []
+        for snapshot_index in rng.sample(range(len(pools)), int(count)):
+            cursor = self._historical_snapshot_cursors[snapshot_index]
+            seat = pools[snapshot_index][cursor % len(pools[snapshot_index])]
+            self._historical_snapshot_cursors[snapshot_index] = cursor + 1
+            self._reset_seat_memory(seat)
+            picked.append(seat)
+        return picked
+
+    def _history_lineup_available(self) -> bool:
+        return len(getattr(self, "historical_seats_by_snapshot", []) or []) >= 3
+
+    def _refresh_history_pool(self) -> None:
+        """Load the most recent snapshots as frozen sparring partners."""
+        recent = self.history[-8:]
+        if not recent or not bool(getattr(self, "load_unpromoted_history", False)):
+            self.historical_pool = []
+            self.historical_seats_by_snapshot = []
+            self.historical_snapshot_paths = []
+            self._historical_snapshot_cursors = []
+            return
+        if recent == list(getattr(self, "historical_snapshot_paths", []) or []):
+            return
+        # Each game seats a snapshot at most once, so one seat per concurrent
+        # game keeps every in-flight seat's recurrent memory independent.
+        seats_per_snapshot = max(1, int(self.selfplay_concurrency))
+        loaded = dict(
+            zip(
+                getattr(self, "historical_snapshot_paths", []) or [],
+                getattr(self, "historical_seats_by_snapshot", []) or [],
+            )
+        )
+        by_snapshot: List[List[RLAgent]] = []
+        for path in recent:
+            if path in loaded:
+                by_snapshot.append(loaded[path])
+                continue
+            label = Path(path).stem
+            leader = _frozen_checkpoint_agent(path, f"historical-{label}-0")
+            seats = [leader]
+            for seat_index in range(1, seats_per_snapshot):
+                seats.append(_bind_frozen_seat(leader, f"historical-{label}-{seat_index}"))
+            by_snapshot.append(seats)
+        self.historical_seats_by_snapshot = by_snapshot
+        self.historical_pool = [seat for seats in by_snapshot for seat in seats]
+        self.historical_snapshot_paths = list(recent)
+        self._historical_snapshot_cursors = [0] * len(by_snapshot)
+        self._apply_v3_feature_scale()
 
     def _take_frozen_seats(self, kind: str, count: int) -> List[RLAgent]:
         if kind == "champion":
@@ -393,18 +488,7 @@ class V2SelfPlayRunner:
 
     def _refresh_frozen_pools(self) -> None:
         """Refresh trusted champion/teacher seats with independent recurrent memory."""
-        recent = self.history[-8:]
-        if not recent or not bool(getattr(self, "load_unpromoted_history", False)):
-            self.historical_pool = []
-        else:
-            copies = max(len(recent), int(self.selfplay_concurrency))
-            self.historical_pool = [
-                _frozen_checkpoint_agent(
-                    recent[idx % len(recent)],
-                    f"historical-{idx}",
-                )
-                for idx in range(copies)
-            ]
+        self._refresh_history_pool()
         trusted_seats = max(3, int(self.selfplay_concurrency) * 3)
         champion_path = getattr(self, "champion_path", None)
         if champion_path is not None and Path(champion_path).is_file():
@@ -503,26 +587,37 @@ class V2SelfPlayRunner:
                 getattr(self, "consecutive_champion_screen_failures", 0)
             ),
             "recovery_events": list(getattr(self, "recovery_events", [])),
+            "champion_teacher_report": getattr(self, "champion_teacher_report", None),
             "reports": reports,
         }
         state_temporary = self.state_path.with_name(self.state_path.name + ".tmp")
         state_temporary.write_text(json.dumps(state, indent=2), encoding="utf-8")
         os.replace(state_temporary, self.state_path)
 
-    def _lineup(self, game_seed: int) -> List[RLAgent]:
-        """Choose a deterministic live, champion, or teacher training matchup."""
-        rng = random.Random(int(game_seed) ^ 0x5F3759DF)
-        draw = rng.random()
+    def _draw_lineup_kind(self, draw: float) -> str:
         live_fraction = float(getattr(self, "lineup_live_fraction", 1.0))
         champion_fraction = float(getattr(self, "lineup_champion_fraction", 0.0))
+        history_fraction = float(getattr(self, "lineup_history_fraction", 0.0))
         if draw < live_fraction:
-            return self._take_learning_seats(4)
+            return "live"
         if draw < live_fraction + champion_fraction:
-            kind = "champion"
-        else:
-            kind = "teacher"
+            return "champion"
+        if draw < live_fraction + champion_fraction + history_fraction:
+            # Until three snapshots exist, history games fall back to the champion.
+            return "history" if self._history_lineup_available() else "champion"
+        return "teacher"
+
+    def _lineup(self, game_seed: int) -> List[RLAgent]:
+        """Choose a deterministic live, champion, history, or teacher training matchup."""
+        rng = random.Random(int(game_seed) ^ 0x5F3759DF)
+        kind = self._draw_lineup_kind(rng.random())
+        if kind == "live":
+            return self._take_learning_seats(4)
         live_seat = int(rng.randrange(4))
-        opponents = self._take_frozen_seats(kind, 3)
+        if kind == "history":
+            opponents = self._take_historical_seats(rng, 3)
+        else:
+            opponents = self._take_frozen_seats(kind, 3)
         lineup = list(opponents)
         lineup.insert(live_seat, self._take_learning_seats(1)[0])
         return lineup
@@ -530,14 +625,7 @@ class V2SelfPlayRunner:
     def _lineup_kind(self, game_seed: int, search_training: bool = False) -> str:
         if search_training:
             return "search"
-        draw = random.Random(int(game_seed) ^ 0x5F3759DF).random()
-        live_fraction = float(getattr(self, "lineup_live_fraction", 1.0))
-        champion_fraction = float(getattr(self, "lineup_champion_fraction", 0.0))
-        if draw < live_fraction:
-            return "live"
-        if draw < live_fraction + champion_fraction:
-            return "champion"
-        return "teacher"
+        return self._draw_lineup_kind(random.Random(int(game_seed) ^ 0x5F3759DF).random())
 
     def _remember_history(self, checkpoint: Path) -> None:
         checkpoint_text = str(checkpoint)
@@ -558,6 +646,8 @@ class V2SelfPlayRunner:
         os.replace(temporary, target)
         self._remember_history(target)
         self.last_history_snapshot_policy_version = policy_version
+        if bool(getattr(self, "load_unpromoted_history", False)):
+            self._refresh_history_pool()
         print(
             f"[selfplay] historical snapshot saved policy_version={policy_version} "
             f"decisions={decisions} retained={len(self.history)}",
@@ -623,7 +713,72 @@ class V2SelfPlayRunner:
         )
         return event
 
-    async def _maybe_rollback_from_screen(self, report: Dict[str, Any], decisions: int) -> Dict[str, Any]:
+    async def _benchmark(self, *args, **kwargs):
+        """Run a gate with the same action-selection as training unless overridden."""
+        kwargs.setdefault(
+            "candidate_stochastic",
+            bool(getattr(self, "benchmark_candidate_stochastic", False)),
+        )
+        return await benchmark(*args, **kwargs)
+
+    async def _confirm_rollback(
+        self,
+        candidate_path: Optional[Path],
+        decisions: int,
+        trigger: str,
+    ) -> Dict[str, Any]:
+        """Re-test a screen-triggered rollback on the full 30-deal champion benchmark.
+
+        The 8-deal screen swings far enough between near-identical policies
+        that one bad screen is not sufficient evidence to discard ~100k decisions.
+        """
+        if candidate_path is None or not bool(getattr(self, "rollback_confirm_full", True)):
+            return await self._rollback_to_champion(decisions, trigger)
+        print(f"[selfplay] rollback trigger={trigger}; confirming on full champion benchmark", flush=True)
+        confirmation = await self._benchmark(
+            str(candidate_path),
+            "champion",
+            self.stage,
+            str(self.benchmarks),
+            champion=str(self.champion_path),
+            report_label="rollback_confirm",
+        )
+        confirm_pairwise = float(confirmation.get("pairwise_score", 0.0) or 0.0)
+        confirm_threshold = float(getattr(self, "rollback_confirm_pairwise", 0.45))
+        planned = max(1, int(confirmation.get("planned_games", 0) or 0))
+        completed = max(0, int(confirmation.get("completed_games", 0) or 0))
+        trustworthy = (
+            completed >= math.ceil(self.screen_min_completion_ratio * planned)
+            and int(confirmation.get("rejection_count", 0) or 0) == 0
+        )
+        summary = {
+            "trigger": trigger,
+            "pairwise_score": confirm_pairwise,
+            "threshold": confirm_threshold,
+            "completed_games": completed,
+            "planned_games": planned,
+        }
+        if trustworthy and confirm_pairwise >= confirm_threshold:
+            self.consecutive_champion_screen_failures = 0
+            print(
+                f"[selfplay] rollback cleared full_pairwise={confirm_pairwise:.3f} "
+                f"threshold={confirm_threshold:.3f}",
+                flush=True,
+            )
+            return {"applied": False, "reason": "full_benchmark_cleared", "confirmation": summary}
+        event = await self._rollback_to_champion(
+            decisions,
+            f"{trigger}_confirmed_full_pairwise_{confirm_pairwise:.3f}",
+        )
+        event["confirmation"] = summary
+        return event
+
+    async def _maybe_rollback_from_screen(
+        self,
+        report: Dict[str, Any],
+        decisions: int,
+        candidate_path: Optional[Path] = None,
+    ) -> Dict[str, Any]:
         if int(getattr(self, "champion_promotions", 0)) <= 0:
             return {"applied": False, "reason": "no_promoted_champion"}
         pairwise = float(report.get("pairwise_score", 0.0) or 0.0)
@@ -633,12 +788,14 @@ class V2SelfPlayRunner:
             return {"applied": False, "reason": "screen_passed"}
         self.consecutive_champion_screen_failures += 1
         if pairwise < float(self.rollback_pairwise_floor):
-            return await self._rollback_to_champion(
+            return await self._confirm_rollback(
+                candidate_path,
                 decisions,
                 f"pairwise_{pairwise:.3f}_below_floor_{self.rollback_pairwise_floor:.3f}",
             )
         if self.consecutive_champion_screen_failures >= int(self.rollback_failure_limit):
-            return await self._rollback_to_champion(
+            return await self._confirm_rollback(
+                candidate_path,
                 decisions,
                 f"champion_screen_failed_{self.consecutive_champion_screen_failures}_times",
             )
@@ -660,6 +817,58 @@ class V2SelfPlayRunner:
         if baseline == "champion":
             return float(report.get("pairwise_score", 0.0) or 0.0) >= self.screen_champion_min_pairwise_score
         raise ValueError(f"unsupported screening baseline: {baseline}")
+
+    @staticmethod
+    def _rolling_screen_summary(reports: List[Dict], window: int = 3) -> str:
+        """A single 32-game screen has roughly +/-0.15 noise; trends need a window."""
+        recent = [report for report in reports if isinstance(report.get("screen_teacher"), dict)][-window:]
+
+        def mean(key: str, field: str) -> str:
+            values = [
+                float((report.get(key) or {}).get(field, 0.0) or 0.0)
+                for report in recent
+                if isinstance(report.get(key), dict)
+            ]
+            return f"{sum(values) / len(values):.3f}" if values else "none"
+
+        return (
+            f"[selfplay] rolling screens last={len(recent)} "
+            f"teacher_pairwise={mean('screen_teacher', 'pairwise_score')} "
+            f"teacher_first={mean('screen_teacher', 'first_place_rate')} "
+            f"teacher_vp={mean('screen_teacher', 'mean_relative_vp_margin')} "
+            f"champion_pairwise={mean('screen_regression', 'pairwise_score')}"
+        )
+
+    def _teacher_relative_to_champion(self, report: Dict) -> Dict[str, Any]:
+        """Reject candidates that beat the champion yet play worse against the teacher.
+
+        Both full teacher reports use the same promotion seeds and seat
+        rotations, so the comparison is paired on identical games.
+        """
+        baseline = getattr(self, "champion_teacher_report", None)
+        margin = float(getattr(self, "promotion_teacher_pairwise_margin", 0.0))
+        candidate_pairwise = float(report.get("pairwise_score", 0.0) or 0.0)
+        if not isinstance(baseline, dict):
+            return {
+                "passed": True,
+                "reason": "no_champion_teacher_baseline",
+                "candidate_pairwise": candidate_pairwise,
+                "champion_pairwise": None,
+                "margin": margin,
+                "paired": False,
+            }
+        champion_pairwise = float(baseline.get("pairwise_score", 0.0) or 0.0)
+        passed = candidate_pairwise >= champion_pairwise - margin
+        return {
+            "passed": bool(passed),
+            "reason": "not_worse_than_champion" if passed else "worse_than_champion_vs_teacher",
+            "candidate_pairwise": candidate_pairwise,
+            "champion_pairwise": champion_pairwise,
+            "candidate_vp_margin": report.get("mean_relative_vp_margin"),
+            "champion_vp_margin": baseline.get("mean_relative_vp_margin"),
+            "margin": margin,
+            "paired": list(report.get("seeds", []) or []) == list(baseline.get("seeds", []) or []),
+        }
 
     def _reserve_selfplay_game(self) -> _SelfPlayGame:
         """Reserve one game using the current, unmodified learner policy."""
@@ -776,7 +985,7 @@ class V2SelfPlayRunner:
         candidate_path = self.checkpoints / f"candidate_{decisions:09d}.pth"
         self.learner.save_model(str(candidate_path))
         shutil.copy2(candidate_path, self.latest_learner_path)
-        screen_teacher_report = await benchmark(
+        screen_teacher_report = await self._benchmark(
             str(candidate_path),
             "teacher",
             self.stage,
@@ -784,7 +993,7 @@ class V2SelfPlayRunner:
             seeds_path=str(self.screen_seed_path),
             report_label="screen",
         )
-        screen_regression_report = await benchmark(
+        screen_regression_report = await self._benchmark(
             str(candidate_path),
             "champion",
             self.stage,
@@ -796,15 +1005,28 @@ class V2SelfPlayRunner:
         teacher_screen_passed = self._screen_report_promising(screen_teacher_report, "teacher")
         regression_screen_passed = self._screen_report_promising(screen_regression_report, "champion")
         screen_passed = teacher_screen_passed and regression_screen_passed
-        rollback = await self._maybe_rollback_from_screen(screen_regression_report, decisions)
+        rollback = await self._maybe_rollback_from_screen(
+            screen_regression_report,
+            decisions,
+            candidate_path=candidate_path,
+        )
         teacher_report: Optional[Dict] = None
+        teacher_relative: Optional[Dict[str, Any]] = None
         regression_report: Optional[Dict] = None
         if screen_passed:
-            teacher_report = await benchmark(
+            teacher_report = await self._benchmark(
                 str(candidate_path), "teacher", self.stage, str(self.benchmarks)
             )
-            if bool(teacher_report.get("gate_passed", False)):
-                regression_report = await benchmark(
+            teacher_relative = self._teacher_relative_to_champion(teacher_report)
+            print(
+                f"[selfplay] teacher gate absolute={bool(teacher_report.get('gate_passed', False))} "
+                f"relative={teacher_relative['passed']} "
+                f"candidate_pairwise={teacher_relative['candidate_pairwise']} "
+                f"champion_pairwise={teacher_relative['champion_pairwise']}",
+                flush=True,
+            )
+            if bool(teacher_report.get("gate_passed", False)) and teacher_relative["passed"]:
+                regression_report = await self._benchmark(
                     str(candidate_path),
                     "champion",
                     self.stage,
@@ -822,12 +1044,15 @@ class V2SelfPlayRunner:
             teacher_report is not None
             and regression_report is not None
             and bool(teacher_report.get("gate_passed", False))
+            and teacher_relative is not None
+            and teacher_relative["passed"]
             and bool(regression_report.get("gate_passed", False))
         ):
             historical = self.checkpoints / f"champion_{decisions:09d}.pth"
             shutil.copy2(self.champion_path, historical)
             self._remember_history(historical)
             shutil.copy2(candidate_path, self.champion_path)
+            self.champion_teacher_report = teacher_report
             self.champion_promotions = int(getattr(self, "champion_promotions", 0)) + 1
             self.consecutive_champion_screen_failures = 0
             if self.stage == 0:
@@ -853,6 +1078,7 @@ class V2SelfPlayRunner:
             "screen_teacher": screen_teacher_report,
             "screen_regression": screen_regression_report,
             "teacher": teacher_report,
+            "teacher_relative": teacher_relative,
             "regression": regression_report,
             "rollback": rollback,
         }
@@ -932,6 +1158,7 @@ class V2SelfPlayRunner:
                     )
                     report = await self._evaluate_and_promote(decisions)
                     reports.append(report)
+                    print(self._rolling_screen_summary(reports), flush=True)
                     self.next_benchmark_decision += self.benchmark_interval
                     self._save_resume_state(reports)
                     self._write_progress(

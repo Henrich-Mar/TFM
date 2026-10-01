@@ -54,17 +54,34 @@ def _load_seeds(path: Optional[str] = None) -> List[int]:
     return seeds
 
 
-def _frozen_neural(checkpoint: str, agent_id: str) -> RLAgent:
+def _frozen_neural(checkpoint: str, agent_id: str, stochastic: bool = False) -> RLAgent:
     agent = RLAgent(agent_id=agent_id)
     agent.load_model(checkpoint)
     agent.train_from_self_play = False
     agent.config.train_from_self_play = False
-    agent.ppo_enable = False
-    agent.deterministic_actions = True
+    # ``ppo_enable`` also selects the behavior-policy path: PPO sampling omits
+    # contextual heuristic reweighting so stored/reconstructed log-probs match.
+    # Frozen agents cannot train because ``train_from_self_play`` is false, so
+    # keep PPO behavior enabled for stochastic evaluation without collecting
+    # rollouts or updating weights.
+    agent.ppo_enable = bool(stochastic)
+    agent.deterministic_actions = not stochastic
+    if stochastic:
+        # Match strict on-policy self-play sampling: no epsilon-random moves and
+        # temperature 1.0, regardless of the checkpoint's exploration schedule.
+        agent.config.epsilon = 0.0
+        agent.config.temperature = 1.0
+        agent.policy_temperature_cap = 1.0
+        agent.policy_temperature_floor = 1.0
     return agent
 
 
-def _baseline_agents(kind: str, seed: int, champion: Optional[str] = None) -> List[RLAgent]:
+def _baseline_agents(
+    kind: str,
+    seed: int,
+    champion: Optional[str] = None,
+    stochastic: bool = False,
+) -> List[RLAgent]:
     agents: List[RLAgent] = []
     for idx in range(3):
         if kind == "random":
@@ -72,12 +89,15 @@ def _baseline_agents(kind: str, seed: int, champion: Optional[str] = None) -> Li
         elif kind == "teacher":
             agent = RLAgent(agent_id=f"teacher-{idx}", decision_policy=HeuristicTeacherPolicy(seed + idx, sample=False))
         elif kind == "champion" and champion:
-            agent = _frozen_neural(champion, f"champion-{idx}")
+            agent = _frozen_neural(champion, f"champion-{idx}", stochastic=stochastic)
         else:
             raise ValueError(f"invalid baseline: {kind}")
         agent.train_from_self_play = False
         agent.config.train_from_self_play = False
-        agent.ppo_enable = False
+        # Neural baselines already select the correct behavior path in
+        # ``_frozen_neural``. External random/teacher policies never use PPO.
+        if kind != "champion":
+            agent.ppo_enable = False
         agents.append(agent)
     return agents
 
@@ -90,11 +110,22 @@ async def benchmark(
     seeds_path: Optional[str] = None,
     champion: Optional[str] = None,
     report_label: Optional[str] = None,
+    stochastic: bool = False,
+    candidate_stochastic: bool = False,
 ) -> Dict[str, Any]:
+    """Run the seat-rotated benchmark.
+
+    ``stochastic`` makes both the candidate and neural champion sample, a
+    diagnostic A/B against argmax. ``candidate_stochastic`` matches training:
+    the candidate samples while frozen champion seats stay greedy and the
+    teacher stays a deterministic heuristic.
+    """
     initialize_v2_runtime()
     is_v3 = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
     version = "v3" if is_v3 else "v2"
-    candidate = _frozen_neural(checkpoint, f"{version}-candidate")
+    candidate_samples = bool(stochastic or candidate_stochastic)
+    opponent_samples = bool(stochastic)
+    candidate = _frozen_neural(checkpoint, f"{version}-candidate", stochastic=candidate_samples)
     if is_v3:
         candidate.set_v3_feature_scale(1.0)
     search_config = SearchConfig.from_env()
@@ -127,7 +158,7 @@ async def benchmark(
     # state deterministic while games run concurrently. The frozen candidate
     # is safely shared, just like the learner in concurrent self-play.
     opponent_pools = [
-        _baseline_agents(baseline, seeds[0] + worker_index, champion=champion)
+        _baseline_agents(baseline, seeds[0] + worker_index, champion=champion, stochastic=opponent_samples)
         for worker_index in range(concurrency)
     ]
     all_agents = [candidate, *(agent for pool in opponent_pools for agent in pool)]
@@ -135,7 +166,9 @@ async def benchmark(
     benchmark_started_at = time.monotonic()
     print(
         f"[benchmark] started baseline={baseline} stage={stage} "
-        f"games={total} concurrency={concurrency} checkpoint={Path(checkpoint).name}",
+        f"games={total} concurrency={concurrency} checkpoint={Path(checkpoint).name} "
+        f"candidate={'sample' if candidate_samples else 'argmax'} "
+        f"opponents={'sample' if opponent_samples else 'argmax'}",
         flush=True,
     )
     rejection_count_before = sum(
@@ -241,6 +274,9 @@ async def benchmark(
         "seat_rotations": 4,
         "concurrency": concurrency,
         "report_label": str(report_label or "promotion"),
+        "action_selection": (
+            "sample" if opponent_samples else ("candidate_sample" if candidate_samples else "argmax")
+        ),
         "search": (
             candidate.search_policy.snapshot_stats()
             if getattr(candidate, "search_policy", None) is not None
@@ -275,6 +311,16 @@ def main() -> None:
     parser.add_argument("--stage", type=int, choices=(0, 1), required=True)
     parser.add_argument("--seeds")
     parser.add_argument("--report-label")
+    parser.add_argument(
+        "--stochastic",
+        action="store_true",
+        help="sample both candidate and champion actions (diagnostic; not how training plays)",
+    )
+    parser.add_argument(
+        "--candidate-stochastic",
+        action="store_true",
+        help="sample only the candidate, matching self-play (greedy frozen opponents)",
+    )
     parser.add_argument("--output", default=os.getenv("V2_BENCHMARK_DIR", "/app/v2/benchmarks"))
     args = parser.parse_args()
     if args.baseline == "champion" and not args.champion:
@@ -290,6 +336,8 @@ def main() -> None:
                     args.seeds,
                     args.champion,
                     args.report_label,
+                    stochastic=args.stochastic,
+                    candidate_stochastic=args.candidate_stochastic,
                 )
             ),
             indent=2,

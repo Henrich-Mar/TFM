@@ -8,6 +8,7 @@ import random
 import os
 import json
 import itertools
+import contextvars
 
 from .rust_backend import get_rust_module
 from .planner_common import PlannerConfig, stable_identity_features, token_from_features
@@ -64,6 +65,11 @@ def _is_claim_milestone_menu_title(title: str) -> bool:
 
 _STARTUP_PLAN_BASE = ACTION_BASES['startup_selection']
 _STARTUP_PLAN_LIMIT = STARTUP_PLAN_LIMIT
+# Scoped to one legal-action enumeration: the plan list is reused only while the
+# identical prompt and player-state objects are being decoded action by action.
+_STARTUP_PLAN_MEMO: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    '_STARTUP_PLAN_MEMO', default=None
+)
 _PAYMENT_ACTION_BASE = ACTION_BASES['select_payment']
 _PAYMENT_ACTION_VARIANTS = PAYMENT_ACTION_VARIANTS
 _PAYMENT_ALL_KEYS = [
@@ -1309,7 +1315,15 @@ def _startup_project_subset_scores(
         key=lambda c: _score_initial_card(c, 'project', project_tag_counts),
         reverse=True,
     )
-    candidate_cards = ranked_cards[:min(len(ranked_cards), 12)]
+    candidate_cards = [
+        (
+            _score_initial_card(card, 'project', project_tag_counts),
+            float(_card_cost(card)),
+            str(card.get('name', '') or ''),
+            tuple(_card_tags(card).keys()),
+        )
+        for card in ranked_cards[:min(len(ranked_cards), 12)]
+    ]
 
     top_scored: List[Tuple[float, List[str], str]] = []
     if min_cards == 0:
@@ -1323,11 +1337,11 @@ def _startup_project_subset_scores(
             combo_tag_counts: Dict[str, int] = {}
             combo_cost = 0.0
             names: List[str] = []
-            for card in combo:
-                score_base += _score_initial_card(card, 'project', project_tag_counts)
-                combo_cost += float(_card_cost(card))
-                names.append(str(card.get('name', '') or ''))
-                for tag_name in _card_tags(card).keys():
+            for card_score, card_cost, card_name, card_tag_names in combo:
+                score_base += card_score
+                combo_cost += card_cost
+                names.append(card_name)
+                for tag_name in card_tag_names:
                     combo_tag_counts[tag_name] = int(combo_tag_counts.get(tag_name, 0)) + 1
 
             cheap_bonus = 0.0
@@ -1351,7 +1365,7 @@ def _startup_project_subset_scores(
             )
             cash_penalty = 0.0
             if pick_count > 0:
-                cheapest_play = min(float(_card_cost(card)) for card in combo)
+                cheapest_play = min(card[1] for card in combo)
                 if remaining_mc < cheapest_play:
                     cash_penalty += 0.12 * (cheapest_play - remaining_mc)
                 reserve_target = 14.0
@@ -2380,14 +2394,17 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
         if action_index is None or normalized_initial_index == 800:
             return _build_initial_setup_response(waiting_for, player_state)
         if _STARTUP_PLAN_BASE <= normalized_initial_index < (_STARTUP_PLAN_BASE + _STARTUP_PLAN_LIMIT):
-            # Using the ActionDecoder instance for caching if available (via dirty hack or refactoring)
-            # However, build_response_for_input is static. 
-            # We'll regenerate here, but _enumerate_startup_plan_payloads is now faster.
-            startup_plans = _enumerate_startup_plan_payloads(
-                waiting_for=waiting_for,
-                player_state=player_state,
-                max_plans=_STARTUP_PLAN_LIMIT,
-            )
+            memo = _STARTUP_PLAN_MEMO.get()
+            if memo is not None and memo.get('waiting_for') is waiting_for and memo.get('player_state') is player_state:
+                startup_plans = memo['plans']
+            else:
+                startup_plans = _enumerate_startup_plan_payloads(
+                    waiting_for=waiting_for,
+                    player_state=player_state,
+                    max_plans=_STARTUP_PLAN_LIMIT,
+                )
+                if memo is not None:
+                    memo.update(waiting_for=waiting_for, player_state=player_state, plans=startup_plans)
             startup_offset = normalized_initial_index - _STARTUP_PLAN_BASE
             if 0 <= startup_offset < len(startup_plans):
                 return startup_plans[startup_offset]
@@ -4618,30 +4635,34 @@ class ActionDecoder:
                 return LegalActionSet(status="invalid", actions=[], reason="duplicate action IDs in prompt catalog")
             actions: List[Action] = []
             pass_base = int(self.action_types['PASS'])
-            for action_index in normalized_indices:
-                payload = self.decode_action(action_index, player_state)
-                if not isinstance(payload, dict) or not payload:
-                    return LegalActionSet(
-                        status="invalid",
-                        actions=[],
-                        reason=f"action {action_index} has no canonical payload",
+            memo_token = _STARTUP_PLAN_MEMO.set({})
+            try:
+                for action_index in normalized_indices:
+                    payload = self.decode_action(action_index, player_state)
+                    if not isinstance(payload, dict) or not payload:
+                        return LegalActionSet(
+                            status="invalid",
+                            actions=[],
+                            reason=f"action {action_index} has no canonical payload",
+                        )
+                    if str(payload.get('type', '') or '').lower() == 'pass' and action_index < pass_base:
+                        return LegalActionSet(
+                            status="invalid",
+                            actions=[],
+                            reason=f"action {action_index} decoded to an implicit pass",
+                        )
+                    family = self._semantic_family(action_index, waiting_for, payload)
+                    labels = self._descriptor_labels(action_index, waiting_for, family, payload, player_state)
+                    actions.append(
+                        Action(
+                            action_id=action_index,
+                            family=family,
+                            payload=dict(payload),
+                            description=str(labels.get('label', family) or family),
+                        )
                     )
-                if str(payload.get('type', '') or '').lower() == 'pass' and action_index < pass_base:
-                    return LegalActionSet(
-                        status="invalid",
-                        actions=[],
-                        reason=f"action {action_index} decoded to an implicit pass",
-                    )
-                family = self._semantic_family(action_index, waiting_for, payload)
-                labels = self._descriptor_labels(action_index, waiting_for, family, payload, player_state)
-                actions.append(
-                    Action(
-                        action_id=action_index,
-                        family=family,
-                        payload=dict(payload),
-                        description=str(labels.get('label', family) or family),
-                    )
-                )
+            finally:
+                _STARTUP_PLAN_MEMO.reset(memo_token)
             if self.v4_enabled:
                 from .action_canonical import canonicalize_legal_actions
                 actions, aliases = canonicalize_legal_actions(actions)

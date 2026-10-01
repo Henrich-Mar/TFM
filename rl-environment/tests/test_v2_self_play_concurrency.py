@@ -367,9 +367,9 @@ def test_failed_screen_skips_both_full_promotion_benchmarks(monkeypatch, tmp_pat
     runner.screen_champion_min_pairwise_score = 0.50
     calls: list[tuple[str, str | None]] = []
 
-    async def fake_benchmark(checkpoint, baseline, stage, output, seeds_path=None, champion=None, report_label=None):
-        del checkpoint, stage, output, seeds_path, champion
-        calls.append((baseline, report_label))
+    async def fake_benchmark(checkpoint, baseline, stage, output, **kwargs):
+        del checkpoint, stage, output
+        calls.append((baseline, kwargs.get("report_label")))
         return {
             "planned_games": 32,
             "completed_games": 32,
@@ -406,10 +406,10 @@ def test_failed_full_teacher_gate_skips_full_champion_gate(monkeypatch, tmp_path
     runner.screen_champion_min_pairwise_score = 0.50
     calls: list[tuple[str, str | None]] = []
 
-    async def fake_benchmark(checkpoint, baseline, stage, output, seeds_path=None, champion=None, report_label=None):
-        del checkpoint, stage, output, seeds_path, champion
-        calls.append((baseline, report_label))
-        is_screen = report_label == "screen"
+    async def fake_benchmark(checkpoint, baseline, stage, output, **kwargs):
+        del checkpoint, stage, output
+        calls.append((baseline, kwargs.get("report_label")))
+        is_screen = kwargs.get("report_label") == "screen"
         return {
             "planned_games": 32 if is_screen else 120,
             "completed_games": 32 if is_screen else 120,
@@ -428,6 +428,152 @@ def test_failed_full_teacher_gate_skips_full_champion_gate(monkeypatch, tmp_path
     assert report["teacher"]["gate_passed"] is False
     assert report["regression"] is None
     assert report["promoted"] is False
+
+
+def _promotion_runner(tmp_path: Path) -> V2SelfPlayRunner:
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.learner = _CheckpointLearner()
+    runner.checkpoints = tmp_path / "checkpoints"
+    runner.checkpoints.mkdir()
+    runner.benchmarks = tmp_path / "benchmarks"
+    runner.latest_learner_path = runner.checkpoints / "latest_learner.pth"
+    runner.champion_path = runner.checkpoints / "champion.pth"
+    runner.champion_path.write_bytes(b"champion")
+    runner.screen_seed_path = tmp_path / "screen-seeds.json"
+    runner.stage = 1
+    runner.screen_min_completion_ratio = 0.90
+    runner.screen_teacher_min_first_place_rate = 0.25
+    runner.screen_champion_min_pairwise_score = 0.50
+    runner.history = []
+    runner._refresh_frozen_pools = lambda: None
+    return runner
+
+
+def _passing_benchmark(calls: list, teacher_pairwise: float):
+    async def fake_benchmark(checkpoint, baseline, stage, output, **kwargs):
+        del checkpoint, stage, output
+        calls.append((baseline, kwargs.get("report_label")))
+        is_screen = kwargs.get("report_label") == "screen"
+        return {
+            "planned_games": 32 if is_screen else 120,
+            "completed_games": 32 if is_screen else 120,
+            "rejection_count": 0,
+            "first_place_rate": 0.35,
+            "pairwise_score": teacher_pairwise if baseline == "teacher" else 0.80,
+            "mean_relative_vp_margin": 4.0,
+            "seeds": [1, 2, 3],
+            "gate_passed": True,
+        }
+
+    return fake_benchmark
+
+
+def test_candidate_worse_than_champion_against_teacher_is_not_promoted(monkeypatch, tmp_path: Path) -> None:
+    runner = _promotion_runner(tmp_path)
+    runner.champion_teacher_report = {"pairwise_score": 0.708, "seeds": [1, 2, 3]}
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(v2_self_play, "benchmark", _passing_benchmark(calls, teacher_pairwise=0.681))
+
+    report = asyncio.run(runner._evaluate_and_promote(100_000))
+
+    assert calls == [("teacher", "screen"), ("champion", "screen"), ("teacher", None)]
+    assert report["teacher_relative"]["passed"] is False
+    assert report["teacher_relative"]["paired"] is True
+    assert report["regression"] is None
+    assert report["promoted"] is False
+    assert runner.champion_path.read_bytes() == b"champion"
+
+
+def test_promotion_records_new_champion_teacher_baseline(monkeypatch, tmp_path: Path) -> None:
+    runner = _promotion_runner(tmp_path)
+    runner.champion_teacher_report = {"pairwise_score": 0.70, "seeds": [1, 2, 3]}
+    runner.champion_promotions = 1
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(v2_self_play, "benchmark", _passing_benchmark(calls, teacher_pairwise=0.72))
+
+    report = asyncio.run(runner._evaluate_and_promote(100_000))
+
+    assert report["promoted"] is True
+    assert report["teacher_relative"]["passed"] is True
+    assert runner.champion_teacher_report["pairwise_score"] == pytest.approx(0.72)
+    assert runner.champion_path.read_bytes() == b"checkpoint"
+
+
+def test_history_draw_seats_three_distinct_snapshots(monkeypatch) -> None:
+    class _HistoryDraw:
+        def __init__(self, seed: int) -> None:
+            del seed
+
+        def random(self) -> float:
+            return 0.70
+
+        def randrange(self, stop: int) -> int:
+            return 3
+
+        def sample(self, population, count: int):
+            return list(population)[:count]
+
+    seats = [SimpleNamespace(id=f"self-{seat}", train_from_self_play=True) for seat in range(4)]
+    runner = _runner_with_seats(seats)
+    runner.lineup_live_fraction = 0.40
+    runner.lineup_champion_fraction = 0.20
+    runner.lineup_history_fraction = 0.20
+    runner.lineup_teacher_fraction = 0.20
+    runner.historical_seats_by_snapshot = [
+        [SimpleNamespace(id=f"hist-{snap}-{seat}", train_from_self_play=False) for seat in range(2)]
+        for snap in range(4)
+    ]
+    runner._historical_snapshot_cursors = [0] * 4
+    monkeypatch.setattr("training.v2_self_play.random.Random", _HistoryDraw)
+
+    first = runner._lineup(9)
+    second = runner._lineup(10)
+
+    assert [seat.id for seat in first] == ["hist-0-0", "hist-1-0", "hist-2-0", "self-0"]
+    assert [seat.id for seat in second] == ["hist-0-1", "hist-1-1", "hist-2-1", "self-1"]
+    assert runner._lineup_kind(9) == "history"
+
+
+def test_history_draw_falls_back_to_champion_without_three_snapshots() -> None:
+    runner = _runner_with_seats([])
+    runner.lineup_live_fraction = 0.40
+    runner.lineup_champion_fraction = 0.20
+    runner.lineup_history_fraction = 0.20
+    runner.lineup_teacher_fraction = 0.20
+    runner.historical_seats_by_snapshot = [[SimpleNamespace(id="hist-0-0")]]
+
+    assert runner._draw_lineup_kind(0.70) == "champion"
+    assert runner._draw_lineup_kind(0.90) == "teacher"
+
+
+def test_history_pool_shares_weights_per_snapshot_and_reuses_loaded_snapshots(monkeypatch) -> None:
+    loads: list[str] = []
+
+    def fake_frozen(path: str, agent_id: str):
+        loads.append(path)
+        return SimpleNamespace(path=path, id=agent_id)
+
+    monkeypatch.setattr("training.v2_self_play._frozen_checkpoint_agent", fake_frozen)
+    monkeypatch.setattr(
+        "training.v2_self_play._bind_frozen_seat",
+        lambda leader, agent_id: SimpleNamespace(path=leader.path, id=agent_id),
+    )
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.selfplay_concurrency = 4
+    runner.load_unpromoted_history = True
+    runner.is_v3 = False
+    runner.history = ["a.pth", "b.pth", "c.pth"]
+    runner._refresh_history_pool()
+
+    assert [len(seats) for seats in runner.historical_seats_by_snapshot] == [4, 4, 4]
+    assert len(runner.historical_pool) == 12
+    assert loads == ["a.pth", "b.pth", "c.pth"]
+
+    runner.history = ["a.pth", "b.pth", "c.pth", "d.pth"]
+    runner._refresh_history_pool()
+
+    assert loads == ["a.pth", "b.pth", "c.pth", "d.pth"]
+    assert runner.historical_snapshot_paths == ["a.pth", "b.pth", "c.pth", "d.pth"]
 
 
 def test_catastrophic_champion_screen_restores_trusted_policy(tmp_path: Path) -> None:
@@ -469,6 +615,71 @@ def test_catastrophic_champion_screen_restores_trusted_policy(tmp_path: Path) ->
     assert runner.learner.policy_version == 13
     assert runner.learner.games_played == 100
     assert runner.consecutive_champion_screen_failures == 0
+
+
+def _rollback_runner(tmp_path: Path, loaded: list) -> V2SelfPlayRunner:
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.champion_path = tmp_path / "champion.pth"
+    runner.champion_path.write_bytes(b"champion")
+    runner.benchmarks = tmp_path / "benchmarks"
+    runner.stage = 1
+    runner.champion_promotions = 1
+    runner.consecutive_champion_screen_failures = 1
+    runner.screen_min_completion_ratio = 0.90
+    runner.screen_champion_min_pairwise_score = 0.50
+    runner.rollback_pairwise_floor = 0.35
+    runner.rollback_failure_limit = 2
+    runner.rollback_confirm_full = True
+    runner.rollback_confirm_pairwise = 0.45
+
+    async def fake_rollback(decisions: int, reason: str) -> dict:
+        loaded.append(reason)
+        return {"applied": True, "reason": reason}
+
+    runner._rollback_to_champion = fake_rollback
+    return runner
+
+
+def _confirmation_benchmark(calls: list, pairwise: float):
+    async def fake_benchmark(checkpoint, baseline, stage, output, **kwargs):
+        del checkpoint, stage, output
+        calls.append((baseline, kwargs.get("seeds_path"), kwargs.get("report_label")))
+        return {"planned_games": 120, "completed_games": 120, "rejection_count": 0, "pairwise_score": pairwise}
+
+    return fake_benchmark
+
+
+def test_low_screen_is_cleared_when_full_champion_benchmark_disagrees(monkeypatch, tmp_path: Path) -> None:
+    rollbacks: list[str] = []
+    calls: list = []
+    runner = _rollback_runner(tmp_path, rollbacks)
+    monkeypatch.setattr(v2_self_play, "benchmark", _confirmation_benchmark(calls, pairwise=0.52))
+
+    event = asyncio.run(
+        runner._maybe_rollback_from_screen({"pairwise_score": 0.297}, 1_800_000, candidate_path=tmp_path / "c.pth")
+    )
+
+    assert calls == [("champion", None, "rollback_confirm")]
+    assert event["applied"] is False
+    assert event["reason"] == "full_benchmark_cleared"
+    assert rollbacks == []
+    assert runner.consecutive_champion_screen_failures == 0
+
+
+def test_low_screen_rolls_back_when_full_champion_benchmark_confirms(monkeypatch, tmp_path: Path) -> None:
+    rollbacks: list[str] = []
+    calls: list = []
+    runner = _rollback_runner(tmp_path, rollbacks)
+    monkeypatch.setattr(v2_self_play, "benchmark", _confirmation_benchmark(calls, pairwise=0.40))
+
+    event = asyncio.run(
+        runner._maybe_rollback_from_screen({"pairwise_score": 0.45}, 1_800_000, candidate_path=tmp_path / "c.pth")
+    )
+
+    assert len(calls) == 1
+    assert event["applied"] is True
+    assert event["confirmation"]["pairwise_score"] == pytest.approx(0.40)
+    assert rollbacks == ["champion_screen_failed_2_times_confirmed_full_pairwise_0.400"]
 
 
 def test_shared_seat_reward_schedule_uses_leader_global_games(monkeypatch) -> None:

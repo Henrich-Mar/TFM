@@ -21,6 +21,25 @@ class _FakeAgent:
         return {"policy_rejections": 0}
 
 
+def test_teacher_wilson_floor_defaults_to_lower_absolute_guard(monkeypatch) -> None:
+    monkeypatch.delenv("BENCHMARK_TEACHER_MIN_WILSON_LOWER", raising=False)
+
+    assert v2_benchmark._teacher_wilson_floor() == 0.15
+    assert v2_benchmark.wilson_lower(26, 120) > v2_benchmark._teacher_wilson_floor()
+    assert v2_benchmark.wilson_lower(18, 120) < v2_benchmark._teacher_wilson_floor()
+
+
+def test_teacher_wilson_floor_is_configurable_and_clamped(monkeypatch) -> None:
+    monkeypatch.setenv("BENCHMARK_TEACHER_MIN_WILSON_LOWER", "0.20")
+    assert v2_benchmark._teacher_wilson_floor() == 0.20
+
+    monkeypatch.setenv("BENCHMARK_TEACHER_MIN_WILSON_LOWER", "2")
+    assert v2_benchmark._teacher_wilson_floor() == 1.0
+
+    monkeypatch.setenv("BENCHMARK_TEACHER_MIN_WILSON_LOWER", "invalid")
+    assert v2_benchmark._teacher_wilson_floor() == 0.15
+
+
 def test_frozen_stochastic_agent_uses_exact_ppo_behavior_path(monkeypatch) -> None:
     class _Config:
         train_from_self_play = True

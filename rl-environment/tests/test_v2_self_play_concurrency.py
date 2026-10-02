@@ -351,6 +351,60 @@ def test_history_snapshot_is_independent_of_promotion_cadence(tmp_path: Path) ->
     assert runner._maybe_archive_history_snapshot(112_000) is None
 
 
+def test_policy_aware_benchmark_sampling_is_symmetric_only_for_champion(monkeypatch) -> None:
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.benchmark_candidate_stochastic = True
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_benchmark(checkpoint, baseline, stage, output, **kwargs):
+        del checkpoint, stage, output
+        calls.append((baseline, kwargs))
+        return {}
+
+    monkeypatch.setattr(v2_self_play, "benchmark", fake_benchmark)
+
+    asyncio.run(runner._benchmark("candidate.pth", "champion", 1, "reports"))
+    asyncio.run(runner._benchmark("candidate.pth", "teacher", 1, "reports"))
+
+    assert calls[0][0] == "champion"
+    assert calls[0][1]["stochastic"] is True
+    assert "candidate_stochastic" not in calls[0][1]
+    assert calls[1][0] == "teacher"
+    assert calls[1][1]["candidate_stochastic"] is True
+    assert "stochastic" not in calls[1][1]
+
+
+def test_incompatible_teacher_baseline_is_recalibrated(monkeypatch, tmp_path: Path) -> None:
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.benchmark_candidate_stochastic = True
+    runner.champion_teacher_report = {
+        "action_selection": "argmax",
+        "pairwise_score": 0.70,
+    }
+    runner.champion_path = tmp_path / "champion.pth"
+    runner.stage = 1
+    runner.benchmarks = tmp_path / "benchmarks"
+    calls: list[tuple[str, str | None, bool]] = []
+
+    async def fake_benchmark(checkpoint, baseline, stage, output, **kwargs):
+        del checkpoint, stage, output
+        calls.append(
+            (baseline, kwargs.get("report_label"), kwargs.get("candidate_stochastic", False))
+        )
+        return {
+            "action_selection": "candidate_sample",
+            "pairwise_score": 0.72,
+        }
+
+    monkeypatch.setattr(v2_self_play, "benchmark", fake_benchmark)
+
+    report = asyncio.run(runner._ensure_champion_teacher_baseline())
+
+    assert calls == [("teacher", "champion_baseline", True)]
+    assert report["pairwise_score"] == pytest.approx(0.72)
+    assert runner.champion_teacher_report is report
+
+
 def test_failed_screen_skips_both_full_promotion_benchmarks(monkeypatch, tmp_path: Path) -> None:
     runner = object.__new__(V2SelfPlayRunner)
     runner.learner = _CheckpointLearner()
@@ -365,6 +419,11 @@ def test_failed_screen_skips_both_full_promotion_benchmarks(monkeypatch, tmp_pat
     runner.screen_min_completion_ratio = 0.90
     runner.screen_teacher_min_first_place_rate = 0.25
     runner.screen_champion_min_pairwise_score = 0.50
+    runner.benchmark_candidate_stochastic = True
+    runner.champion_teacher_report = {
+        "action_selection": "candidate_sample",
+        "pairwise_score": 0.70,
+    }
     calls: list[tuple[str, str | None]] = []
 
     async def fake_benchmark(checkpoint, baseline, stage, output, **kwargs):
@@ -404,6 +463,11 @@ def test_failed_full_teacher_gate_skips_full_champion_gate(monkeypatch, tmp_path
     runner.screen_min_completion_ratio = 0.90
     runner.screen_teacher_min_first_place_rate = 0.25
     runner.screen_champion_min_pairwise_score = 0.50
+    runner.benchmark_candidate_stochastic = True
+    runner.champion_teacher_report = {
+        "action_selection": "candidate_sample",
+        "pairwise_score": 0.70,
+    }
     calls: list[tuple[str, str | None]] = []
 
     async def fake_benchmark(checkpoint, baseline, stage, output, **kwargs):
@@ -444,6 +508,12 @@ def _promotion_runner(tmp_path: Path) -> V2SelfPlayRunner:
     runner.screen_min_completion_ratio = 0.90
     runner.screen_teacher_min_first_place_rate = 0.25
     runner.screen_champion_min_pairwise_score = 0.50
+    runner.benchmark_candidate_stochastic = True
+    runner.champion_teacher_report = {
+        "action_selection": "candidate_sample",
+        "pairwise_score": 0.70,
+        "seeds": [1, 2, 3],
+    }
     runner.history = []
     runner._refresh_frozen_pools = lambda: None
     return runner
@@ -463,6 +533,7 @@ def _passing_benchmark(calls: list, teacher_pairwise: float):
             "mean_relative_vp_margin": 4.0,
             "seeds": [1, 2, 3],
             "gate_passed": True,
+            "action_selection": "candidate_sample" if baseline == "teacher" else "sample",
         }
 
     return fake_benchmark
@@ -470,7 +541,11 @@ def _passing_benchmark(calls: list, teacher_pairwise: float):
 
 def test_candidate_worse_than_champion_against_teacher_is_not_promoted(monkeypatch, tmp_path: Path) -> None:
     runner = _promotion_runner(tmp_path)
-    runner.champion_teacher_report = {"pairwise_score": 0.708, "seeds": [1, 2, 3]}
+    runner.champion_teacher_report = {
+        "action_selection": "candidate_sample",
+        "pairwise_score": 0.708,
+        "seeds": [1, 2, 3],
+    }
     calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(v2_self_play, "benchmark", _passing_benchmark(calls, teacher_pairwise=0.681))
 
@@ -486,7 +561,11 @@ def test_candidate_worse_than_champion_against_teacher_is_not_promoted(monkeypat
 
 def test_promotion_records_new_champion_teacher_baseline(monkeypatch, tmp_path: Path) -> None:
     runner = _promotion_runner(tmp_path)
-    runner.champion_teacher_report = {"pairwise_score": 0.70, "seeds": [1, 2, 3]}
+    runner.champion_teacher_report = {
+        "action_selection": "candidate_sample",
+        "pairwise_score": 0.70,
+        "seeds": [1, 2, 3],
+    }
     runner.champion_promotions = 1
     calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(v2_self_play, "benchmark", _passing_benchmark(calls, teacher_pairwise=0.72))

@@ -43,6 +43,15 @@ def mean_interval(values: List[float], z: float = 1.959963984540054) -> tuple[fl
     return float(center - half_width), float(center + half_width)
 
 
+def _teacher_wilson_floor() -> float:
+    """Absolute teacher floor; relative-to-champion protection is applied separately."""
+    try:
+        value = float(os.getenv("BENCHMARK_TEACHER_MIN_WILSON_LOWER", "0.15"))
+    except (TypeError, ValueError):
+        value = 0.15
+    return min(1.0, max(0.0, value))
+
+
 def _load_seeds(path: Optional[str] = None) -> List[int]:
     source = Path(path).expanduser().resolve() if path else Path(__file__).resolve().parents[1] / "benchmark_seeds.v1.json"
     payload = json.loads(source.read_text(encoding="utf-8"))
@@ -115,10 +124,10 @@ async def benchmark(
 ) -> Dict[str, Any]:
     """Run the seat-rotated benchmark.
 
-    ``stochastic`` makes both the candidate and neural champion sample, a
-    diagnostic A/B against argmax. ``candidate_stochastic`` matches training:
-    the candidate samples while frozen champion seats stay greedy and the
-    teacher stays a deterministic heuristic.
+    ``stochastic`` makes both the candidate and neural champion sample, which
+    is the symmetric policy comparison used by promotion and rollback gates.
+    ``candidate_stochastic`` makes only the candidate sample, matching
+    candidate training against a deterministic heuristic teacher.
     """
     initialize_v2_runtime()
     is_v3 = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -244,10 +253,15 @@ async def benchmark(
     wilson_low, wilson_high = wilson_interval(wins, completed)
     rank_low, rank_high = mean_interval([float(item) for item in ranks])
     vp_low, vp_high = mean_interval(vp_margins)
+    teacher_wilson_floor = _teacher_wilson_floor()
     if baseline == "random" and int(stage) == 0:
         gate_passed = completed >= math.ceil(0.99 * total) and rejection_count == 0 and first_place_rate >= 0.55
     elif baseline == "teacher":
-        gate_passed = completed >= math.ceil(0.99 * total) and rejection_count == 0 and wilson_lower(wins, completed) > 0.25
+        gate_passed = (
+            completed >= math.ceil(0.99 * total)
+            and rejection_count == 0
+            and wilson_low > teacher_wilson_floor
+        )
     else:
         gate_passed = completed >= math.ceil(0.99 * total) and rejection_count == 0 and (pairwise_points / max(1, pairwise_trials)) >= 0.50
     report = {
@@ -270,6 +284,9 @@ async def benchmark(
         "mean_relative_vp_margin_upper_95": vp_high,
         "pairwise_score": pairwise_points / max(1, pairwise_trials),
         "gate_passed": bool(gate_passed),
+        "gate_thresholds": {
+            "teacher_first_place_wilson_lower_min": teacher_wilson_floor,
+        } if baseline == "teacher" else {},
         "seeds": seeds,
         "seat_rotations": 4,
         "concurrency": concurrency,
@@ -314,12 +331,12 @@ def main() -> None:
     parser.add_argument(
         "--stochastic",
         action="store_true",
-        help="sample both candidate and champion actions (diagnostic; not how training plays)",
+        help="sample both candidate and neural champion actions for a symmetric policy comparison",
     )
     parser.add_argument(
         "--candidate-stochastic",
         action="store_true",
-        help="sample only the candidate, matching self-play (greedy frozen opponents)",
+        help="sample only the candidate while keeping the teacher or other baseline deterministic",
     )
     parser.add_argument("--output", default=os.getenv("V2_BENCHMARK_DIR", "/app/v2/benchmarks"))
     args = parser.parse_args()

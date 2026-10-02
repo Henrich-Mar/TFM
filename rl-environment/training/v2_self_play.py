@@ -118,7 +118,7 @@ class V2SelfPlayRunner:
         self,
         bc_checkpoint: Optional[str],
         root: str,
-        benchmark_interval: int = 25_000,
+        benchmark_interval: int = 50_000,
         seed: int = 100_000,
         initial_stage: Optional[int] = None,
         from_scratch: bool = False,
@@ -329,6 +329,8 @@ class V2SelfPlayRunner:
             ]
             if promoted_teacher_reports:
                 self.champion_teacher_report = promoted_teacher_reports[-1]
+        if not self._teacher_baseline_is_compatible(self.champion_teacher_report):
+            self.champion_teacher_report = None
         self.historical_pool: List[RLAgent] = []
         self.historical_seats_by_snapshot: List[List[RLAgent]] = []
         self.historical_snapshot_paths: List[str] = []
@@ -714,12 +716,49 @@ class V2SelfPlayRunner:
         return event
 
     async def _benchmark(self, *args, **kwargs):
-        """Run a gate with the same action-selection as training unless overridden."""
-        kwargs.setdefault(
-            "candidate_stochastic",
-            bool(getattr(self, "benchmark_candidate_stochastic", False)),
-        )
+        """Run policy-aware gates without giving either neural policy an argmax edge."""
+        baseline = kwargs.get("baseline")
+        if baseline is None and len(args) >= 2:
+            baseline = args[1]
+        if bool(getattr(self, "benchmark_candidate_stochastic", False)):
+            if baseline == "champion":
+                # The promotion/rollback gate compares like with like: both
+                # neural policies sample from their exact PPO behavior policy.
+                kwargs.setdefault("stochastic", True)
+            else:
+                # The heuristic teacher is intentionally deterministic, while
+                # the candidate uses the policy distribution PPO optimized.
+                kwargs.setdefault("candidate_stochastic", True)
         return await benchmark(*args, **kwargs)
+
+    def _teacher_baseline_is_compatible(self, report: Any) -> bool:
+        if not isinstance(report, dict):
+            return False
+        expected = (
+            "candidate_sample"
+            if bool(getattr(self, "benchmark_candidate_stochastic", False))
+            else "argmax"
+        )
+        return report.get("action_selection") == expected
+
+    async def _ensure_champion_teacher_baseline(self) -> Dict[str, Any]:
+        """Rebuild teacher strength for the champion under the current eval policy."""
+        baseline = getattr(self, "champion_teacher_report", None)
+        if self._teacher_baseline_is_compatible(baseline):
+            return baseline
+        print(
+            "[selfplay] calibrating champion teacher baseline for current action selection",
+            flush=True,
+        )
+        baseline = await self._benchmark(
+            str(self.champion_path),
+            "teacher",
+            self.stage,
+            str(self.benchmarks),
+            report_label="champion_baseline",
+        )
+        self.champion_teacher_report = baseline
+        return baseline
 
     async def _confirm_rollback(
         self,
@@ -1014,6 +1053,7 @@ class V2SelfPlayRunner:
         teacher_relative: Optional[Dict[str, Any]] = None
         regression_report: Optional[Dict] = None
         if screen_passed:
+            await self._ensure_champion_teacher_baseline()
             teacher_report = await self._benchmark(
                 str(candidate_path), "teacher", self.stage, str(self.benchmarks)
             )
@@ -1205,7 +1245,7 @@ def main() -> None:
     )
     parser.add_argument("--root", default=os.getenv("TFM_RL_V2_ROOT", "/app/v2"))
     parser.add_argument("--max-decisions", type=int, default=1_000_000)
-    parser.add_argument("--benchmark-interval", type=int, default=25_000)
+    parser.add_argument("--benchmark-interval", type=int, default=50_000)
     parser.add_argument("--seed", type=int, default=100_000)
     parser.add_argument("--stage", type=int, choices=(0, 1), default=0)
     args = parser.parse_args()

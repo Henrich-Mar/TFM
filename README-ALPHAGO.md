@@ -9,10 +9,9 @@ The TypeScript search-simulation foundation for the next MCTS phase is
 documented in [aplhago-mcts.md](aplhago-mcts.md). It ships disabled and does
 not change the current PPO training loop.
 
-The profile now uses inexpensive screening benchmarks during training and runs
-the full promotion suite only for promising candidates. This keeps routine
-work near an 80/10/10 split between self-play, teacher screening, and champion
-screening instead of spending most server time on evaluation.
+The profile now uses screening benchmarks during training and runs the full
+promotion suite only for promising candidates. Screens are frequent enough to
+catch regressions without paying for the full suite at every checkpoint.
 
 ## Default training budget
 
@@ -23,7 +22,7 @@ The important defaults are:
 | `PPO_ROLLOUT_STEPS` | 12,288 | Decisions collected before one PPO update |
 | PPO learning rate | 0.00005 | Conservative post-champion update size |
 | PPO epochs / minibatch | 2 / 128 | Limits repeated fitting of one rollout; 512 exhausts the 6 GB GPU |
-| Benchmark interval | 100,000 decisions | Cadence for the light screen |
+| Benchmark interval | 50,000 decisions | Cadence for the light screen |
 | Screen seeds | 8 | 32 games per baseline after four seat rotations |
 | History snapshot interval | 8 PPO updates | Cadence for adding a frozen past policy |
 | Live self-play games | 40% | Four seats use the current policy |
@@ -32,13 +31,13 @@ The important defaults are:
 | Teacher games | 20% | One live seat plays three heuristic-teacher seats |
 
 In the initial run, one complete self-play game produced approximately 406
-decisions. At that rate, 100,000 decisions gives approximately 246 self-play
+decisions. At that rate, 50,000 decisions gives approximately 123 self-play
 games between screens. Each screen uses 32 teacher and 32 champion games:
 
 ```text
 self-play : teacher screen : champion screen
-     246  :       32       :        32
-     7.7  :        1       :         1
+     123  :       32       :        32
+     3.8  :        1       :         1
 ```
 
 The exact ratio changes with game length. A useful formula is:
@@ -50,15 +49,15 @@ screen games per baseline = number of screen seeds * 4 seats
 
 ## Evaluation and promotion flow
 
-At every 100,000-decision interval, the runner saves a candidate and performs
+At every 50,000-decision interval, the runner saves a candidate and performs
 the following steps:
 
 1. Play 32 games against the heuristic teacher using eight dedicated screen
    seeds and all four candidate seat positions. The candidate samples actions
    the same way as in self-play; the teacher remains a deterministic heuristic.
-2. Play 32 games against the current champion on the same screen seeds. Frozen
-   champion seats stay greedy, matching training. `--stochastic` is a separate
-   diagnostic that samples both sides and is not used for promotion.
+2. Play 32 games against the current champion on the same screen seeds. Both
+   candidate and champion sample from their exact PPO behavior policies, making
+   this a symmetric comparison of the distributions PPO actually optimized.
 3. Continue only if at least 90% of each screen completed, neither screen had a
    policy rejection, teacher first-place rate is at least 25%, and champion
    pairwise score is at least 0.50.
@@ -69,14 +68,17 @@ the following steps:
 6. Promote only if both full gates pass.
 
 The full teacher gate requires a 95% Wilson lower bound on first-place rate
-above 25%, at least 99% game completion, and zero policy rejections. It also
+above `ALPHAGO_TEACHER_MIN_WILSON_LOWER` (default 0.15), at least 99% game
+completion, and zero policy rejections. It also
 requires the candidate's teacher pairwise score to be at least the champion's
 teacher pairwise score minus `PROMOTION_TEACHER_PAIRWISE_MARGIN` (default 0).
 Both reports use the same promotion seeds and seat rotations, so the comparison
 is paired. The result is stored as `teacher_relative` in each state report, and
 the champion's teacher report is stored as `champion_teacher_report` in
-`selfplay_state.json`. Without this check, a candidate that only learned to
-exploit the champion could be promoted while regressing against the teacher;
+`selfplay_state.json`. A saved baseline from a different action-selection mode
+is discarded and rebuilt before this comparison. Without this check, a
+candidate that only learned to exploit the champion could be promoted while
+regressing against the teacher;
 the 1,700,750 promotion did exactly that (teacher pairwise 0.681 versus 0.708).
 The full champion gate requires pairwise score of at least 0.50, at least 99%
 completion, and zero policy rejections.
@@ -450,12 +452,13 @@ PowerShell environment variables can override the defaults before recreating
 the coordinator:
 
 ```powershell
-$env:ALPHAGO_BENCHMARK_INTERVAL=100000
+$env:ALPHAGO_BENCHMARK_INTERVAL=50000
 $env:ALPHAGO_PPO_ROLLOUT_STEPS=12288
 $env:ALPHAGO_HISTORY_SNAPSHOT_INTERVAL_UPDATES=8
 $env:ALPHAGO_SCREEN_MIN_COMPLETION_RATIO=0.90
 $env:ALPHAGO_SCREEN_TEACHER_MIN_FIRST_PLACE_RATE=0.25
 $env:ALPHAGO_SCREEN_CHAMPION_MIN_PAIRWISE_SCORE=0.50
+$env:ALPHAGO_TEACHER_MIN_WILSON_LOWER=0.15
 $env:ALPHAGO_SELFPLAY_LIVE_FRACTION=0.40
 $env:ALPHAGO_SELFPLAY_CHAMPION_FRACTION=0.20
 $env:ALPHAGO_SELFPLAY_HISTORY_FRACTION=0.20

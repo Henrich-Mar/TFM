@@ -31,7 +31,14 @@ class _FakeManager:
         self.max_active = 0
         self.calls: list[dict] = []
 
-    async def _run_single_game(self, lineup, tournament_id, game_seed, players_beginner) -> None:
+    async def _run_single_game(
+        self,
+        lineup,
+        tournament_id,
+        game_seed,
+        players_beginner,
+        game_option_overrides=None,
+    ) -> None:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         self.calls.append(
@@ -40,6 +47,7 @@ class _FakeManager:
                 "tournament_id": tournament_id,
                 "seed": game_seed,
                 "players_beginner": players_beginner,
+                "game_option_overrides": game_option_overrides,
             }
         )
         await asyncio.sleep(0)
@@ -114,6 +122,39 @@ def test_selfplay_batch_runs_configured_number_of_games_concurrently() -> None:
     assert runner.manager.max_active == 3
     assert [call["seed"] for call in runner.manager.calls] == [10, 11, 13]
     assert all(call["players_beginner"] for call in runner.manager.calls)
+
+
+def test_random_ma_cohort_is_routed_only_through_teacher_games() -> None:
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.random_ma_selfplay_fraction = 0.20
+    runner.lineup_teacher_fraction = 0.20
+    runner.random_ma_force_award_teacher = True
+
+    assert runner._is_random_ma_game(123, "teacher") is True
+    assert runner._is_random_ma_game(123, "live") is False
+    assert runner._is_random_ma_game(123, "teacher", search_training=True) is False
+
+
+def test_random_ma_game_passes_limited_synergy_overrides() -> None:
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.manager = _FakeManager()
+    game = v2_self_play._SelfPlayGame(
+        number=1,
+        seed=123,
+        stage=1,
+        lineup=["a", "b", "c", "d"],
+        lineup_kind="teacher",
+        random_ma_training=True,
+        random_ma_mode="Limited synergy",
+    )
+
+    asyncio.run(runner._run_selfplay_game(game))
+
+    assert runner.manager.calls[0]["game_option_overrides"] == {
+        "randomMA": "Limited synergy",
+        "includeFanMA": False,
+        "modularMA": False,
+    }
 
 
 def _runner_with_seats(seats: list) -> V2SelfPlayRunner:

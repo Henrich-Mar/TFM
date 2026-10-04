@@ -296,6 +296,7 @@ class TournamentManager:
         tournament_id: str,
         game_seed: Optional[int] = None,
         players_beginner: Optional[bool] = None,
+        game_option_overrides: Optional[Dict[str, Any]] = None,
     ) -> GameResult:
         """Run a single 4-player game"""
         provisional_id = str(uuid.uuid4())
@@ -317,6 +318,8 @@ class TournamentManager:
                 'removeNegativeGlobalEventsOption': True,
                 'undoOption': False,
             }
+            if game_option_overrides:
+                runtime_options.update(dict(game_option_overrides))
             if game_seed is not None:
                 runtime_options['seed'] = int(game_seed)
             if players_beginner is not None:
@@ -328,7 +331,12 @@ class TournamentManager:
             )
             actual_game_id = game_instance.game_id
             setattr(game_instance, "rl_seed", game_seed)
-            logger.info("Game %s created with fastModeOption=%s", actual_game_id, fast_mode_option)
+            logger.info(
+                "Game %s created with fastModeOption=%s randomMA=%s",
+                actual_game_id,
+                fast_mode_option,
+                runtime_options.get('randomMA'),
+            )
             # Record game URL for dashboard using canonical public URL resolver.
             try:
                 game_url = game_instance.get_public_game_url()

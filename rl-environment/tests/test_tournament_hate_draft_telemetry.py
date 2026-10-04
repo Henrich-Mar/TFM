@@ -49,10 +49,11 @@ class _FakeGameInstance:
 class _FakeCluster:
     def __init__(self):
         self.recent_games: List[Dict[str, str]] = []
+        self.created_options: List[Dict[str, Any]] = []
         self._counter = 0
 
     async def create_game(self, game_id: str, player_names: List[str], game_options: Dict[str, Any]):
-        _ = game_options
+        self.created_options.append(dict(game_options))
         self._counter += 1
         final_players = []
         for idx, name in enumerate(player_names):
@@ -133,6 +134,31 @@ def test_tournament_manager_defaults_missing_telemetry_to_zero() -> None:
         assert "hate_draft_rate_low_hand_ev" in row
         assert row["draft_decisions"] >= 0
         assert row["hate_draft_picks"] >= 0
+
+
+def test_tournament_manager_applies_per_game_option_overrides() -> None:
+    agents = [_FakeAgent(id=f"agent-{idx}", telemetry=None) for idx in range(4)]
+    cluster = _FakeCluster()
+    manager = TournamentManager(game_cluster=cluster)
+
+    result = asyncio.run(
+        manager._run_single_game(
+            agents=agents,
+            tournament_id="random-ma",
+            game_seed=123,
+            game_option_overrides={
+                "randomMA": "Limited synergy",
+                "includeFanMA": False,
+                "modularMA": False,
+            },
+        )
+    )
+
+    assert result.completed is True
+    assert cluster.created_options[0]["randomMA"] == "Limited synergy"
+    assert cluster.created_options[0]["includeFanMA"] is False
+    assert cluster.created_options[0]["modularMA"] is False
+    assert cluster.created_options[0]["seed"] == 123
 
 
 def test_game_timeout_returns_a_failed_result_without_cancelling_the_collector(monkeypatch) -> None:

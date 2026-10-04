@@ -344,6 +344,18 @@ large weight can make one action family dominate. Benchmark this candidate
 against both its source checkpoint and the champion before promotion. It is
 never loaded automatically into the running PPO learner.
 
+### Random milestone/award donation cohort
+
+The AlphaGo compose profile routes 20% of self-play through the existing
+teacher matchup slice with `randomMA="Limited synergy"`. Those games use the
+award-aware teacher pool and donate frozen-seat decisions to
+`/app/alphago/teacher-replay`; the other 80% retain the fixed stage options.
+The cohort is selected deterministically from the game seed and excludes search
+games. Configure it with `ALPHAGO_RANDOM_MA_SELFPLAY_FRACTION`,
+`ALPHAGO_RANDOM_MA_MODE`, and `ALPHAGO_RANDOM_MA_FORCE_AWARD_TEACHER`.
+When forced teacher routing is enabled, the random-MA fraction cannot exceed
+`SELFPLAY_TEACHER_FRACTION`.
+
 The full AlphaGo-Zero-style path is a separate trainer, not a PPO option:
 
 ```text

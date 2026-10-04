@@ -122,6 +122,8 @@ class _SelfPlayGame:
     lineup: List[RLAgent]
     search_training: bool = False
     lineup_kind: str = "live"
+    random_ma_training: bool = False
+    random_ma_mode: Optional[str] = None
 
 
 class V2SelfPlayRunner:
@@ -242,6 +244,36 @@ class V2SelfPlayRunner:
                 "SELFPLAY_LIVE_FRACTION + SELFPLAY_CHAMPION_FRACTION + SELFPLAY_HISTORY_FRACTION + "
                 f"SELFPLAY_TEACHER_FRACTION must equal 1.0; got {lineup_total:.6f}"
             )
+        self.random_ma_selfplay_fraction = self._fraction_env(
+            "ALPHAGO_RANDOM_MA_SELFPLAY_FRACTION", 0.0
+        )
+        self.random_ma_mode = str(
+            os.getenv("ALPHAGO_RANDOM_MA_MODE", "Limited synergy")
+        ).strip()
+        if self.random_ma_mode not in {"Limited synergy", "Full random"}:
+            raise ValueError(
+                "ALPHAGO_RANDOM_MA_MODE must be 'Limited synergy' or 'Full random'"
+            )
+        self.random_ma_force_award_teacher = self._bool_env(
+            "ALPHAGO_RANDOM_MA_FORCE_AWARD_TEACHER", False
+        )
+        if (
+            self.random_ma_force_award_teacher
+            and self.random_ma_selfplay_fraction > self.lineup_teacher_fraction + 1e-9
+        ):
+            raise ValueError(
+                "ALPHAGO_RANDOM_MA_SELFPLAY_FRACTION cannot exceed "
+                "SELFPLAY_TEACHER_FRACTION when award-teacher routing is forced"
+            )
+        if (
+            self.random_ma_force_award_teacher
+            and self.random_ma_selfplay_fraction > 0.0
+            and not self._bool_env("ALPHAGO_SELFPLAY_AWARD_TEACHER", False)
+        ):
+            raise ValueError(
+                "ALPHAGO_RANDOM_MA_FORCE_AWARD_TEACHER requires "
+                "ALPHAGO_SELFPLAY_AWARD_TEACHER=1"
+            )
         # History snapshots are training sparring partners only; promotion
         # still compares exclusively against the trusted champion and teacher.
         self.load_unpromoted_history = self.lineup_history_fraction > 0.0
@@ -292,6 +324,8 @@ class V2SelfPlayRunner:
         )
         self.learner.games_played = int(self.lifetime_games)
         self.search_game_count = 0
+        self.random_ma_game_count = int(resume_state.get("random_ma_games", 0) or 0)
+        self.random_ma_games_since_update = 0
         self.lineup_game_counts: Dict[str, int] = {
             "live": 0,
             "champion": 0,
@@ -397,6 +431,9 @@ class V2SelfPlayRunner:
             f"history_1v3:{self.lineup_history_fraction:.2f} "
             f"teacher_1v3:{self.lineup_teacher_fraction:.2f} "
             f"search_game_fraction={self.search_selfplay_fraction:.3f} "
+            f"random_ma_fraction={self.random_ma_selfplay_fraction:.3f} "
+            f"random_ma_mode={self.random_ma_mode!r} "
+            f"random_ma_force_award_teacher={self.random_ma_force_award_teacher} "
             f"history_snapshots={len(self.historical_snapshot_paths)} "
             f"eval_candidate={'sample' if self.benchmark_candidate_stochastic else 'argmax'}",
             flush=True,
@@ -415,6 +452,13 @@ class V2SelfPlayRunner:
             return float(os.getenv(name, str(default)))
         except (TypeError, ValueError):
             return float(default)
+
+    @staticmethod
+    def _bool_env(name: str, default: bool) -> bool:
+        fallback = "1" if default else "0"
+        return str(os.getenv(name, fallback)).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
 
     @classmethod
     def _fraction_env(cls, name: str, default: float) -> float:
@@ -584,6 +628,7 @@ class V2SelfPlayRunner:
             "stage": int(self.stage),
             "games": int(getattr(self, "lifetime_games", self.game_count)),
             "search_games": int(self.search_game_count),
+            "random_ma_games": int(getattr(self, "random_ma_game_count", 0)),
             "decisions": int(self._total_decisions()),
             "next_benchmark_decision": int(self.next_benchmark_decision),
             "seed_cursor": int(self.seed_cursor),
@@ -612,6 +657,7 @@ class V2SelfPlayRunner:
             "seed_cursor": self.seed_cursor,
             "policy_version": self.learner.policy_version,
             "games": int(getattr(self, "lifetime_games", self.game_count)),
+            "random_ma_games": int(getattr(self, "random_ma_game_count", 0)),
             "champion": str(self.champion_path),
             "history": self.history,
             "last_history_snapshot_policy_version": int(self.last_history_snapshot_policy_version),
@@ -660,6 +706,30 @@ class V2SelfPlayRunner:
             return "search"
         return self._draw_lineup_kind(random.Random(int(game_seed) ^ 0x5F3759DF).random())
 
+    def _is_random_ma_game(
+        self,
+        game_seed: int,
+        lineup_kind: str,
+        *,
+        search_training: bool = False,
+    ) -> bool:
+        """Select a reproducible random-MA cohort without changing lineup ratios."""
+        fraction = float(getattr(self, "random_ma_selfplay_fraction", 0.0))
+        if search_training or fraction <= 0.0:
+            return False
+        force_teacher = bool(getattr(self, "random_ma_force_award_teacher", False))
+        if force_teacher:
+            if lineup_kind != "teacher":
+                return False
+            teacher_fraction = float(getattr(self, "lineup_teacher_fraction", 0.0))
+            if teacher_fraction <= 0.0:
+                return False
+            # The configured fraction is global. Restricting selection to the
+            # teacher slice requires this conditional probability within it.
+            fraction = min(1.0, fraction / teacher_fraction)
+        draw = random.Random(int(game_seed) ^ 0x4D41524D).random()
+        return draw < fraction
+
     def _remember_history(self, checkpoint: Path) -> None:
         checkpoint_text = str(checkpoint)
         self.history = [item for item in self.history if item != checkpoint_text]
@@ -697,6 +767,7 @@ class V2SelfPlayRunner:
             "policy_version": int(self.learner.policy_version),
             "elapsed_sec": float(elapsed),
             "lineups": dict(self.lineup_games_since_update),
+            "random_ma_games": int(getattr(self, "random_ma_games_since_update", 0)),
             "reward_shaping_coef": float(self.learner._current_reward_shaping_coef()),
             "entropy_coef": float(self.learner._current_ppo_entropy_coef()),
         }
@@ -710,6 +781,7 @@ class V2SelfPlayRunner:
             handle.flush()
             os.fsync(handle.fileno())
         self.lineup_games_since_update = {key: 0 for key in self.lineup_games_since_update}
+        self.random_ma_games_since_update = 0
 
     def _rebind_learning_seats(self) -> None:
         for seat in self.learning_seats:
@@ -955,6 +1027,11 @@ class V2SelfPlayRunner:
             < float(getattr(self, "search_selfplay_fraction", 0.0))
         )
         lineup_kind = self._lineup_kind(seed, search_training=search_training)
+        random_ma_training = self._is_random_ma_game(
+            seed,
+            lineup_kind,
+            search_training=search_training,
+        )
         lineup = self._take_learning_seats(4) if search_training else self._lineup(seed)
         teacher_replay_store = getattr(self, "teacher_replay_store", None)
         if teacher_replay_store is not None and not search_training:
@@ -1013,17 +1090,31 @@ class V2SelfPlayRunner:
             lineup=lineup,
             search_training=search_training,
             lineup_kind=lineup_kind,
+            random_ma_training=random_ma_training,
+            random_ma_mode=(
+                str(getattr(self, "random_ma_mode", "Limited synergy"))
+                if random_ma_training
+                else None
+            ),
         )
 
     async def _run_selfplay_game(self, game: _SelfPlayGame) -> Tuple[_SelfPlayGame, float]:
         """Run one pre-reserved game; PPO updates happen only after its batch completes."""
         started_at = time.monotonic()
         try:
+            game_option_overrides = None
+            if game.random_ma_training:
+                game_option_overrides = {
+                    "randomMA": str(game.random_ma_mode or "Limited synergy"),
+                    "includeFanMA": False,
+                    "modularMA": False,
+                }
             await self.manager._run_single_game(
                 game.lineup,
                 tournament_id=f"{getattr(self, 'version', 'v2')}_selfplay_stage{game.stage}_{game.seed}",
                 game_seed=game.seed,
                 players_beginner=(game.stage == 0),
+                game_option_overrides=game_option_overrides,
             )
             return game, time.monotonic() - started_at
         finally:
@@ -1039,7 +1130,9 @@ class V2SelfPlayRunner:
         for game in games:
             print(
                 f"[selfplay] starting game={game.number} seed={game.seed} "
-                f"stage={game.stage} search_training={game.search_training} "
+                f"stage={game.stage} lineup={game.lineup_kind} "
+                f"search_training={game.search_training} "
+                f"random_ma={game.random_ma_training} "
                 f"decisions={self._total_decisions()}",
                 flush=True,
             )
@@ -1184,6 +1277,13 @@ class V2SelfPlayRunner:
                     self.lineup_games_since_update[kind] = int(
                         self.lineup_games_since_update.get(kind, 0)
                     ) + 1
+                    if bool(getattr(game, "random_ma_training", False)):
+                        self.random_ma_game_count = int(
+                            getattr(self, "random_ma_game_count", 0)
+                        ) + 1
+                        self.random_ma_games_since_update = int(
+                            getattr(self, "random_ma_games_since_update", 0)
+                        ) + 1
                 # A completed batch has released every cluster slot. Rebooting
                 # the tmpfs-backed dedicated servers here purges all retained
                 # remote games while PPO work proceeds on the GPU.

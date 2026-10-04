@@ -10,7 +10,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from search.replay_store import SEARCH_REPLAY_SCHEMA_VERSION, SearchReplayStore  # noqa: E402
-from training.search_distill import load_search_records, validate_search_record  # noqa: E402
+from training.search_distill import (  # noqa: E402
+    load_search_records,
+    parse_family_weights,
+    upsample_records_by_family,
+    validate_search_record,
+)
 
 
 def _bundle(actions: int = 2) -> dict:
@@ -74,3 +79,37 @@ def test_bounded_window_removes_oldest_shards(tmp_path):
         store.record_decision(f"g{index}", "p1", _record())
         store.finish_episode(f"g{index}", "p1", completed=True, value_target=float(index))
     assert len(store.shard_paths()) == 2
+
+
+def test_family_weight_parser_accepts_repeatable_assignments():
+    assert parse_family_weights(["fund_award=32", "claim_milestone=2.5"]) == {
+        "fund_award": 32.0,
+        "claim_milestone": 2.5,
+    }
+
+
+def test_family_weight_parser_rejects_downsampling_and_duplicates():
+    for values in (["fund_award=0.5"], ["fund_award=2", "fund_award=3"]):
+        try:
+            parse_family_weights(values)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected invalid family weights to fail: {values}")
+
+
+def test_family_upsampling_uses_chosen_donation_family_only():
+    import random
+
+    award = {"donation_family": "fund_award"}
+    pass_record = {
+        "donation_family": "pass",
+        "action_descriptors": [{"family": "fund_award"}],
+    }
+    sampled = upsample_records_by_family(
+        [award, award, pass_record],
+        {"fund_award": 4.0},
+        random.Random(7),
+    )
+    assert sum(row is award for row in sampled) == 8
+    assert sum(row is pass_record for row in sampled) == 1

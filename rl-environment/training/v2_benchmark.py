@@ -13,7 +13,11 @@ from typing import Any, Dict, List, Optional
 
 from game_interface import GameServerCluster
 from models.agent import RLAgent
-from models.decision_policy import HeuristicTeacherPolicy, RandomLegalPolicy
+from models.decision_policy import (
+    AwardFundingTeacherPolicy,
+    HeuristicTeacherPolicy,
+    RandomLegalPolicy,
+)
 from search import SearchConfig, SearchPolicy
 from tournament_manager import TournamentManager
 from v2_runtime import initialize_v2_runtime
@@ -85,6 +89,15 @@ def _frozen_neural(checkpoint: str, agent_id: str, stochastic: bool = False) -> 
     return agent
 
 
+def _award_gate_floor() -> float:
+    """Minimum mean awards a candidate must fund per game against the funder."""
+    try:
+        value = float(os.getenv("BENCHMARK_AWARD_MIN_FUNDED", "0.10"))
+    except (TypeError, ValueError):
+        value = 0.10
+    return max(0.0, value)
+
+
 def _baseline_agents(
     kind: str,
     seed: int,
@@ -97,6 +110,14 @@ def _baseline_agents(
             agent = RLAgent(agent_id=f"random-{idx}", decision_policy=RandomLegalPolicy(seed + idx))
         elif kind == "teacher":
             agent = RLAgent(agent_id=f"teacher-{idx}", decision_policy=HeuristicTeacherPolicy(seed + idx, sample=False))
+        elif kind == "award_teacher":
+            # Award-aware opponent. Promotion against the passive teacher is
+            # blind to the cheap-award exploit, so this baseline exists to
+            # measure it directly.
+            agent = RLAgent(
+                agent_id=f"award-teacher-{idx}",
+                decision_policy=AwardFundingTeacherPolicy(seed + idx, sample=False),
+            )
         elif kind == "champion" and champion:
             agent = _frozen_neural(champion, f"champion-{idx}", stochastic=stochastic)
         else:
@@ -160,6 +181,12 @@ async def benchmark(
     manager = TournamentManager(cluster)
     ranks: List[int] = []
     vp_margins: List[float] = []
+    candidate_awards_funded: List[float] = []
+    candidate_award_vp: List[float] = []
+    opponent_awards_funded: List[float] = []
+    opponent_award_vp: List[float] = []
+    candidate_milestones: List[float] = []
+    games_with_awards_funded = 0
     pairwise_points = 0.0
     pairwise_trials = 0
     completed = 0
@@ -192,6 +219,7 @@ async def benchmark(
 
         async def _run_worker(worker_index: int) -> None:
             nonlocal completed, pairwise_points, pairwise_trials
+            nonlocal games_with_awards_funded
             opponents = opponent_pools[worker_index]
             for game_number, seed, candidate_seat in jobs[worker_index::concurrency]:
                 game_started_at = time.monotonic()
@@ -228,12 +256,19 @@ async def benchmark(
                 table_mean = mean(float(row.get("victory_points", 0.0) or 0.0) for row in result.players)
                 ranks.append(rank)
                 vp_margins.append(vp - table_mean)
+                table_funded = int(candidate_row.get("awards_funded_table", 0) or 0)
+                games_with_awards_funded += 1 if table_funded > 0 else 0
+                candidate_awards_funded.append(float(candidate_row.get("awards_funded", 0) or 0))
+                candidate_award_vp.append(float(candidate_row.get("vp_awards", 0) or 0))
+                candidate_milestones.append(float(candidate_row.get("milestones_claimed", 0) or 0))
                 for opponent_row in result.players:
                     if str(opponent_row.get("agent_id")) == candidate.id:
                         continue
                     opponent_rank = int(opponent_row.get("rank", 4) or 4)
                     pairwise_points += 1.0 if rank < opponent_rank else (0.5 if rank == opponent_rank else 0.0)
                     pairwise_trials += 1
+                    opponent_awards_funded.append(float(opponent_row.get("awards_funded", 0) or 0))
+                    opponent_award_vp.append(float(opponent_row.get("vp_awards", 0) or 0))
                 running_wins = sum(1 for item in ranks if item == 1)
                 print(
                     f"[benchmark] completed baseline={baseline} game={game_number}/{total} "
@@ -254,6 +289,12 @@ async def benchmark(
     rank_low, rank_high = mean_interval([float(item) for item in ranks])
     vp_low, vp_high = mean_interval(vp_margins)
     teacher_wilson_floor = _teacher_wilson_floor()
+    award_gate_floor = _award_gate_floor()
+    mean_candidate_awards = mean(candidate_awards_funded) if candidate_awards_funded else 0.0
+    award_funding_rate = (
+        games_with_awards_funded / completed if completed else 0.0
+    )
+    award_awareness_gate_passed = mean_candidate_awards >= award_gate_floor
     if baseline == "random" and int(stage) == 0:
         gate_passed = completed >= math.ceil(0.99 * total) and rejection_count == 0 and first_place_rate >= 0.55
     elif baseline == "teacher":
@@ -261,6 +302,17 @@ async def benchmark(
             completed >= math.ceil(0.99 * total)
             and rejection_count == 0
             and wilson_low > teacher_wilson_floor
+        )
+    elif baseline == "award_teacher":
+        # Against an award-aware opponent the candidate must both hold its own
+        # pairwise score and actually commit to awards. A candidate that never
+        # funds loses 5 VP per 8 MC to any human who does, so funding is gated
+        # explicitly instead of being inferred from total VP.
+        gate_passed = (
+            completed >= math.ceil(0.99 * total)
+            and rejection_count == 0
+            and (pairwise_points / max(1, pairwise_trials)) >= 0.50
+            and award_awareness_gate_passed
         )
     else:
         gate_passed = completed >= math.ceil(0.99 * total) and rejection_count == 0 and (pairwise_points / max(1, pairwise_trials)) >= 0.50
@@ -282,11 +334,31 @@ async def benchmark(
         "mean_relative_vp_margin": mean(vp_margins) if vp_margins else 0.0,
         "mean_relative_vp_margin_lower_95": vp_low,
         "mean_relative_vp_margin_upper_95": vp_high,
-        "pairwise_score": pairwise_points / max(1, pairwise_trials),
+"pairwise_score": pairwise_points / max(1, pairwise_trials),
         "gate_passed": bool(gate_passed),
-        "gate_thresholds": {
-            "teacher_first_place_wilson_lower_min": teacher_wilson_floor,
-        } if baseline == "teacher" else {},
+        "award_telemetry": {
+            "candidate_mean_awards_funded": mean_candidate_awards,
+            "candidate_mean_award_vp": mean(candidate_award_vp) if candidate_award_vp else 0.0,
+            "candidate_mean_milestones_claimed": (
+                mean(candidate_milestones) if candidate_milestones else 0.0
+            ),
+            "opponent_mean_awards_funded": (
+                mean(opponent_awards_funded) / 3.0 if opponent_awards_funded else 0.0
+            ),
+            "opponent_mean_award_vp": mean(opponent_award_vp) / 3.0 if opponent_award_vp else 0.0,
+            "games_with_any_award_funded": games_with_awards_funded,
+            "award_funding_game_rate": award_funding_rate,
+            "awareness_gate_passed": bool(award_awareness_gate_passed),
+        },
+        "gate_thresholds": (
+            {
+                "teacher_first_place_wilson_lower_min": teacher_wilson_floor,
+            }
+            if baseline == "teacher"
+            else {"min_mean_awards_funded": award_gate_floor}
+            if baseline == "award_teacher"
+            else {}
+        ),
         "seeds": seeds,
         "seat_rotations": 4,
         "concurrency": concurrency,
@@ -314,6 +386,8 @@ async def benchmark(
         f"[benchmark] complete baseline={baseline} stage={stage} "
         f"completed={completed}/{total} first_place_rate={first_place_rate:.3f} "
         f"pairwise_score={report['pairwise_score']:.3f} rejections={rejection_count} "
+        f"awards_funded={mean_candidate_awards:.3f} "
+        f"award_vp={mean(candidate_award_vp) if candidate_award_vp else 0.0:.2f} "
         f"gate_passed={bool(gate_passed)} elapsed={time.monotonic() - benchmark_started_at:.1f}s",
         flush=True,
     )
@@ -323,7 +397,11 @@ async def benchmark(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the fixed TFM RL v2 acceptance benchmark")
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--baseline", choices=("random", "teacher", "champion"), required=True)
+    parser.add_argument(
+        "--baseline",
+        choices=("random", "teacher", "award_teacher", "champion"),
+        required=True,
+    )
     parser.add_argument("--champion")
     parser.add_argument("--stage", type=int, choices=(0, 1), required=True)
     parser.add_argument("--seeds")

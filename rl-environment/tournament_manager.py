@@ -18,6 +18,7 @@ from game_interface import GameServerCluster, GameInstance
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class TournamentBracket:
     id: str
@@ -448,6 +449,19 @@ class TournamentManager:
                     logger.warning("Fetching /api/player view failed for tournament scoring", exc_info=True)
 
             scored_list: List[Dict[str, Any]] = []
+            commitment_counts: Dict[str, Dict[str, int]] = {}
+            for agent in agents:
+                telemetry = agent_telemetry_by_id.get(str(agent.id), {}) or {}
+                awards_funded = telemetry.get('awards_funded')
+                if awards_funded is None:
+                    awards_funded = getattr(agent, 'game_awards_funded', 0)
+                milestones_claimed = telemetry.get('milestones_claimed')
+                if milestones_claimed is None:
+                    milestones_claimed = getattr(agent, 'game_milestones_claimed', 0)
+                commitment_counts[str(agent.id)] = {
+                    'awards_funded': int(awards_funded or 0),
+                    'milestones_claimed': int(milestones_claimed or 0),
+                }
             for agent, disp_name in zip(agents, seat_player_names):
                 source = view_players_by_name.get(disp_name) or game_players_by_name.get(disp_name, {})
                 vp_breakdown = dict(source.get('victoryPointsBreakdown', {}) or {})
@@ -455,6 +469,15 @@ class TournamentManager:
                 vp = int(((source.get('victoryPointsBreakdown', {}) or {}).get('total', source.get('terraformRating', 0)) or 0))
                 tr = int(source.get('terraformRating', 0) or 0)
                 mc = int(source.get('megaCredits', 0) or 0)
+
+                # A finished game's public view strips the award list, so these
+                # counts come from what each seat observed live instead.
+                awards_funded = int(
+                    commitment_counts.get(str(agent.id), {}).get('awards_funded', 0) or 0
+                )
+                milestones_claimed = int(
+                    commitment_counts.get(str(agent.id), {}).get('milestones_claimed', 0) or 0
+                )
 
                 scored_list.append({
                     'agent_id': agent.id,
@@ -470,6 +493,13 @@ class TournamentManager:
                     'vp_cards': int(vp_breakdown.get('victoryPoints', 0) or 0),
                     'town_placements': int(source.get('citiesCount', 0) or 0),
                     'greenery_placements': int(vp_breakdown.get('greenery', 0) or 0),
+                    # Award/milestone commitment telemetry. Acceptance gates are
+                    # otherwise blind to the cheap-award exploit: a seat can
+                    # finish a game having funded nothing and still pass every
+                    # VP-based threshold.
+                    'awards_funded': awards_funded,
+                    'milestones_claimed': milestones_claimed,
+                    'awards_funded_table': int(sum(row['awards_funded'] for row in commitment_counts.values())),
                 })
 
             scored_list.sort(key=lambda x: (x['total'], x['mc'], x['tr']), reverse=True)
@@ -529,6 +559,9 @@ class TournamentManager:
                     'vp_cards': entry.get('vp_cards', 0),
                     'town_placements': entry.get('town_placements', 0),
                     'greenery_placements': entry.get('greenery_placements', 0),
+                    'awards_funded': entry.get('awards_funded', 0),
+                    'milestones_claimed': entry.get('milestones_claimed', 0),
+                    'awards_funded_table': entry.get('awards_funded_table', 0),
                     'completed': True,
                     'draft_decisions': int(telemetry.get('draft_decisions', 0) or 0),
                     'draft_decisions_low_hand_ev': int(telemetry.get('draft_decisions_low_hand_ev', 0) or 0),

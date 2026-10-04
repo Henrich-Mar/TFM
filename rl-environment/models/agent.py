@@ -935,6 +935,12 @@ class RLAgent:
         self.decision_policy = decision_policy
         self.decision_recorder = decision_recorder
         self.search_policy = search_policy
+        # Distillation donation for non-learner seats. Frozen teacher/champion
+        # seats never enter the strict on-policy PPO buffer, so any correct
+        # decision they make (funding an award, claiming a milestone) is
+        # discarded. Routing them here breaks that coverage deadlock without
+        # weakening the on-policy guarantee.
+        self.teacher_replay_store: Optional[Any] = None
         self.deterministic_actions = False
         if config is None:
             config = self.build_env_config()
@@ -2018,6 +2024,7 @@ class RLAgent:
         search_replay_finalized = False
         counter_snapshot_before = self._snapshot_hate_draft_counters()
         game_outcome: Dict[str, Any] = {"completed": False, "rank": 4, "vp": 0}
+        self._reset_commitment_progress()
         max_transport_retries = max(1, self._safe_env_int("AGENT_TRANSPORT_RETRY_LIMIT", 6))
         transport_retry_backoff_sec = max(0.5, self._safe_env_float("AGENT_TRANSPORT_RETRY_BACKOFF_SEC", 3.0))
         try:
@@ -2052,6 +2059,7 @@ class RLAgent:
                     if self._guided_annotation_is_enabled() and hasattr(game_instance, "invalidate_cached_player_state"):
                         game_instance.invalidate_cached_player_state(player_id)
                     player_state = await self._timed_get_player_state(game_instance, player_id)
+                    self._track_commitment_progress(player_state)
                     consecutive_transport_errors = 0
                 except ServerTransportError:
                     consecutive_transport_errors += 1
@@ -2142,6 +2150,8 @@ class RLAgent:
             self.games_played += 1
             final_state = await game_instance.get_final_state()
             game_outcome = await self._record_game_result(final_state, player_name, game_instance)
+            game_outcome["awards_funded"] = int(getattr(self, "game_awards_funded", 0) or 0)
+            game_outcome["milestones_claimed"] = int(getattr(self, "game_milestones_claimed", 0) or 0)
             self._assert_guided_replay_complete(game_instance)
             if self.decision_recorder is not None:
                 recorder_outcome = game_outcome if not episode_oversized else {**game_outcome, "completed": False}
@@ -2164,6 +2174,12 @@ class RLAgent:
                     terminal_reward,
                 )
                 search_replay_finalized = True
+            self._commit_teacher_donation(
+                game_instance.game_id,
+                player_id,
+                game_outcome,
+                terminal_reward,
+            )
 
             # Queue PPO trajectory for coordinator-driven optimization.
             if self.train_from_self_play and game_outcome.get("completed", False) and not episode_oversized:
@@ -2247,6 +2263,35 @@ class RLAgent:
         if isinstance(player_state, dict):
             waiting_for = player_state.get("waitingFor", {}) or {}
         return float(self.active_poll_interval_sec) if bool(waiting_for) else float(self.idle_poll_interval_sec)
+
+    def _track_commitment_progress(self, player_state: Optional[Dict[str, Any]]) -> None:
+        """Record milestone/award commitments made this game.
+
+        A finished game's public ``/api/game`` view strips the award list, so
+        these counts cannot be recovered after the fact. They are captured from
+        the live player state instead, which does carry it.
+        """
+        if not isinstance(player_state, dict):
+            return
+        try:
+            from scoring import _owned_funded_awards, _owned_milestone_count
+
+            game = player_state.get("game") or {}
+            me = player_state.get("thisPlayer") or {}
+            if not isinstance(game, dict) or not isinstance(me, dict) or not me:
+                return
+            funded = len(_owned_funded_awards(game, me))
+            claimed = int(_owned_milestone_count(game, me))
+            self.game_awards_funded = max(int(getattr(self, "game_awards_funded", 0)), funded)
+            self.game_milestones_claimed = max(
+                int(getattr(self, "game_milestones_claimed", 0)), claimed
+            )
+        except Exception:
+            logger.debug("Failed to track commitment progress", exc_info=True)
+
+    def _reset_commitment_progress(self) -> None:
+        self.game_awards_funded = 0
+        self.game_milestones_claimed = 0
 
     async def _timed_get_player_state(self, game_instance: GameInstance, player_id: str) -> Dict[str, Any]:
         started = time.perf_counter()
@@ -2602,6 +2647,11 @@ class RLAgent:
                                 )
                             except Exception:
                                 logger.warning("Failed to stage accepted search replay target", exc_info=True)
+                        self._maybe_stage_teacher_donation(
+                            game_id=game_instance.game_id,
+                            player_id=player_id,
+                            action_meta=action_meta,
+                        )
                     logger.debug(f"Agent {self.id[:8]} policy action succeeded {policy_action}")
                     if sampled_from_policy and policy_action_idx is not None:
                         if action_meta is not None:
@@ -3258,6 +3308,139 @@ class RLAgent:
         )
         return ranking
 
+    def _teacher_donation_target(
+        self,
+        action_meta: Optional[Dict[str, Any]],
+    ) -> Optional[Tuple[List[float], int]]:
+        """Normalized target distribution plus the chosen list position.
+
+        Uses the external policy's own posterior rather than a one-hot label so
+        the learner inherits the teacher's ranking, not just its argmax. Falls
+        back to one-hot when the teacher exposed no usable scores.
+
+        The chosen position is resolved by ``action_index`` rather than by
+        trusting ``chosen_action_position``: a descriptor's ``action_position``
+        is not required to equal its list index, while the distillation target
+        must be aligned with the planner's action tokens.
+        """
+        if not isinstance(action_meta, dict):
+            return None
+        descriptors = list(action_meta.get("action_descriptors") or [])
+        width = len(descriptors)
+        if width <= 0:
+            return None
+        chosen_action_index = int(action_meta.get("chosen_action_index", -1))
+        chosen_position = next(
+            (
+                position
+                for position, row in enumerate(descriptors)
+                if chosen_action_index >= 0
+                and int(row.get("action_index", -1)) == chosen_action_index
+            ),
+            -1,
+        )
+        if chosen_position < 0:
+            candidate = int(action_meta.get("chosen_action_position", -1))
+            chosen_position = candidate if 0 <= candidate < width else -1
+        external = action_meta.get("external_policy")
+        scores = list(external.get("scores") or []) if isinstance(external, dict) else []
+        target = [0.0] * width
+        if scores and len(scores) == width:
+            for position, row in enumerate(scores):
+                try:
+                    target[position] = max(0.0, float(row.get("probability", 0.0) or 0.0))
+                except (TypeError, ValueError):
+                    return None
+            total = sum(target)
+            if total > 0.0:
+                return [value / total for value in target], chosen_position
+            target = [0.0] * width
+        if chosen_position < 0:
+            return None
+        target[chosen_position] = 1.0
+        return target, chosen_position
+
+    def _maybe_stage_teacher_donation(
+        self,
+        game_id: str,
+        player_id: str,
+        action_meta: Optional[Dict[str, Any]],
+    ) -> None:
+        """Stage one accepted non-search decision for the distillation stream.
+
+        Only frozen seats donate. The learner is excluded because its own
+        decisions already reach PPO, and duplicating them would double-count
+        on-policy data.
+        """
+        store = self.teacher_replay_store
+        if store is None or self.train_from_self_play:
+            return
+        if not isinstance(action_meta, dict):
+            return
+        if str(action_meta.get("action_source", "") or "") != "teacher":
+            return
+        planner_bundle = action_meta.get("planner_bundle")
+        resolved = self._teacher_donation_target(action_meta)
+        if planner_bundle is None or not resolved:
+            return
+        target, chosen_position = resolved
+        descriptors = list(action_meta.get("action_descriptors") or [])
+        token_count = int(getattr(planner_bundle.get("action_tokens"), "shape", (0,))[0])
+        if token_count and token_count != len(target):
+            return
+        try:
+            store.record_decision(
+                game_id,
+                player_id,
+                {
+                    "agent_id": str(self.id or ""),
+                    "state_schema_version": str(getattr(self, "state_schema_version", "") or ""),
+                    "policy_version": int(getattr(self, "policy_version", 0) or 0),
+                    "decision_sequence": int(action_meta.get("decision_sequence", 0) or 0),
+                    "planner_bundle": planner_bundle,
+                    "phase_index": int(action_meta.get("phase_index", 0) or 0),
+                    "recurrent_state": list(action_meta.get("recurrent_state", []) or []),
+                    "action_descriptors": descriptors,
+                    "legal_actions": list(action_meta.get("legal_actions", []) or []),
+                    "chosen_action_position": int(chosen_position),
+                    "chosen_action_index": int(action_meta.get("chosen_action_index", -1)),
+                    "policy_target": target,
+                    "donation_source": "teacher",
+                    "donation_family": str(
+                        descriptors[chosen_position].get("family", "") or ""
+                    ) if 0 <= chosen_position < len(descriptors) else "",
+                },
+            )
+            self._bump_decision_stat("teacher_donations")
+        except Exception:
+            logger.warning("Failed to stage teacher donation target", exc_info=True)
+
+    def _commit_teacher_donation(
+        self,
+        game_id: str,
+        player_id: str,
+        outcome: Dict[str, Any],
+        terminal_reward: Optional[float],
+    ) -> None:
+        store = self.teacher_replay_store
+        if store is None or self.train_from_self_play:
+            return
+        completed = bool(outcome.get("completed", False))
+        try:
+            if completed and terminal_reward is not None:
+                store.finish_episode(
+                    game_id,
+                    player_id,
+                    completed=True,
+                    value_target=float(terminal_reward),
+                    outcome=dict(outcome),
+                )
+                self._bump_decision_stat("teacher_donation_episodes")
+            else:
+                store.discard_episode(game_id, player_id)
+        except Exception:
+            logger.warning("Failed to commit teacher donation episode", exc_info=True)
+
     def _guided_annotation_is_enabled(self) -> bool:
         """Whether this agent should stop for a human label on every decision."""
         target_agent = str(os.getenv("V2_GUIDED_ANNOTATION_AGENT_ID", "") or "").strip()
@@ -3888,6 +4071,7 @@ class RLAgent:
                     "available_actions_filtered": [int(row.get("action_index", -1)) for row in action_descriptors],
                     "action_descriptors": list(action_descriptors),
                     "chosen_action_position": int(chosen_list_position),
+                    "chosen_action_index": int(chosen_index),
                     "chosen_action_label": self._describe_action(chosen_index, player_state),
                     "sampled_from_policy": True,
                     "action_source": "teacher",

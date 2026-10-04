@@ -807,6 +807,150 @@ class HeuristicTeacherPolicy:
         )
 
 
+class AwardFundingTeacherPolicy(HeuristicTeacherPolicy):
+    """Human-like award funder used as an acceptance-gate baseline.
+
+    The stock teacher almost never funds an award, because it only acts on a
+    category it already leads and leading is rare in its own lineups. A strong
+    human does the opposite: plays toward one category, then buys it while the
+    first award still costs 8 MC. This baseline reproduces that so promotion
+    gates can measure the exploit instead of being blind to it.
+
+    It deliberately changes only the award decision. Card play, placement and
+    payment scoring stay identical to :class:`HeuristicTeacherPolicy`, so a
+    pairwise drop against this baseline isolates award awareness.
+    """
+
+    #: Minimum MC kept unspent so funding never starves ordinary card plays.
+    RESERVE_MC = 10.0
+
+    def __init__(
+        self,
+        seed: int = 0,
+        temperature: float = 0.18,
+        sample: bool = True,
+        reachability: bool = True,
+        *,
+        fund_second_place: bool = False,
+        max_award_cost: int = 14,
+        category_goal_bonus: float = 0.55,
+    ) -> None:
+        super().__init__(
+            seed=seed,
+            temperature=temperature,
+            sample=sample,
+            reachability=reachability,
+        )
+        self.fund_second_place = bool(fund_second_place)
+        self.max_award_cost = max(0, int(max_award_cost))
+        self.category_goal_bonus = max(0.0, float(category_goal_bonus))
+        self.awards_funded = 0
+
+    def _score_fund_award(
+        self,
+        state: Dict[str, Any],
+        descriptor: Dict[str, Any],
+    ) -> tuple[float, List[str], bool]:
+        player = state.get("thisPlayer", {}) or {}
+        game = state.get("game", {}) or {}
+        mc = self._safe_float(player.get("megaCredits", 0))
+        award_name = str(descriptor.get("award_name", "") or descriptor.get("label", "") or "").strip()
+        award = self._find_award(game, award_name)
+        if (
+            award.get("playerName")
+            or award.get("playerColor")
+            or award.get("color")
+            or award.get("funded_by")
+        ):
+            return -3.0, [f"award={award_name or '?'}", "already funded"], False
+
+        cost = self._estimate_award_cost(game)
+        own_score, opp_best, projected_vp, lead_gap = self._award_standing(player, award, state)
+
+        # The escalating ladder is the whole point of the exploit: the first
+        # award is cheap enough to buy on any lead, later ones are not.
+        if cost > float(self.max_award_cost):
+            return -3.0, [f"award={award_name or '?'}", f"cost={cost:.0f}", "beyond cheap-award band"], False
+        if mc < cost + self.RESERVE_MC:
+            return -3.0, [
+                f"award={award_name or '?'}",
+                f"cost={cost:.0f}",
+                f"mc={mc:.0f}",
+                "would break play-card reserve",
+            ], False
+
+        leads = projected_vp >= 5.0
+        seconds = projected_vp >= 2.0
+        if not leads and not (self.fund_second_place and seconds):
+            return -3.0, [
+                f"award={award_name or '?'}",
+                f"own={own_score:.0f}",
+                f"opp={opp_best:.0f}",
+                f"projected-vp={projected_vp:.0f}",
+                "no paid place",
+            ], False
+
+        # Drop the stock commitment tax: a human prices the 8 MC first award
+        # against 5 VP almost immediately rather than waiting for a late lead.
+        confidence = 0.90 if leads else 0.55
+        expected_vp = projected_vp * confidence
+        expected_net = expected_vp - (cost / 5.0)
+        score = 1.60 + (0.80 * expected_net) + (0.30 * max(0.0, lead_gap))
+        if leads and cost <= 8.0:
+            score += 0.80
+        reasons = [
+            f"award={award_name or '?'}",
+            f"own={own_score:.0f}",
+            f"opp={opp_best:.0f}",
+            f"projected-vp={projected_vp:.0f}",
+            f"cost={cost:.0f}",
+            f"expected-net={expected_net:.2f}",
+            "cheap-award band",
+        ]
+        return score, reasons, False
+
+    def _score_card(self, state: Dict[str, Any], descriptor: Dict[str, Any]) -> tuple[float, List[str]]:
+        """Card scoring plus a bonus for cards that build a fundable category.
+
+        The human exploit is two-stage: spend mid-game turns pushing one
+        category, then buy the award while it still costs 8 MC. The bonus is
+        therefore granted for advancing a category this seat already leads *or*
+        sits second in, weighted toward the outright lead.
+        """
+        score, reasons = super()._score_card(state, descriptor)
+        if self.category_goal_bonus <= 0.0:
+            return score, reasons
+        player = state.get("thisPlayer", {}) or {}
+        game = state.get("game", {}) or {}
+        delta = self._card_track_delta(
+            str(descriptor.get("card_name", "") or ""), {}, include_planner=True
+        )
+        best_bonus = 0.0
+        best_name = ""
+        for award in game.get("awards", []) or []:
+            if not isinstance(award, dict) or self._track_taken(award):
+                continue
+            name = str(award.get("name", "") or "").strip().lower()
+            track = self._AWARD_TRACKS.get(name)
+            if track is None:
+                continue
+            if self._safe_float(delta.get(track[0])) <= 0.0:
+                continue
+            _own, _opp, projected, _lead = self._award_standing(player, award, state)
+            if projected >= 5.0:
+                weight = 1.0
+            elif projected >= 2.0:
+                weight = 0.5
+            else:
+                continue
+            if weight * self.category_goal_bonus > best_bonus:
+                best_bonus = weight * self.category_goal_bonus
+                best_name = name
+        if best_bonus > 0.0:
+            return score + best_bonus, reasons + [f"builds-fundable-{best_name}={best_bonus:.2f}"]
+        return score, reasons
+
+
 class NeuralDecisionPolicy:
     """Adapter for callers that already produce one logit per legal action."""
 

@@ -329,14 +329,20 @@ docker compose -f docker-compose.rl_hard.yml -f docker-compose.alphago.yml run -
   --checkpoint /app/alphago/checkpoints/latest_learner.pth `
   --replay-dir /app/alphago/search-replay `
   --output /app/alphago/checkpoints/search_distilled_candidate.pth `
-  --epochs 1 --batch-size 64 --learning-rate 1e-5
+  --epochs 1 --batch-size 64 --learning-rate 1e-5 `
+  --family-weight fund_award=6.5
 ```
 
 The trainer minimizes policy cross-entropy against `pi` plus a weighted Huber
 value loss against `z`, writes a report beside the candidate, and increments
-its policy version. Benchmark this candidate against both its source checkpoint
-and the champion before promotion. It is never loaded automatically into the
-running PPO learner.
+its policy version. Repeatable `--family-weight FAMILY=WEIGHT` controls can
+upsample sparse teacher donations in the training split without changing the
+validation distribution. The report records raw and effective family counts so
+the resulting target mass is auditable. Weights are dataset-dependent; start
+conservatively and tune them against the family-specific benchmark because a
+large weight can make one action family dominate. Benchmark this candidate
+against both its source checkpoint and the champion before promotion. It is
+never loaded automatically into the running PPO learner.
 
 The full AlphaGo-Zero-style path is a separate trainer, not a PPO option:
 

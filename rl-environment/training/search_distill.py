@@ -12,7 +12,7 @@ import math
 import random
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -69,6 +69,59 @@ def _batches(items: Sequence[Dict[str, Any]], batch_size: int) -> Iterable[List[
     size = max(1, int(batch_size))
     for start in range(0, len(items), size):
         yield list(items[start:start + size])
+
+
+def parse_family_weights(values: Sequence[str]) -> Dict[str, float]:
+    """Parse repeatable FAMILY=WEIGHT CLI values used for training upsampling."""
+    weights: Dict[str, float] = {}
+    for raw in values:
+        family, separator, raw_weight = str(raw).partition("=")
+        family = family.strip()
+        if not separator or not family or not raw_weight.strip():
+            raise ValueError(f"family weight must use FAMILY=WEIGHT syntax: {raw!r}")
+        if family in weights:
+            raise ValueError(f"family weight was specified more than once: {family}")
+        try:
+            weight = float(raw_weight)
+        except ValueError as exc:
+            raise ValueError(f"family weight must be numeric: {raw!r}") from exc
+        if not math.isfinite(weight) or weight < 1.0:
+            raise ValueError(f"family weight must be finite and at least 1.0: {raw!r}")
+        weights[family] = weight
+    return weights
+
+
+def upsample_records_by_family(
+    records: Sequence[Dict[str, Any]],
+    family_weights: Mapping[str, float],
+    rng: random.Random,
+) -> List[Dict[str, Any]]:
+    """Return a training-only sample with selected donated families repeated.
+
+    Every source record remains present once. Integer weights are exact;
+    fractional weights use deterministic stochastic rounding with ``rng``.
+    Validation records must not be passed through this function.
+    """
+    sampled = list(records)
+    for record in records:
+        family = str(record.get("donation_family", "") or "")
+        weight = float(family_weights.get(family, 1.0))
+        extra_weight = max(0.0, weight - 1.0)
+        whole_copies = int(math.floor(extra_weight))
+        if whole_copies:
+            sampled.extend([record] * whole_copies)
+        if rng.random() < extra_weight - whole_copies:
+            sampled.append(record)
+    return sampled
+
+
+def _donation_family_counts(records: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for record in records:
+        family = str(record.get("donation_family", "") or "")
+        if family:
+            counts[family] = counts.get(family, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _target_batch(records: Sequence[Dict[str, Any]], action_dim: int, device: torch.device) -> torch.Tensor:
@@ -159,6 +212,7 @@ def distill(
     max_samples: int = 0,
     min_policy_version: int = 0,
     validation_fraction: float = 0.1,
+    family_weights: Mapping[str, float] | None = None,
 ) -> Dict[str, Any]:
     initialize_v2_runtime()
     records = load_search_records(
@@ -175,7 +229,16 @@ def distill(
         max(1, round(len(records) * min(0.5, max(0.0, float(validation_fraction))))),
     ) if len(records) > 1 and validation_fraction > 0.0 else 0
     validation = records[:validation_count]
-    training = records[validation_count:]
+    raw_training = records[validation_count:]
+    normalized_family_weights = {
+        str(family): float(weight) for family, weight in (family_weights or {}).items()
+    }
+    for family, weight in normalized_family_weights.items():
+        if not family or not math.isfinite(weight) or weight < 1.0:
+            raise ValueError(
+                f"family weight for {family!r} must be finite and at least 1.0"
+            )
+    training = upsample_records_by_family(raw_training, normalized_family_weights, rng)
 
     agent = RLAgent(agent_id="search-distill")
     agent.load_model(checkpoint)
@@ -217,17 +280,43 @@ def distill(
     output_path = Path(output).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     agent.save_model(str(output_path))
+    # Donation coverage is the point of the teacher replay stream, so report it
+    # explicitly. A run with zero fund_award records has not addressed the
+    # award exploit no matter how good the loss curve looks.
+    family_counts: Dict[str, int] = {}
+    chosen_family_counts: Dict[str, int] = {}
+    for record in records:
+        for row in list(record.get("action_descriptors") or []):
+            if not isinstance(row, dict):
+                continue
+            family = str(row.get("family", "") or "")
+            if family:
+                family_counts[family] = family_counts.get(family, 0) + 1
+        chosen = str(record.get("donation_family", "") or "")
+        if chosen:
+            chosen_family_counts[chosen] = chosen_family_counts.get(chosen, 0) + 1
     report = {
         "schema_version": "tfm.search_distill_report.v1",
         "source_checkpoint": str(checkpoint),
         "output_checkpoint": str(output_path),
         "replay_dir": str(Path(replay_dir).expanduser()),
         "records": len(records),
-        "training_records": len(training),
+        "training_records": len(raw_training),
+        "effective_training_records": len(training),
         "validation_records": len(validation),
         "policy_version": int(agent.policy_version),
         "device": str(device),
         "elapsed_sec": round(time.monotonic() - started, 3),
+        "donation_sources": sorted({
+            str(record.get("donation_source", "") or "")
+            for record in records
+            if record.get("donation_source")
+        }),
+        "legal_family_counts": dict(sorted(family_counts.items())),
+        "chosen_family_counts": dict(sorted(chosen_family_counts.items())),
+        "family_weights": dict(sorted(normalized_family_weights.items())),
+        "raw_training_family_counts": _donation_family_counts(raw_training),
+        "effective_training_family_counts": _donation_family_counts(training),
         "history": history,
     }
     report_path = output_path.with_suffix(output_path.suffix + ".search-distill.json")
@@ -247,7 +336,21 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--min-policy-version", type=int, default=0)
     parser.add_argument("--validation-fraction", type=float, default=0.1)
+    parser.add_argument(
+        "--family-weight",
+        action="append",
+        default=[],
+        metavar="FAMILY=WEIGHT",
+        help=(
+            "repeat donated records from FAMILY by WEIGHT in the training split only; "
+            "may be supplied more than once"
+        ),
+    )
     args = parser.parse_args()
+    try:
+        family_weights = parse_family_weights(args.family_weight)
+    except ValueError as exc:
+        parser.error(str(exc))
     report = distill(
         args.checkpoint,
         args.replay_dir,
@@ -259,6 +362,7 @@ def main() -> None:
         max_samples=args.max_samples,
         min_policy_version=args.min_policy_version,
         validation_fraction=args.validation_fraction,
+        family_weights=family_weights,
     )
     print(json.dumps(report, indent=2), flush=True)
 

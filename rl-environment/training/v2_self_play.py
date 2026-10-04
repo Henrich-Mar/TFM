@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from game_interface import GameServerCluster
 from models.agent import RLAgent
-from models.decision_policy import HeuristicTeacherPolicy
+from models.decision_policy import AwardFundingTeacherPolicy, HeuristicTeacherPolicy
 from search.config import SearchConfig
 from search.replay_store import SearchReplayStore
 from search.search_agent import SearchPolicy
@@ -66,9 +66,20 @@ def _shared_champion_pool(path: str, count: int) -> List[RLAgent]:
 
 
 def _shared_teacher_pool(count: int, seed: int) -> List[RLAgent]:
+    # The award-aware teacher funds cheap awards, so its donations give the
+    # learner positive examples of a commitment the stock teacher almost never
+    # makes. Opt-in so existing training behaviour is unchanged by default.
+    award_teacher = str(os.getenv("ALPHAGO_SELFPLAY_AWARD_TEACHER", "0")).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    policy_factory = (
+        (lambda offset: AwardFundingTeacherPolicy(int(seed) + offset, sample=False))
+        if award_teacher
+        else (lambda offset: HeuristicTeacherPolicy(int(seed) + offset, sample=False))
+    )
     leader = RLAgent(
         agent_id="teacher-0",
-        decision_policy=HeuristicTeacherPolicy(int(seed), sample=False),
+        decision_policy=policy_factory(0),
     )
     leader.train_from_self_play = False
     leader.config.train_from_self_play = False
@@ -80,7 +91,7 @@ def _shared_teacher_pool(count: int, seed: int) -> List[RLAgent]:
             _bind_frozen_seat(
                 leader,
                 f"teacher-{index}",
-                decision_policy=HeuristicTeacherPolicy(int(seed) + index, sample=False),
+                decision_policy=policy_factory(index),
             )
         )
     return seats
@@ -297,6 +308,26 @@ class V2SelfPlayRunner:
         except (TypeError, ValueError):
             self.search_selfplay_fraction = 0.0
         self.search_replay_store: Optional[SearchReplayStore] = None
+        # Frozen teacher/champion seats never reach the strict on-policy PPO
+        # buffer, so every award they correctly fund is thrown away. Donation
+        # captures those decisions for the distillation stream instead.
+        self.teacher_replay_store: Optional[SearchReplayStore] = None
+        teacher_replay_dir = str(os.getenv("ALPHAGO_TEACHER_REPLAY_DIR", "") or "").strip()
+        if teacher_replay_dir:
+            try:
+                teacher_replay_max_shards = max(
+                    1, int(os.getenv("ALPHAGO_TEACHER_REPLAY_MAX_SHARDS", "2048"))
+                )
+            except (TypeError, ValueError):
+                teacher_replay_max_shards = 2048
+            self.teacher_replay_store = SearchReplayStore(
+                Path(teacher_replay_dir).expanduser(),
+                max_shards=teacher_replay_max_shards,
+            )
+            print(
+                f"[selfplay] teacher donation replay enabled dir={teacher_replay_dir}",
+                flush=True,
+            )
         if self.search_selfplay_fraction > 0.0:
             replay_dir = Path(
                 os.getenv("ALPHAGO_SEARCH_REPLAY_DIR", str(self.root / "search-replay"))
@@ -925,6 +956,13 @@ class V2SelfPlayRunner:
         )
         lineup_kind = self._lineup_kind(seed, search_training=search_training)
         lineup = self._take_learning_seats(4) if search_training else self._lineup(seed)
+        teacher_replay_store = getattr(self, "teacher_replay_store", None)
+        if teacher_replay_store is not None and not search_training:
+            # Donate frozen-seat decisions only. The learner is excluded inside
+            # the agent so its on-policy data is never double-counted.
+            for seat in lineup:
+                if not seat.train_from_self_play:
+                    seat.teacher_replay_store = teacher_replay_store
         if search_training:
             self.search_game_count += 1
             for seat_index, seat in enumerate(lineup):

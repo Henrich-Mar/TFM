@@ -1060,6 +1060,10 @@ class RLAgent:
         self.reward_award_rank_weight = self._safe_env_float(
             "PPO_SHAPING_AWARD_RANK_DROP_WEIGHT", 1.5
         )
+        # Award MC cost and per-game cap are weighted on their own so that tuning the
+        # funding bonus above cannot switch the cost of funding off with it.
+        self.reward_award_cost_weight = self._safe_env_float("PPO_SHAPING_AWARD_COST_WEIGHT", 1.0)
+        self.reward_award_cap_weight = self._safe_env_float("PPO_SHAPING_AWARD_CAP_WEIGHT", 1.0)
         self.reward_other_weight = self._safe_env_float("PPO_SHAPING_OTHER_WEIGHT", 0.5)
         self.reward_debug_enabled = str(os.getenv("PPO_REWARD_DEBUG_ENABLED", "0")).strip().lower() not in ("0", "false", "no", "off")
         self.reward_debug_threshold = max(0.0, self._safe_env_float("PPO_REWARD_DEBUG_THRESHOLD", 0.001))
@@ -2165,6 +2169,7 @@ class RLAgent:
                     game_outcome.get("vp", 0),
                     True,
                     game_outcome.get("vp_mean", game_outcome.get("vp", 0)),
+                    game_outcome.get("awards_funded"),
                 ) * self.self_play_reward_scale
             if self.search_policy is not None and hasattr(self.search_policy, "finish_episode"):
                 self.search_policy.finish_episode(
@@ -2679,6 +2684,10 @@ class RLAgent:
                         reward_milestones_component = 0.0
                         reward_awards_component = 0.0
                         reward_award_rank_component = 0.0
+                        reward_award_cost_component = 0.0
+                        reward_award_cap_component = 0.0
+                        award_funded_mc = 0.0
+                        award_cap_exceeded = False
                         reward_milestones_awards_component = 0.0
                         reward_other_component = 0.0
                         reward_shaping_coef = self._current_reward_shaping_coef()
@@ -2700,6 +2709,12 @@ class RLAgent:
                                 float(reward_breakdown.get("award_rank_drop_component", 0.0))
                                 + float(reward_breakdown.get("award_rank_gain_component", 0.0))
                             )
+                            weighted_award_cost = float(self.reward_award_cost_weight) * float(
+                                reward_breakdown.get("award_cost_component", 0.0)
+                            )
+                            weighted_award_cap = float(self.reward_award_cap_weight) * float(
+                                reward_breakdown.get("award_cap_component", 0.0)
+                            )
                             weighted_other = float(self.reward_other_weight) * float(reward_breakdown.get("other_component", 0.0))
                             weighted_raw = (
                                 weighted_tr
@@ -2709,6 +2724,8 @@ class RLAgent:
                                 + weighted_milestones
                                 + weighted_awards
                                 + weighted_award_rank
+                                + weighted_award_cost
+                                + weighted_award_cap
                                 + weighted_other
                             )
                             weighted_scaled = max(-0.35, min(0.35, weighted_raw)) * step_reward_scale
@@ -2720,6 +2737,10 @@ class RLAgent:
                             reward_milestones_component = float(weighted_milestones * step_reward_scale)
                             reward_awards_component = float(weighted_awards * step_reward_scale)
                             reward_award_rank_component = float(weighted_award_rank * step_reward_scale)
+                            reward_award_cost_component = float(weighted_award_cost * step_reward_scale)
+                            reward_award_cap_component = float(weighted_award_cap * step_reward_scale)
+                            award_funded_mc = float(reward_breakdown.get("award_funded_mc", 0.0))
+                            award_cap_exceeded = bool(reward_breakdown.get("award_cap_exceeded", False))
                             reward_milestones_awards_component = float(
                                 (weighted_milestones + weighted_awards + weighted_award_rank) * step_reward_scale
                             )
@@ -2799,6 +2820,10 @@ class RLAgent:
                                     "reward_milestones_component": float(reward_milestones_component),
                                     "reward_awards_component": float(reward_awards_component),
                                     "reward_award_rank_component": float(reward_award_rank_component),
+                                    "reward_award_cost_component": float(reward_award_cost_component),
+                                    "reward_award_cap_component": float(reward_award_cap_component),
+                                    "award_funded_mc": float(award_funded_mc),
+                                    "award_cap_exceeded": bool(award_cap_exceeded),
                                     "award_rank_drop_after_action": float(
                                         reward_breakdown.get("award_rank_drop_after_action", 0.0)
                                         if self.train_from_self_play else 0.0
@@ -4511,6 +4536,7 @@ class RLAgent:
         vp: int,
         completed: bool = True,
         vp_mean: Optional[float] = None,
+        awards_funded: Optional[int] = None,
     ) -> float:
         """Convert game outcome into a bounded terminal reward for policy updates."""
         if _safe_env_bool("TFM_RL_V2", False) or _safe_env_bool("TFM_RL_V3", False):
@@ -4519,6 +4545,7 @@ class RLAgent:
                 victory_points=vp,
                 table_vp_mean=vp if vp_mean is None else vp_mean,
                 completed=completed,
+                awards_funded=awards_funded,
             )
         return calculate_terminal_reward(rank=rank, victory_points=vp, completed=completed)
 
@@ -4624,6 +4651,8 @@ class RLAgent:
                         reward_milestones_component=float(step.get("reward_milestones_component", 0.0) or 0.0),
                         reward_awards_component=float(step.get("reward_awards_component", 0.0) or 0.0),
                         reward_award_rank_component=float(step.get("reward_award_rank_component", 0.0) or 0.0),
+                        reward_award_cost_component=float(step.get("reward_award_cost_component", 0.0) or 0.0),
+                        reward_award_cap_component=float(step.get("reward_award_cap_component", 0.0) or 0.0),
                         award_rank_drop_after_action=float(step.get("award_rank_drop_after_action", 0.0) or 0.0),
                         reward_milestones_awards_component=float(step.get("reward_milestones_awards_component", 0.0) or 0.0),
                         reward_other_component=float(step.get("reward_other_component", 0.0) or 0.0),

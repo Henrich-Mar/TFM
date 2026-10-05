@@ -73,11 +73,37 @@ services:
       - PPO_ENTROPY_COEF_ANNEAL_GAMES=3000
       - PPO_RARE_STATE_PRIORITY_ENABLED=0
       - PPO_SHAPING_INITIAL_COEF=0.20
-      - PPO_SHAPING_FINAL_COEF=0.05
+      # Was 0.05, which pinned shaping at ~0.2-1% of the 1st-to-2nd rank gap and
+      # made every step-level award term inert (verified over the last 1.5M
+      # decisions: coef stuck at 0.05). Timing can only be taught in the step
+      # reward, because the terminal reward cannot tell gen-4 funding from gen-11
+      # funding. 0.15 restores a real dense timing gradient while staying well
+      # under the terminal objective.
+      - PPO_SHAPING_FINAL_COEF=0.15
       - PPO_SHAPING_ANNEAL_GAMES=3000
       - PPO_SHAPING_MILESTONES_WEIGHT=2.3
+      # Measured with this at 0 and again at 1.0: awards/game was 3.0 either way,
+      # so the funding bonus was never what drove the 3.0 awards/game collapse.
+      # Awards pay 3-5 VP for 8/14/20 MC and the terminal reward scores VP alone,
+      # so MC spent is invisible to it and funding is unboundedly attractive. The
+      # two weights below are the actual fix and are deliberately separate from
+      # this one: folding the MC cost into the bonus is what let a bonus change
+      # switch the cost off with it.
+      # Restore the bonus to carry the dense timing signal (commitment tax early,
+      # sniping bonus late) that teaches WHEN to fund, not just whether to.
       - PPO_SHAPING_AWARDS_WEIGHT=1.0
       - PPO_SHAPING_AWARD_RANK_DROP_WEIGHT=1.5
+      # Charge the MC an award consumes, and bound awards per game.
+      - PPO_SHAPING_AWARD_COST_WEIGHT=1.0
+      - PPO_SHAPING_AWARD_CAP_WEIGHT=1.0
+      - AWARD_MC_COST_STEP_RATE=0.010
+      - AWARD_CAP_STEP_PENALTY=0.25
+      # Distilled teacher funds 1.2 awards/game and peaks at 2, so the cap leaves
+      # the intended behaviour alone and only bites on the 3rd award.
+      - AWARD_FUND_CAP=2
+      # The cap charged again in the terminal reward, where it has enough scale to
+      # matter. 0.20 against a rank_reward spread of 2.0.
+      - TERMINAL_AWARD_CAP_PENALTY=0.20
       - PPO_STRICT_ON_POLICY=1
       - PPO_ROLLOUT_STEPS=${ALPHAGO_PPO_ROLLOUT_STEPS:-12288}
       # 512 exhausts the 6 GB RTX 3060 on high-branching planner batches.

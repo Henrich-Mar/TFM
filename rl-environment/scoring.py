@@ -90,6 +90,7 @@ def calculate_v2_terminal_reward(
     victory_points: Any,
     table_vp_mean: Any,
     completed: Any,
+    awards_funded: Any = None,
 ) -> float:
     """Bounded relative terminal objective for the clean v2 experiment."""
     if not bool(completed):
@@ -104,7 +105,20 @@ def calculate_v2_terminal_reward(
         vp_margin = 0.0
     rank_reward = {1: 1.0, 2: 0.25, 3: -0.25, 4: -1.0}.get(rank_int, -1.0)
     margin_bonus = max(-0.1, min(0.1, 0.05 * (vp_margin / 20.0)))
-    return float(rank_reward + margin_bonus)
+    # Charge for awards bought past the per-game cap, here at the scale of the
+    # terminal objective. The step-reward copy of this penalty cannot do the job:
+    # shaping is annealed to PPO_SHAPING_FINAL_COEF, so a step term lands around
+    # 0.2-1% of the 1st-to-2nd rank gap, and 3.0 awards/game was still measured
+    # with the step cost in place. AWARD_FUND_CAP and the penalty are module
+    # globals resolved at call time.
+    try:
+        funded = int(awards_funded) if awards_funded is not None else 0
+    except Exception:
+        funded = 0
+    cap_penalty = 0.0
+    if funded > AWARD_FUND_CAP:
+        cap_penalty = TERMINAL_AWARD_CAP_PENALTY * (funded - AWARD_FUND_CAP)
+    return float(rank_reward + margin_bonus - cap_penalty)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1561,6 +1575,32 @@ STEP_REWARD_SCALE = 0.3 if IS_HARD_MODE else 1.0
 TERMINAL_REWARD_SCALE = 2.0 if IS_HARD_MODE else 1.0
 HATE_DRAFT_LOW_HAND_EV_THRESHOLD = _env_float("HATE_DRAFT_LOW_HAND_EV_THRESHOLD", 0.25)
 
+# Award funding economics.
+#
+# Awards are worth 3-5 VP for 8/14/20 MC, so from the optimiser's point of view
+# they are the only move in the game that converts MC directly into VP. The
+# terminal reward scores VP alone and never charges for MC, which leaves funding
+# as an unboundedly attractive action: a policy that learns to spend will keep
+# funding until every award in the game is bought, because the opportunity cost
+# only ever shows up later as cards it did not play.
+#
+# The cost term below prices that MC. It is deliberately NOT folded into
+# `awards_component`: that component is scaled by PPO_SHAPING_AWARDS_WEIGHT, so
+# any tuning of the funding *bonus* used to switch the cost off as well and the
+# policy drifted from 1.2 awards/game to 3.0 while every award term read 0.0.
+# MC has to be priced in a term that survives tuning the bonus.
+AWARD_MC_COST_STEP_RATE = _env_float("AWARD_MC_COST_STEP_RATE", 0.010)
+# Steepness of the marginal penalty for each award funded beyond the cap.
+AWARD_CAP_STEP_PENALTY = _env_float("AWARD_CAP_STEP_PENALTY", 0.25)
+# Awards a seat may fund per game before the cap penalty applies. The distilled
+# teacher funds 1.2 on average and peaks at 2 when it leads a category, so a cap
+# of 2 leaves the intended behaviour untouched and only bites on the ladder rung
+# that was being bought purely because the money was free.
+AWARD_FUND_CAP = max(0, int(_env_float("AWARD_FUND_CAP", 2)))
+# The same cap charged again in the terminal reward. 0.20 is meaningful against a
+# rank_reward spread of 2.0, so funding a third award has to be worth winning.
+TERMINAL_AWARD_CAP_PENALTY = _env_float("TERMINAL_AWARD_CAP_PENALTY", 0.20)
+
 def calculate_step_reward_decomposition(
     before_state: Dict[str, Any],
     after_state: Dict[str, Any],
@@ -1582,6 +1622,11 @@ def calculate_step_reward_decomposition(
             "award_rank_drop_after_action": 0.0,
             "milestones_awards_component": 0.0,
             "other_component": 0.0,
+            "award_cost_component": 0.0,
+            "award_cap_component": 0.0,
+            "award_cap_exceeded": False,
+            "award_funded_mc": 0.0,
+            "award_fund_cap": int(AWARD_FUND_CAP),
             "raw_total": 0.0,
             "scaled_total": 0.0,
             "hate_draft_decision": 0.0,
@@ -1612,6 +1657,11 @@ def calculate_step_reward_decomposition(
             "award_rank_drop_after_action": 0.0,
             "milestones_awards_component": 0.0,
             "other_component": 0.0,
+            "award_cost_component": 0.0,
+            "award_cap_component": 0.0,
+            "award_cap_exceeded": False,
+            "award_funded_mc": 0.0,
+            "award_fund_cap": int(AWARD_FUND_CAP),
             "raw_total": 0.0,
             "scaled_total": 0.0,
             "hate_draft_decision": 0.0,
@@ -1870,6 +1920,14 @@ def calculate_step_reward_decomposition(
                 milestones_component -= 0.20
 
     # Awards closing pressure: reinforce positive EV funding and discourage poor-value funding.
+    #
+    # award_cost_component prices the MC spent and award_cap_component bounds how many
+    # awards one seat buys in a game. Both are returned as their own components and
+    # weighted independently of the funding bonus in models/agent.py.
+    award_cost_component = 0.0
+    award_cap_component = 0.0
+    award_cap_exceeded = False
+    funded_mc_total = 0.0
     before_owned_awards = _owned_funded_awards(before_game, before_player)
     after_owned_awards = _owned_funded_awards(after_game, after_player)
     if len(after_owned_awards) > len(before_owned_awards):
@@ -1881,12 +1939,25 @@ def calculate_step_reward_decomposition(
         if not newly_funded:
             newly_funded = after_owned_awards[len(before_owned_awards):]
         prior_funded_total = _funded_award_count(before_game)
+        own_funded_before = len(before_owned_awards)
         for idx, award in enumerate(newly_funded):
             scores = [row for row in (award.get('scores', []) or []) if isinstance(row, dict)]
             projected_points, projection_confidence = _award_projection_for_player(scores, after_player)
             expected_vp = projected_points * projection_confidence
             estimated_cost = _estimate_award_funding_cost(prior_funded_total + idx)
             estimated_cost_vp = estimated_cost / 5.0
+            # Price the MC this award consumes. Always applied, because this is the
+            # only term that makes funding cost something.
+            funded_mc_total += float(estimated_cost)
+            award_cost_component -= min(0.25, AWARD_MC_COST_STEP_RATE * float(estimated_cost))
+            # Charge for each award bought beyond the per-game cap. No
+            # projected-place discount: exceeding the budget is a budget error, not
+            # a bad read on who would have won that award.
+            own_funded_after = own_funded_before + idx + 1
+            if own_funded_after > AWARD_FUND_CAP:
+                over_cap = int(own_funded_after - AWARD_FUND_CAP)
+                award_cap_component -= AWARD_CAP_STEP_PENALTY * over_cap
+                award_cap_exceeded = True
             # Early funding has high uncertainty and high opportunity cost.
             # Apply a generation-weighted commitment tax so gen-1/2 funding requires
             # genuinely strong projected standings before receiving positive shaping.
@@ -1960,6 +2031,8 @@ def calculate_step_reward_decomposition(
         + city_future_component
         + milestones_awards_component
         + other_component
+        + award_cost_component
+        + award_cap_component
     )
     clamped_total = float(max(-0.35, min(0.35, float(raw_total))))
     scaled_total = float(clamped_total * STEP_REWARD_SCALE)
@@ -1975,6 +2048,11 @@ def calculate_step_reward_decomposition(
         "award_rank_drop_after_action": float(award_rank_drop_after_action),
         "milestones_awards_component": float(milestones_awards_component),
         "other_component": float(other_component),
+        "award_cost_component": float(award_cost_component),
+        "award_cap_component": float(award_cap_component),
+        "award_cap_exceeded": bool(award_cap_exceeded),
+        "award_funded_mc": float(funded_mc_total),
+        "award_fund_cap": int(AWARD_FUND_CAP),
         "raw_total": float(raw_total),
         "clamped_total": float(clamped_total),
         "step_reward_scale": float(STEP_REWARD_SCALE),

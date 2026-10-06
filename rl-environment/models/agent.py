@@ -211,6 +211,17 @@ def _resolve_inference_device() -> torch.device:
         return _inference_device
 
 
+def _inference_amp_enabled(device: torch.device) -> bool:
+    """FP16 autocast for CUDA inference, opt-in via ``AGENT_INFERENCE_AMP=1``.
+
+    Off by default: PPO optimizes in fp32, so fp16 behavior log-probs drift from
+    the ones the update recomputes, and the ``-1e9`` action mask overflows fp16.
+    """
+    if device.type != "cuda":
+        return False
+    return os.getenv("AGENT_INFERENCE_AMP", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 # Thread pool for offloading inference off the asyncio event loop.
 # Lazily initialized; size controlled by AGENT_INFERENCE_THREADS (0 = auto).
 _inference_executor: Optional[ThreadPoolExecutor] = None
@@ -270,6 +281,10 @@ def _run_ppo_update_sync(
     """Run PPO optimization synchronously (for executor). Must not call async code."""
     with agent._model_device_lock:
         agent.ppo_hparams.entropy_coef = float(current_entropy_coef)
+        if torch.cuda.is_available():
+            # Inference runs on the same GPU between updates; hand its cached
+            # blocks back before the free-VRAM check and the PPO minibatches.
+            torch.cuda.empty_cache()
         requested_device = _select_ppo_device(agent.network)
         try:
             metrics = optimize_ppo_policy(
@@ -353,16 +368,17 @@ def _run_ppo_update_sync(
 # concurrent games and runs one batched forward pass on the GPU.
 # ---------------------------------------------------------------------------
 
-_InferenceRequest = Tuple[np.ndarray, int, torch.Tensor, "asyncio.Future[Any]", asyncio.AbstractEventLoop]
+_InferenceRequest = Tuple[Any, int, torch.Tensor, "asyncio.Future[Any]", asyncio.AbstractEventLoop, Optional[float]]
 
 
 class InferenceBatcher:
-    """Collects inference requests for a single agent's network and runs
-    them in one batched GPU forward pass.
+    """Collects inference requests for one network and runs them in one
+    batched GPU forward pass.
 
-    Each agent owns one batcher instance (created lazily).  Callers await
-    ``batcher.infer(...)`` which returns the same 5-tuple as
-    ``_sync_forward_and_probs``.
+    Seats bound to a shared network (``bind_shared_learner``) share their
+    leader's batcher, so concurrent games batch together and only one thread
+    holds a CUDA context per network. Callers await ``batcher.infer(...)``,
+    which returns the same 5-tuple as ``_sync_forward_and_probs``.
     """
 
     def __init__(
@@ -392,11 +408,13 @@ class InferenceBatcher:
         state_vector: np.ndarray,
         phase_index: int,
         recurrent_state: torch.Tensor,
+        temperature: Optional[float] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Any, torch.Tensor]:
+        """``temperature`` is the calling seat's; seats sharing a batcher may differ."""
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[Any] = loop.create_future()
         with self._lock:
-            self._pending.append((state_vector, phase_index, recurrent_state, fut, loop))
+            self._pending.append((state_vector, phase_index, recurrent_state, fut, loop, temperature))
             if len(self._pending) >= self._max_batch:
                 self._batch_ready.set()
         self._has_items.set()
@@ -410,10 +428,18 @@ class InferenceBatcher:
         with self._agent._model_device_lock:
             device = self._agent._ensure_network_device_consistency(device)
 
-            states = torch.tensor(
-                np.stack([r[0] for r in batch]),
-                dtype=torch.float32, device=device,
-            )
+            if isinstance(batch[0][0], dict):
+                # Planner bundles carry variable token counts; masks make the
+                # padded rows inert, so one forward serves every waiting seat.
+                states = pad_bundle_batch(
+                    [r[0] for r in batch], device=device,
+                    planner_config=self._agent.config.planner_config(),
+                )
+            else:
+                states = torch.tensor(
+                    np.stack([r[0] for r in batch]),
+                    dtype=torch.float32, device=device,
+                )
             phases = torch.tensor(
                 [r[1] for r in batch],
                 dtype=torch.long, device=device,
@@ -422,7 +448,7 @@ class InferenceBatcher:
 
             try:
                 with torch.no_grad():
-                    use_amp = device.type == "cuda"
+                    use_amp = _inference_amp_enabled(device)
                     with torch.amp.autocast("cuda", enabled=use_amp):
                         out = self._agent._forward_network(
                             states, phase_indices=phases, recurrent_state=recurrent,
@@ -435,8 +461,12 @@ class InferenceBatcher:
                         recurrent_out = recurrent_out.float()
                     aux_preds = out.get("aux_predictions")
 
-                    temperature = self._agent._effective_policy_temperature()
-                    policy_logits = policy_logits / max(temperature, 1e-3)
+                    default_temperature = self._agent._effective_policy_temperature()
+                    temperatures = torch.tensor(
+                        [max(float(default_temperature if r[5] is None else r[5]), 1e-3) for r in batch],
+                        dtype=policy_logits.dtype, device=policy_logits.device,
+                    )
+                    policy_logits = policy_logits / temperatures.unsqueeze(-1)
                     policy_probs = F.softmax(policy_logits, dim=-1)
 
                 if device.type != "cpu":
@@ -490,19 +520,25 @@ class InferenceBatcher:
                 self._run_batch_forward(batch, device)
             )
 
-            for i, (_, _, _, fut, loop) in enumerate(batch):
+            for i, (state, _, _, fut, loop, _) in enumerate(batch):
                 r_out = recurrent_out[i : i + 1] if recurrent_out is not None else None
                 a_out = aux_preds[i : i + 1] if aux_preds is not None else None
+                # Padded action slots score exp(-1e9) == 0, so dropping them
+                # leaves the same distribution a lone forward would return.
+                width = (
+                    int(np.asarray(state["action_tokens"]).shape[0])
+                    if isinstance(state, dict) else policy_logits.shape[-1]
+                ) or policy_logits.shape[-1]
                 result = (
-                    policy_logits[i : i + 1],
+                    policy_logits[i : i + 1, :width],
                     value[i : i + 1],
                     r_out,
                     a_out,
-                    policy_probs[i : i + 1],
+                    policy_probs[i : i + 1, :width],
                 )
                 loop.call_soon_threadsafe(fut.set_result, result)
         except Exception as exc:
-            for _, _, _, fut, loop in batch:
+            for _, _, _, fut, loop, _ in batch:
                 if not fut.done():
                     loop.call_soon_threadsafe(fut.set_exception, exc)
 
@@ -661,6 +697,10 @@ class TerraformingMarsNetwork(nn.Module):
             self.card_set_projection = None
             self.card_count_embedding = None
             self.hand_context_norm = None
+        # Each stat is a .item(), i.e. a device sync on CUDA. Inference forwards
+        # refresh them only every Nth call; they feed dashboards, not decisions.
+        self._stats_every_n_inference = max(1, _safe_env_int("AGENT_TRANSFORMER_STATS_EVERY_N", 64))
+        self._inference_forward_count = 0
         self.last_transformer_stats: Dict[str, Any] = {
             "enabled": True,
             "active_token_ratio": 0.0,
@@ -858,27 +898,35 @@ class TerraformingMarsNetwork(nn.Module):
         summary_expanded = fused_summary.unsqueeze(1).expand(-1, int(action_query.shape[1]), -1)
         fused_actions = self.action_context_fuser(torch.cat([action_query, action_attended, summary_expanded], dim=-1))
         policy_logits = self.action_logit_head(fused_actions).squeeze(-1)
-        policy_logits = policy_logits.masked_fill(~action_mask, -1e9)
+        # -1e9 overflows fp16 under autocast; -1e4 is still exp()-zero there.
+        mask_fill = -1e9 if policy_logits.dtype == torch.float32 else -1e4
+        policy_logits = policy_logits.masked_fill(~action_mask, mask_fill)
 
         value_features = self.value_trunk(fused_summary)
         value = self.value_head(value_features)
         aux_raw = self.aux_head(fused_summary)
         aux_predictions = torch.sigmoid(aux_raw)
 
-        with torch.no_grad():
-            self.last_transformer_stats = {
-                "enabled": True,
-                "active_token_ratio": float(world_mask.float().mean().item()) if world_mask.numel() > 0 else 0.0,
-                "active_row_ratio": float(world_mask.any(dim=1).float().mean().item()) if world_mask.numel() > 0 else 0.0,
-                "attention_context_norm": float(encoded_world.detach().norm(dim=-1).mean().item()) if encoded_world.numel() > 0 else 0.0,
-                "fusion_delta_norm": float(fused_summary.detach().norm(dim=-1).mean().item()) if fused_summary.numel() > 0 else 0.0,
-                "fusion_share": 0.0,
-                "shared_pre_norm": float(world_summary.detach().norm(dim=-1).mean().item()) if world_summary.numel() > 0 else 0.0,
-                "shared_post_norm": float(fused_summary.detach().norm(dim=-1).mean().item()) if fused_summary.numel() > 0 else 0.0,
-                "token_count": int(world_tokens.shape[1]),
-                "token_dim": int(world_tokens.shape[2]) if world_tokens.dim() == 3 else int(self.planner_config.token_dim),
-                "timestamp": float(time.time()),
-            }
+        if torch.is_grad_enabled():
+            refresh_stats = True
+        else:
+            self._inference_forward_count += 1
+            refresh_stats = (self._inference_forward_count - 1) % self._stats_every_n_inference == 0
+        if refresh_stats:
+            with torch.no_grad():
+                self.last_transformer_stats = {
+                    "enabled": True,
+                    "active_token_ratio": float(world_mask.float().mean().item()) if world_mask.numel() > 0 else 0.0,
+                    "active_row_ratio": float(world_mask.any(dim=1).float().mean().item()) if world_mask.numel() > 0 else 0.0,
+                    "attention_context_norm": float(encoded_world.detach().norm(dim=-1).mean().item()) if encoded_world.numel() > 0 else 0.0,
+                    "fusion_delta_norm": float(fused_summary.detach().norm(dim=-1).mean().item()) if fused_summary.numel() > 0 else 0.0,
+                    "fusion_share": 0.0,
+                    "shared_pre_norm": float(world_summary.detach().norm(dim=-1).mean().item()) if world_summary.numel() > 0 else 0.0,
+                    "shared_post_norm": float(fused_summary.detach().norm(dim=-1).mean().item()) if fused_summary.numel() > 0 else 0.0,
+                    "token_count": int(world_tokens.shape[1]),
+                    "token_dim": int(world_tokens.shape[2]) if world_tokens.dim() == 3 else int(self.planner_config.token_dim),
+                    "timestamp": float(time.time()),
+                }
 
         return {
             "policy_logits": policy_logits,
@@ -935,6 +983,9 @@ class RLAgent:
         self.decision_policy = decision_policy
         self.decision_recorder = decision_recorder
         self.search_policy = search_policy
+        # Evaluation-only AwardOverrideRule (models/award_override.py). It
+        # replaces the policy's action, so it must never be set on a learner.
+        self.award_override: Optional[Any] = None
         # Distillation donation for non-learner seats. Frozen teacher/champion
         # seats never enter the strict on-policy PPO buffer, so any correct
         # decision they make (funding an award, claiming a milestone) is
@@ -1434,6 +1485,13 @@ class RLAgent:
             logger.info("Reclaiming CUDA: %.0f MiB free, model ~%.0f MiB", free_mem / 1e6, param_bytes / 1e6)
             self._inference_device = desired
             self._move_network_to_inference_device()
+
+    def _active_inference_batcher(self) -> Optional[InferenceBatcher]:
+        """The batcher for this seat's network: the leader's for a bound seat."""
+        leader = getattr(self, "_policy_leader", None)
+        if leader is not None and leader is not self:
+            return leader._active_inference_batcher()
+        return self._inference_batcher
 
     def _init_inference_batcher(self) -> None:
         """Create an ``InferenceBatcher`` when CUDA inference is active and
@@ -2062,6 +2120,9 @@ class RLAgent:
                     # player view before asking the teacher to choose.
                     if self._guided_annotation_is_enabled() and hasattr(game_instance, "invalidate_cached_player_state"):
                         game_instance.invalidate_cached_player_state(player_id)
+                    # Taken before the read, so an input that lands while this
+                    # state is in flight still wakes the wait below at once.
+                    input_seq_before_poll = getattr(game_instance, "input_seq", None)
                     player_state = await self._timed_get_player_state(game_instance, player_id)
                     self._track_commitment_progress(player_state)
                     consecutive_transport_errors = 0
@@ -2147,8 +2208,21 @@ class RLAgent:
                             episode_steps.clear()
                         continue
                 
-                # Wait before polling again to avoid busy-waiting
-                await self._sleep_if_needed(self._poll_interval_for_state(player_state))
+                # Wait before polling again to avoid busy-waiting. Seats of the
+                # same game share the instance, so another seat's input ends the
+                # wait early; the interval only bounds turns this process cannot
+                # see (e.g. a human opponent).
+                poll_interval = self._poll_interval_for_state(player_state)
+                # A seat that holds the prompt but did not submit keeps the plain
+                # pause: its own notification would otherwise end the wait at once.
+                if (
+                    not player_state.get('waitingFor')
+                    and isinstance(input_seq_before_poll, int)
+                    and hasattr(game_instance, "wait_for_input_after")
+                ):
+                    await game_instance.wait_for_input_after(input_seq_before_poll, poll_interval)
+                else:
+                    await self._sleep_if_needed(poll_interval)
             
             # Record game completion
             self.games_played += 1
@@ -2316,6 +2390,9 @@ class RLAgent:
             return bool(await game_instance.send_player_input(player_id, action_input))
         finally:
             self._record_pipeline_timing("send_player_input_sec", time.perf_counter() - started)
+            notify = getattr(game_instance, "notify_input_submitted", None)
+            if callable(notify):
+                notify()
 
     @staticmethod
     def _seat_index_from_player_name(player_name: str) -> int:
@@ -2520,6 +2597,24 @@ class RLAgent:
                     player_id=player_id,
                     force_random=False,
                 )
+            if policy_action and self.award_override is not None and not self.train_from_self_play:
+                override = self.award_override.choose(
+                    player_state, filtered_action_descriptors, policy_action_idx
+                )
+                decoded_override = (override or {}).get("decoded_action")
+                if isinstance(decoded_override, dict) and decoded_override:
+                    policy_action = dict(decoded_override)
+                    policy_action_idx = int(override.get("action_index", -1))
+                    if isinstance(action_meta, dict):
+                        action_meta["action_source"] = "award-override"
+                        action_meta["chosen_action_index"] = policy_action_idx
+                        action_meta["chosen_action_position"] = next(
+                            (
+                                idx for idx, row in enumerate(filtered_action_descriptors)
+                                if int(row.get("action_index", -1)) == policy_action_idx
+                            ),
+                            int(action_meta.get("chosen_action_position", 0)),
+                        )
             if policy_action:
                 guided_snapshot_id = ""
                 execution_action_source = str(
@@ -3968,7 +4063,7 @@ class RLAgent:
 
             try:
                 with torch.no_grad():
-                    use_amp = device.type == "cuda"
+                    use_amp = _inference_amp_enabled(device)
                     with torch.amp.autocast("cuda", enabled=use_amp):
                         out = self._forward_network(
                             state_tensor,
@@ -4138,9 +4233,13 @@ class RLAgent:
 
             forward_started = time.perf_counter()
             try:
-                if self._inference_batcher is not None and isinstance(planner_state, np.ndarray):
+                batcher = self._active_inference_batcher()
+                if batcher is not None and isinstance(planner_state, (np.ndarray, dict)):
                     policy_logits, value, recurrent_state_out, aux_predictions, policy_probs = (
-                        await self._inference_batcher.infer(planner_state, phase_index, recurrent_state_in)
+                        await batcher.infer(
+                            planner_state, phase_index, recurrent_state_in,
+                            self._effective_policy_temperature(),
+                        )
                     )
                 else:
                     loop = asyncio.get_running_loop()
@@ -4264,8 +4363,10 @@ class RLAgent:
                 raise ActionPipelineError(f"Canonical descriptor {action_index} has no payload")
             action_input = dict(action_input)
             self._record_pipeline_timing("decode_action_sec", time.perf_counter() - decode_started)
-            aux_targets = self._compute_aux_targets(player_state)
-            rare_flags = self._infer_rare_state_flags(player_state, action_input)
+            # Aux targets only feed PPO rollouts. Frozen seats never queue one,
+            # and building them was ~12% of the GIL time in a benchmark profile.
+            aux_targets = self._compute_aux_targets(player_state) if self.train_from_self_play else {}
+            rare_flags =self._infer_rare_state_flags(player_state, action_input)
             recurrent_out_vec: List[float] = []
             if isinstance(recurrent_state_out, torch.Tensor):
                 recurrent_out_vec = recurrent_state_out.detach().cpu().reshape(-1).tolist()
@@ -4581,6 +4682,15 @@ class RLAgent:
         self.training_lock = leader.training_lock
         self._model_device_lock = leader._model_device_lock
         self._inference_device = leader._inference_device
+        # One batcher per network: its thread is the only one running CUDA for
+        # these weights (a per-seat thread each carried its own cuBLAS
+        # workspace, enough in total to OOM the PPO update) and requests from
+        # every seat batch together.
+        # Resolved through the leader at call time (see _active_inference_batcher):
+        # a leader reload replaces its batcher.
+        if self._inference_batcher is not None:
+            self._inference_batcher.shutdown()
+        self._inference_batcher = None
         self.state_schema_version = leader.state_schema_version
         self.strict_on_policy_sampling = leader.strict_on_policy_sampling
         self.train_from_self_play = True

@@ -99,6 +99,35 @@ class GameInstance:
         # Cache: send_player_input stores the response body here so the next
         # get_player_state call can return it without a network round-trip.
         self._cached_player_state: Dict[str, Dict[str, Any]] = {}  # player_id -> state
+        # Every seat of a game shares this instance, so a submitted input can wake
+        # the seats that are waiting for their turn instead of letting them sleep
+        # out a fixed poll interval.
+        self._input_seq = 0
+        self._input_event: Optional[asyncio.Event] = None
+
+    @property
+    def input_seq(self) -> int:
+        return self._input_seq
+
+    def notify_input_submitted(self) -> None:
+        """Wake seats blocked in ``wait_for_input_after``."""
+        self._input_seq += 1
+        event = self._input_event
+        self._input_event = None
+        if event is not None:
+            event.set()
+
+    async def wait_for_input_after(self, seq: int, timeout: float) -> None:
+        """Return once any seat submits input after ``seq``, or after ``timeout``."""
+        if self._input_seq != seq or timeout <= 0.0:
+            return
+        if self._input_event is None:
+            self._input_event = asyncio.Event()
+        event = self._input_event
+        try:
+            await asyncio.wait_for(event.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
 
     def peek_cached_state(self, player_id: str) -> Optional[Dict[str, Any]]:
         """Return the cached post-action state without consuming it.
@@ -987,12 +1016,20 @@ class GameServerCluster:
         force_close = GameInstance._env_flag("TM_HTTP_FORCE_CLOSE_CONNECTIONS", default=False)
         use_dns_cache = GameInstance._env_flag("TM_HTTP_USE_DNS_CACHE", default=True)
         ttl_dns_cache_sec = max(10.0, self._parse_float_env("TM_HTTP_DNS_CACHE_TTL_SEC", 300.0, min_value=0.0))
+        connector_kwargs: Dict[str, Any] = {}
+        if not force_close:
+            # Release idle connections before Node's 5 s keepAliveTimeout does;
+            # reusing one the server is closing is what yields "Server disconnected".
+            connector_kwargs["keepalive_timeout"] = self._parse_float_env(
+                "TM_HTTP_KEEPALIVE_TIMEOUT_SEC", 2.0, min_value=0.1
+            )
         connector = aiohttp.TCPConnector(
             limit=connector_limit,
             limit_per_host=connector_limit_per_host,
             force_close=force_close,
             use_dns_cache=use_dns_cache,
             ttl_dns_cache=ttl_dns_cache_sec if use_dns_cache else None,
+            **connector_kwargs,
         )
         return aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=timeout_value),

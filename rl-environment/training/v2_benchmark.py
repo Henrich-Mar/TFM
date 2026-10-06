@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from game_interface import GameServerCluster
 from models.agent import RLAgent
+from models.award_override import parse_award_override
 from models.decision_policy import (
     AwardFundingTeacherPolicy,
     HeuristicTeacherPolicy,
@@ -89,6 +90,23 @@ def _frozen_neural(checkpoint: str, agent_id: str, stochastic: bool = False) -> 
     return agent
 
 
+def _bind_frozen_neural(leader: RLAgent, agent_id: str, stochastic: bool = False) -> RLAgent:
+    """A frozen seat with its own episode memory on ``leader``'s weights.
+
+    Concurrent workers then share one network and one inference batcher instead
+    of loading a private copy of the same checkpoint each.
+    """
+    agent = RLAgent(agent_id=agent_id, config=leader.config)
+    agent.bind_shared_learner(leader)
+    agent.train_from_self_play = False
+    agent.config.train_from_self_play = False
+    agent.ppo_enable = bool(stochastic)
+    agent.deterministic_actions = not stochastic
+    agent.policy_temperature_cap = leader.policy_temperature_cap
+    agent.policy_temperature_floor = leader.policy_temperature_floor
+    return agent
+
+
 def _award_gate_floor() -> float:
     """Minimum mean awards a candidate must fund per game against the funder."""
     try:
@@ -103,6 +121,7 @@ def _baseline_agents(
     seed: int,
     champion: Optional[str] = None,
     stochastic: bool = False,
+    champion_leader: Optional[RLAgent] = None,
 ) -> List[RLAgent]:
     agents: List[RLAgent] = []
     for idx in range(3):
@@ -119,7 +138,10 @@ def _baseline_agents(
                 decision_policy=AwardFundingTeacherPolicy(seed + idx, sample=False),
             )
         elif kind == "champion" and champion:
-            agent = _frozen_neural(champion, f"champion-{idx}", stochastic=stochastic)
+            if champion_leader is not None:
+                agent = _bind_frozen_neural(champion_leader, f"champion-{seed}-{idx}", stochastic=stochastic)
+            else:
+                agent = _frozen_neural(champion, f"champion-{idx}", stochastic=stochastic)
         else:
             raise ValueError(f"invalid baseline: {kind}")
         agent.train_from_self_play = False
@@ -142,6 +164,7 @@ async def benchmark(
     report_label: Optional[str] = None,
     stochastic: bool = False,
     candidate_stochastic: bool = False,
+    award_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the seat-rotated benchmark.
 
@@ -149,6 +172,8 @@ async def benchmark(
     is the symmetric policy comparison used by promotion and rollback gates.
     ``candidate_stochastic`` makes only the candidate sample, matching
     candidate training against a deterministic heuristic teacher.
+    ``award_override`` is an ``AwardOverrideRule`` spec applied to the
+    candidate only, for hybrid "would funding help?" experiments.
     """
     initialize_v2_runtime()
     is_v3 = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -158,6 +183,10 @@ async def benchmark(
     candidate = _frozen_neural(checkpoint, f"{version}-candidate", stochastic=candidate_samples)
     if is_v3:
         candidate.set_v3_feature_scale(1.0)
+    override_rule = parse_award_override(award_override)
+    candidate.award_override = override_rule
+    if override_rule is not None:
+        print(f"[benchmark] award override enabled config={override_rule.config()}", flush=True)
     search_config = SearchConfig.from_env()
     if search_config.enabled:
         candidate.search_policy = SearchPolicy(candidate, search_config)
@@ -193,8 +222,20 @@ async def benchmark(
     # Each worker owns its baseline agents. This keeps RandomLegalPolicy RNG
     # state deterministic while games run concurrently. The frozen candidate
     # is safely shared, just like the learner in concurrent self-play.
+    champion_leader = (
+        _frozen_neural(champion, "champion-shared", stochastic=opponent_samples)
+        if baseline == "champion" and champion
+        else None
+    )
+    shared = {"champion_leader": champion_leader} if champion_leader is not None else {}
     opponent_pools = [
-        _baseline_agents(baseline, seeds[0] + worker_index, champion=champion, stochastic=opponent_samples)
+        _baseline_agents(
+            baseline,
+            seeds[0] + worker_index,
+            champion=champion,
+            stochastic=opponent_samples,
+            **shared,
+        )
         for worker_index in range(concurrency)
     ]
     all_agents = [candidate, *(agent for pool in opponent_pools for agent in pool)]
@@ -371,6 +412,9 @@ async def benchmark(
             if getattr(candidate, "search_policy", None) is not None
             else {"enabled": False}
         ),
+        "award_override": (
+            override_rule.snapshot() if override_rule is not None else {"enabled": False}
+        ),
     }
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -416,6 +460,13 @@ def main() -> None:
         action="store_true",
         help="sample only the candidate while keeping the teacher or other baseline deterministic",
     )
+    parser.add_argument(
+        "--award-override",
+        help=(
+            "candidate-only award funding rule, e.g. "
+            "'min_lead=1,min_generation=3,max_cost=8,reserve_mc=0,max_own_awards=1' or 'default'"
+        ),
+    )
     parser.add_argument("--output", default=os.getenv("V2_BENCHMARK_DIR", "/app/v2/benchmarks"))
     args = parser.parse_args()
     if args.baseline == "champion" and not args.champion:
@@ -433,6 +484,7 @@ def main() -> None:
                     args.report_label,
                     stochastic=args.stochastic,
                     candidate_stochastic=args.candidate_stochastic,
+                    award_override=args.award_override,
                 )
             ),
             indent=2,

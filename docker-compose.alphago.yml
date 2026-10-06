@@ -136,9 +136,25 @@ services:
       - PPO_ROLLBACK_CONFIRM_FULL=${ALPHAGO_ROLLBACK_CONFIRM_FULL:-1}
       - PPO_ROLLBACK_CONFIRM_PAIRWISE=${ALPHAGO_ROLLBACK_CONFIRM_PAIRWISE:-0.45}
       - BENCHMARK_CANDIDATE_STOCHASTIC=${ALPHAGO_BENCHMARK_CANDIDATE_STOCHASTIC:-1}
-      - SELFPLAY_CONCURRENCY=4
-      - BENCHMARK_CONCURRENCY=4
-      - MAX_ACTIVE_GAMES_PER_SERVER=1
+      # Throughput: the coordinator used ~4.5 of 12 cores with one game per
+      # server while the game servers idled at ~10% CPU, so run two per server.
+      - SELFPLAY_CONCURRENCY=${ALPHAGO_SELFPLAY_CONCURRENCY:-8}
+      - BENCHMARK_CONCURRENCY=${ALPHAGO_BENCHMARK_CONCURRENCY:-8}
+      - MAX_ACTIVE_GAMES_PER_SERVER=${ALPHAGO_MAX_ACTIVE_GAMES_PER_SERVER:-2}
+      # Inference on the GPU: a forward pass costs ~20 ms there against 39-87 ms
+      # on the CPU, and strict on-policy PPO never runs concurrently with it.
+      # Overrides rl_hard's cpu. Inference stays fp32 (AGENT_INFERENCE_AMP=0).
+      - AGENT_INFERENCE_DEVICE=${ALPHAGO_INFERENCE_DEVICE:-cuda}
+      # The pool also runs state encoding, so size it to the game count rather
+      # than the 4-thread CUDA default.
+      - AGENT_INFERENCE_THREADS=${ALPHAGO_INFERENCE_THREADS:-8}
+      # Concurrent CPU ops oversubscribed the cores at torch's default 6 threads each.
+      - OMP_NUM_THREADS=${ALPHAGO_OMP_NUM_THREADS:-2}
+      # rl_hard forces a new TCP connection per request; opening them was ~11%
+      # of the coordinator's GIL time. Keep-alive with a 2 s idle timeout stays
+      # under Node's 5 s keepAliveTimeout, avoiding the stale-socket disconnects.
+      - TM_HTTP_FORCE_CLOSE_CONNECTIONS=${ALPHAGO_HTTP_FORCE_CLOSE:-0}
+      - TM_HTTP_KEEPALIVE_TIMEOUT_SEC=2.0
       - AGENT_MAX_EPISODE_STEPS=10000
       - ALPHAGO_SEARCH_ENABLED=${ALPHAGO_SEARCH_ENABLED:-0}
       - ALPHAGO_SEARCH_MODE=${ALPHAGO_SEARCH_MODE:-lookahead}

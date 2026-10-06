@@ -148,7 +148,7 @@ def test_benchmark_uses_all_configured_server_slots(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(
         v2_benchmark,
         "_baseline_agents",
-        lambda kind, seed, champion=None, stochastic=False: [
+        lambda kind, seed, champion=None, stochastic=False, champion_leader=None: [
             _FakeAgent(f"{kind}-{seed}-{index}") for index in range(3)
         ],
     )
@@ -208,7 +208,7 @@ def test_stochastic_report_records_sample_selection(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(
         v2_benchmark,
         "_baseline_agents",
-        lambda kind, seed, champion=None, stochastic=False: [
+        lambda kind, seed, champion=None, stochastic=False, champion_leader=None: [
             _FakeAgent(f"{kind}-{index}") for index in range(3)
         ],
     )
@@ -267,7 +267,7 @@ def test_candidate_stochastic_keeps_opponents_greedy(monkeypatch, tmp_path: Path
         captured[agent_id] = stochastic
         return _FakeAgent(agent_id)
 
-    def fake_baseline(kind, seed, champion=None, stochastic=False):
+    def fake_baseline(kind, seed, champion=None, stochastic=False, champion_leader=None):
         captured["opponent_stochastic"] = stochastic
         return [_FakeAgent(f"{kind}-{index}") for index in range(3)]
 
@@ -289,4 +289,6 @@ def test_candidate_stochastic_keeps_opponents_greedy(monkeypatch, tmp_path: Path
 
     assert captured["v2-candidate"] is True
     assert captured["opponent_stochastic"] is False
+    # Workers share one champion network, built with the opponents' selection mode.
+    assert captured["champion-shared"] is False
     assert report["action_selection"] == "candidate_sample"

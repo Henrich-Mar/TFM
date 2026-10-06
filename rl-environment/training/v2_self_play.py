@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from game_interface import GameServerCluster
 from models.agent import RLAgent
+from models.award_override import parse_award_override
 from models.decision_policy import AwardFundingTeacherPolicy, HeuristicTeacherPolicy
 from search.config import SearchConfig
 from search.replay_store import SearchReplayStore
@@ -124,6 +125,7 @@ class _SelfPlayGame:
     lineup_kind: str = "live"
     random_ma_training: bool = False
     random_ma_mode: Optional[str] = None
+    award_exploiter: bool = False
 
 
 class V2SelfPlayRunner:
@@ -244,6 +246,24 @@ class V2SelfPlayRunner:
                 "SELFPLAY_LIVE_FRACTION + SELFPLAY_CHAMPION_FRACTION + SELFPLAY_HISTORY_FRACTION + "
                 f"SELFPLAY_TEACHER_FRACTION must equal 1.0; got {lineup_total:.6f}"
             )
+        # Award exploiters are champion seats that fund awards by rule. In
+        # pure self-play nobody funds, so ignoring award tracks is never
+        # punished and a human who funds them wins cheap VP. Exploiter seats
+        # never train, and their override actions are not donated.
+        self.award_exploiter_fraction = self._fraction_env("SELFPLAY_AWARD_EXPLOITER_FRACTION", 0.0)
+        self.award_exploiter_seats = min(
+            3, max(1, int(self._float_env("SELFPLAY_AWARD_EXPLOITER_SEATS", 1.0)))
+        )
+        self.award_exploiter_rule = (
+            parse_award_override(
+                os.getenv(
+                    "SELFPLAY_AWARD_EXPLOITER_RULE",
+                    "min_lead=3,min_generation=8,max_cost=20,max_own_awards=3,hand_weight=0.5",
+                )
+            )
+            if self.award_exploiter_fraction > 0.0
+            else None
+        )
         self.random_ma_selfplay_fraction = self._fraction_env(
             "ALPHAGO_RANDOM_MA_SELFPLAY_FRACTION", 0.0
         )
@@ -332,6 +352,7 @@ class V2SelfPlayRunner:
             "history": 0,
             "teacher": 0,
             "search": 0,
+            "award_exploiter": 0,
         }
         self.lineup_games_since_update: Dict[str, int] = dict(self.lineup_game_counts)
         try:
@@ -402,9 +423,11 @@ class V2SelfPlayRunner:
         self._historical_snapshot_cursors: List[int] = []
         self.champion_pool: List[RLAgent] = []
         self.teacher_pool: List[RLAgent] = []
+        self.exploiter_pool: List[RLAgent] = []
         self._historical_cursor = 0
         self._champion_cursor = 0
         self._teacher_cursor = 0
+        self._exploiter_cursor = 0
         self._seat_cursor = 0
         seat_count = max(4, int(self.selfplay_concurrency) * 4)
         self.learning_seats = [
@@ -434,6 +457,9 @@ class V2SelfPlayRunner:
             f"random_ma_fraction={self.random_ma_selfplay_fraction:.3f} "
             f"random_ma_mode={self.random_ma_mode!r} "
             f"random_ma_force_award_teacher={self.random_ma_force_award_teacher} "
+            f"award_exploiter_fraction={self.award_exploiter_fraction:.3f} "
+            f"award_exploiter_seats={self.award_exploiter_seats} "
+            f"award_exploiter_rule={self.award_exploiter_rule.config() if self.award_exploiter_rule else None} "
             f"history_snapshots={len(self.historical_snapshot_paths)} "
             f"eval_candidate={'sample' if self.benchmark_candidate_stochastic else 'argmax'}",
             flush=True,
@@ -549,6 +575,9 @@ class V2SelfPlayRunner:
         elif kind == "teacher":
             pool = self.teacher_pool
             cursor_name = "_teacher_cursor"
+        elif kind == "exploiter":
+            pool = self.exploiter_pool
+            cursor_name = "_exploiter_cursor"
         else:
             raise ValueError(f"unsupported frozen opponent kind: {kind}")
         if len(pool) < int(count):
@@ -576,9 +605,21 @@ class V2SelfPlayRunner:
             trusted_seats,
             int(getattr(self, "seed_cursor", 0)) ^ 0x5EA7,
         )
+        # Exploiters share the champion's weights; only the rule differs.
+        self.exploiter_pool = []
+        exploiter_rule = getattr(self, "award_exploiter_rule", None)
+        if exploiter_rule is not None and self.champion_pool:
+            exploiter_seats = max(1, int(self.selfplay_concurrency)) * int(
+                getattr(self, "award_exploiter_seats", 1)
+            )
+            for index in range(exploiter_seats):
+                seat = _bind_frozen_seat(self.champion_pool[0], f"exploiter-{index}")
+                seat.award_override = exploiter_rule
+                self.exploiter_pool.append(seat)
         self._historical_cursor = 0
         self._champion_cursor = 0
         self._teacher_cursor = 0
+        self._exploiter_cursor = 0
         self._apply_v3_feature_scale()
 
     def _current_v3_feature_scale(self) -> float:
@@ -601,6 +642,7 @@ class V2SelfPlayRunner:
             *getattr(self, "learning_seats", []),
             *self.historical_pool,
             *getattr(self, "champion_pool", []),
+            *getattr(self, "exploiter_pool", []),
         ]:
             agent.set_v3_feature_scale(scale)
 
@@ -697,6 +739,10 @@ class V2SelfPlayRunner:
             opponents = self._take_historical_seats(rng, 3)
         else:
             opponents = self._take_frozen_seats(kind, 3)
+        if self._is_award_exploiter_game(game_seed, kind):
+            count = int(getattr(self, "award_exploiter_seats", 1))
+            opponents = self._take_frozen_seats("exploiter", count) + list(opponents)[count:]
+            rng.shuffle(opponents)
         lineup = list(opponents)
         lineup.insert(live_seat, self._take_learning_seats(1)[0])
         return lineup
@@ -705,6 +751,13 @@ class V2SelfPlayRunner:
         if search_training:
             return "search"
         return self._draw_lineup_kind(random.Random(int(game_seed) ^ 0x5F3759DF).random())
+
+    def _is_award_exploiter_game(self, game_seed: int, lineup_kind: str) -> bool:
+        """Swap champion/history opponents for exploiters in a reproducible slice."""
+        if lineup_kind not in {"champion", "history"} or not getattr(self, "exploiter_pool", None):
+            return False
+        fraction = float(getattr(self, "award_exploiter_fraction", 0.0))
+        return fraction > 0.0 and random.Random(int(game_seed) ^ 0x45585054).random() < fraction
 
     def _is_random_ma_game(
         self,
@@ -771,6 +824,11 @@ class V2SelfPlayRunner:
             "reward_shaping_coef": float(self.learner._current_reward_shaping_coef()),
             "entropy_coef": float(self.learner._current_ppo_entropy_coef()),
         }
+        exploiter_rule = getattr(self, "award_exploiter_rule", None)
+        if exploiter_rule is not None:
+            exploiter = exploiter_rule.snapshot()
+            payload["award_exploiter_fired_total"] = int(exploiter["fired"])
+            payload["award_exploiter_offered_total"] = int(exploiter["decisions_with_fund_option"])
         for key, value in dict(metrics or {}).items():
             if isinstance(value, (str, bool, int, float)) or value is None:
                 payload[str(key)] = value
@@ -1090,6 +1148,7 @@ class V2SelfPlayRunner:
             lineup=lineup,
             search_training=search_training,
             lineup_kind=lineup_kind,
+            award_exploiter=(not search_training) and self._is_award_exploiter_game(seed, lineup_kind),
             random_ma_training=random_ma_training,
             random_ma_mode=(
                 str(getattr(self, "random_ma_mode", "Limited synergy"))
@@ -1151,6 +1210,37 @@ class V2SelfPlayRunner:
                 raise result
         return list(results)
 
+    async def _award_exploit_benchmark(self, checkpoint: Path) -> Optional[Dict]:
+        """Measure how well one award-funding copy of ``checkpoint`` beats three plain copies.
+
+        A pairwise score near 0.50 means funding awards against this policy
+        buys nothing; well above it means the policy leaves award VP on the
+        table for any opponent (or human) who funds. Gating is opt-in through
+        BENCHMARK_AWARD_EXPLOIT_MAX_PAIRWISE; by default the report is logged only.
+        """
+        spec = str(os.getenv("BENCHMARK_AWARD_EXPLOITER_RULE", "") or "").strip()
+        if not spec:
+            return None
+        report = await self._benchmark(
+            str(checkpoint),
+            "champion",
+            self.stage,
+            str(self.benchmarks),
+            champion=str(checkpoint),
+            report_label="award_exploit",
+            award_override=spec,
+        )
+        max_pairwise = self._float_env("BENCHMARK_AWARD_EXPLOIT_MAX_PAIRWISE", 1.0)
+        exploit_pairwise = float(report.get("pairwise_score", 0.0) or 0.0)
+        report["award_exploit_max_pairwise"] = max_pairwise
+        report["award_exploit_gate_passed"] = exploit_pairwise <= max_pairwise
+        print(
+            f"[selfplay] award exploit gate pairwise={exploit_pairwise:.3f} "
+            f"max={max_pairwise:.3f} passed={report['award_exploit_gate_passed']}",
+            flush=True,
+        )
+        return report
+
     async def _evaluate_and_promote(self, decisions: int) -> Dict:
         candidate_path = self.checkpoints / f"candidate_{decisions:09d}.pth"
         self.learner.save_model(str(candidate_path))
@@ -1183,6 +1273,7 @@ class V2SelfPlayRunner:
         teacher_report: Optional[Dict] = None
         teacher_relative: Optional[Dict[str, Any]] = None
         regression_report: Optional[Dict] = None
+        exploit_report: Optional[Dict] = None
         if screen_passed:
             await self._ensure_champion_teacher_baseline()
             teacher_report = await self._benchmark(
@@ -1204,6 +1295,8 @@ class V2SelfPlayRunner:
                     str(self.benchmarks),
                     champion=str(self.champion_path),
                 )
+                if bool(regression_report.get("gate_passed", False)):
+                    exploit_report = await self._award_exploit_benchmark(candidate_path)
         else:
             print(
                 f"[selfplay] full promotion benchmark skipped teacher_screen={teacher_screen_passed} "
@@ -1218,6 +1311,7 @@ class V2SelfPlayRunner:
             and teacher_relative is not None
             and teacher_relative["passed"]
             and bool(regression_report.get("gate_passed", False))
+            and (exploit_report is None or bool(exploit_report.get("award_exploit_gate_passed", True)))
         ):
             historical = self.checkpoints / f"champion_{decisions:09d}.pth"
             shutil.copy2(self.champion_path, historical)
@@ -1251,6 +1345,7 @@ class V2SelfPlayRunner:
             "teacher": teacher_report,
             "teacher_relative": teacher_relative,
             "regression": regression_report,
+            "award_exploit": exploit_report,
             "rollback": rollback,
         }
 
@@ -1277,6 +1372,13 @@ class V2SelfPlayRunner:
                     self.lineup_games_since_update[kind] = int(
                         self.lineup_games_since_update.get(kind, 0)
                     ) + 1
+                    if bool(getattr(game, "award_exploiter", False)):
+                        self.lineup_game_counts["award_exploiter"] = int(
+                            self.lineup_game_counts.get("award_exploiter", 0)
+                        ) + 1
+                        self.lineup_games_since_update["award_exploiter"] = int(
+                            self.lineup_games_since_update.get("award_exploiter", 0)
+                        ) + 1
                     if bool(getattr(game, "random_ma_training", False)):
                         self.random_ma_game_count = int(
                             getattr(self, "random_ma_game_count", 0)

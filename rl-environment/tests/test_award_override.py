@@ -92,6 +92,31 @@ def test_parse_spec():
     rule = parse_award_override("min_lead=0, min_generation=5,max_cost=14,reserve_mc=3,max_own_awards=2")
     assert rule.config() == {
         "min_lead": 0.0, "min_generation": 5, "max_cost": 14.0, "reserve_mc": 3.0, "max_own_awards": 2,
+        "hand_weight": 0.0,
     }
     with pytest.raises(ValueError):
         parse_award_override("lead=1")
+
+
+class _StubTeacher:
+    """Card track deltas keyed by card name, without loading card metadata."""
+
+    DELTAS = {"Heat Card": {"heat": 3.0}, "City Card": {"tiles": 1.0}}
+
+    def _card_track_delta(self, name, card, *, include_planner):
+        return dict(self.DELTAS.get(name, {}))
+
+
+def test_hand_weight_extends_lead_with_cards_in_hand():
+    state = _state(awards=[_award("Thermalist", 10, 9)])
+    state["cardsInHand"] = [{"name": "Heat Card"}, {"name": "City Card"}, "Heat Card"]
+    blind = AwardOverrideRule(min_lead=3)
+    assert blind.choose(state, [_fund("Thermalist", 600)]) is None
+    aware = AwardOverrideRule(min_lead=3, hand_weight=0.5)
+    aware._teacher = _StubTeacher()
+    # lead 1 + 0.5 * (3 + 3) heat in hand = 4 >= 3
+    assert aware.choose(state, [_fund("Thermalist", 600)]) is not None
+    # The hand never makes a trailing award fundable.
+    behind = _state(awards=[_award("Thermalist", 8, 9)])
+    behind["cardsInHand"] = [{"name": "Heat Card"}] * 5
+    assert aware.choose(behind, [_fund("Thermalist", 600)]) is None

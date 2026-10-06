@@ -836,3 +836,84 @@ def test_ppo_metrics_record_lineups_and_reset_update_window(tmp_path: Path) -> N
     assert payload["lineups"] == {"live": 4, "champion": 3, "teacher": 1, "search": 0}
     assert payload["ppo/approx_kl"] == pytest.approx(0.008)
     assert all(value == 0 for value in runner.lineup_games_since_update.values())
+
+
+class _ExploiterDraw:
+    """Champion lineup draw (0.50) that also falls inside any exploiter slice."""
+
+    def __init__(self, seed: int) -> None:
+        del seed
+
+    def random(self) -> float:
+        return 0.50
+
+    def randrange(self, stop: int) -> int:
+        return 2
+
+    def shuffle(self, items: list) -> None:
+        items.reverse()
+
+
+def _exploiter_runner(fraction: float) -> V2SelfPlayRunner:
+    seats = [SimpleNamespace(id=f"self-{seat}", train_from_self_play=True) for seat in range(4)]
+    runner = _runner_with_seats(seats)
+    runner.lineup_live_fraction = 0.40
+    runner.lineup_champion_fraction = 0.40
+    runner.lineup_teacher_fraction = 0.20
+    runner.champion_pool = [
+        SimpleNamespace(id=f"champion-{idx}", train_from_self_play=False) for idx in range(3)
+    ]
+    runner.exploiter_pool = [SimpleNamespace(id="exploiter-0", train_from_self_play=False)]
+    runner._exploiter_cursor = 0
+    runner.award_exploiter_fraction = fraction
+    runner.award_exploiter_seats = 1
+    return runner
+
+
+def test_award_exploiter_replaces_one_champion_opponent(monkeypatch) -> None:
+    monkeypatch.setattr("training.v2_self_play.random.Random", _ExploiterDraw)
+
+    lineup = _exploiter_runner(1.0)._lineup(9)
+
+    frozen = [seat.id for seat in lineup if not seat.train_from_self_play]
+    assert sorted(frozen) == ["champion-1", "champion-2", "exploiter-0"]
+    assert lineup[2].id == "self-0"
+
+
+def test_award_exploiter_is_off_by_default_and_never_joins_live_games(monkeypatch) -> None:
+    monkeypatch.setattr("training.v2_self_play.random.Random", _ExploiterDraw)
+    lineup = _exploiter_runner(0.0)._lineup(9)
+    assert "exploiter-0" not in [seat.id for seat in lineup]
+
+    runner = _exploiter_runner(1.0)
+    assert runner._is_award_exploiter_game(9, "live") is False
+    assert runner._is_award_exploiter_game(9, "teacher") is False
+    assert runner._is_award_exploiter_game(9, "history") is True
+
+
+def test_award_exploit_gate_blocks_promotion_when_configured(monkeypatch, tmp_path: Path) -> None:
+    runner = _promotion_runner(tmp_path)
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(v2_self_play, "benchmark", _passing_benchmark(calls, teacher_pairwise=0.72))
+    monkeypatch.setenv("BENCHMARK_AWARD_EXPLOITER_RULE", "min_lead=2,hand_weight=0.5")
+    monkeypatch.setenv("BENCHMARK_AWARD_EXPLOIT_MAX_PAIRWISE", "0.55")
+
+    report = asyncio.run(runner._evaluate_and_promote(100_000))
+
+    assert calls[-1] == ("champion", "award_exploit")
+    assert report["award_exploit"]["award_exploit_gate_passed"] is False
+    assert report["promoted"] is False
+    assert runner.champion_path.read_bytes() == b"champion"
+
+
+def test_award_exploit_report_is_informational_without_threshold(monkeypatch, tmp_path: Path) -> None:
+    runner = _promotion_runner(tmp_path)
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(v2_self_play, "benchmark", _passing_benchmark(calls, teacher_pairwise=0.72))
+    monkeypatch.setenv("BENCHMARK_AWARD_EXPLOITER_RULE", "min_lead=2,hand_weight=0.5")
+    monkeypatch.delenv("BENCHMARK_AWARD_EXPLOIT_MAX_PAIRWISE", raising=False)
+
+    report = asyncio.run(runner._evaluate_and_promote(100_000))
+
+    assert report["award_exploit"]["pairwise_score"] == pytest.approx(0.80)
+    assert report["promoted"] is True

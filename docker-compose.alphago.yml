@@ -130,6 +130,16 @@ services:
       - SELFPLAY_CHAMPION_FRACTION=${ALPHAGO_SELFPLAY_CHAMPION_FRACTION:-0.20}
       - SELFPLAY_HISTORY_FRACTION=${ALPHAGO_SELFPLAY_HISTORY_FRACTION:-0.20}
       - SELFPLAY_TEACHER_FRACTION=${ALPHAGO_SELFPLAY_TEACHER_FRACTION:-0.20}
+      # Award exploiters: champion seats that fund awards by AwardOverrideRule,
+      # swapped into this share of champion/history 1v3 games (never trained).
+      - SELFPLAY_AWARD_EXPLOITER_FRACTION=${ALPHAGO_SELFPLAY_AWARD_EXPLOITER_FRACTION:-0.50}
+      - SELFPLAY_AWARD_EXPLOITER_SEATS=${ALPHAGO_SELFPLAY_AWARD_EXPLOITER_SEATS:-1}
+      - SELFPLAY_AWARD_EXPLOITER_RULE=${ALPHAGO_SELFPLAY_AWARD_EXPLOITER_RULE:-min_lead=3,min_generation=8,max_cost=20,max_own_awards=3,hand_weight=0.5}
+      # Exploitability check on promotion candidates (1 exploiter + 3 candidates).
+      # Pairwise near 0.50 = funding against the policy gains nothing. The
+      # champion baseline with this rule: 0.522 (2026-10-06); threshold 1.0 = report only.
+      - BENCHMARK_AWARD_EXPLOITER_RULE=${ALPHAGO_BENCHMARK_AWARD_EXPLOITER_RULE:-min_lead=3,min_generation=8,max_cost=20,max_own_awards=3,hand_weight=0.5}
+      - BENCHMARK_AWARD_EXPLOIT_MAX_PAIRWISE=${ALPHAGO_BENCHMARK_AWARD_EXPLOIT_MAX_PAIRWISE:-1.0}
       - PROMOTION_TEACHER_PAIRWISE_MARGIN=${ALPHAGO_PROMOTION_TEACHER_PAIRWISE_MARGIN:-0.0}
       - PPO_ROLLBACK_PAIRWISE_FLOOR=${ALPHAGO_ROLLBACK_PAIRWISE_FLOOR:-0.35}
       - PPO_ROLLBACK_FAILURE_LIMIT=${ALPHAGO_ROLLBACK_FAILURE_LIMIT:-2}

@@ -33,12 +33,17 @@ class AwardOverrideRule:
     reserve_mc: float = 0.0
     #: Upper bound on awards funded by this seat in one game.
     max_own_awards: int = 1
+    #: Weight of award-track gains still sitting in hand. A human funds on the
+    #: lead they know their hand will extend, not only on the current one;
+    #: 0 keeps the rule blind to the hand.
+    hand_weight: float = 0.0
 
     # Telemetry; shared across concurrent games, so guarded by a lock.
     offered: int = field(default=0, compare=False)
     fired: int = field(default=0, compare=False)
     policy_agreed: int = field(default=0, compare=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
+    _teacher: Optional[HeuristicTeacherPolicy] = field(default=None, compare=False, repr=False)
 
     _award_standing = HeuristicTeacherPolicy._award_standing
     _estimate_award_cost = HeuristicTeacherPolicy._estimate_award_cost
@@ -56,6 +61,7 @@ class AwardOverrideRule:
             "max_cost": float,
             "reserve_mc": float,
             "max_own_awards": int,
+            "hand_weight": float,
         }
         for chunk in str(spec or "").split(","):
             chunk = chunk.strip()
@@ -71,7 +77,7 @@ class AwardOverrideRule:
     def config(self) -> Dict[str, Any]:
         return {
             key: getattr(self, key)
-            for key in ("min_lead", "min_generation", "max_cost", "reserve_mc", "max_own_awards")
+            for key in ("min_lead", "min_generation", "max_cost", "reserve_mc", "max_own_awards", "hand_weight")
         }
 
     def snapshot(self) -> Dict[str, Any]:
@@ -99,6 +105,29 @@ class AwardOverrideRule:
             if funder & own:
                 count += 1
         return count
+
+    def _hand_potential(self, state: Dict[str, Any], award_name: str) -> float:
+        """Sum the award-track gain of every card in hand (immediate effects only)."""
+        track = HeuristicTeacherPolicy._AWARD_TRACKS.get(str(award_name or "").strip().lower())
+        if track is None:
+            return 0.0
+        hand = state.get("cardsInHand") or (state.get("thisPlayer", {}) or {}).get("cardsInHand") or []
+        with self._lock:
+            if self._teacher is None:
+                self._teacher = HeuristicTeacherPolicy(sample=False)
+            teacher = self._teacher
+        total = 0.0
+        for card in hand:
+            card = card if isinstance(card, dict) else {"name": str(card or "")}
+            name = str(card.get("name", "") or "")
+            if not name:
+                continue
+            try:
+                delta = teacher._card_track_delta(name, card, include_planner=False)
+            except Exception:
+                continue
+            total += max(0.0, self._safe_float(delta.get(track[0])))
+        return total
 
     def choose(
         self,
@@ -131,7 +160,11 @@ class AwardOverrideRule:
             if not award or self._track_taken(award):
                 continue
             _own, _opp, projected_vp, lead_gap = self._award_standing(player, award, state)
-            if projected_vp < 5.0 or lead_gap < float(self.min_lead):
+            if projected_vp < 5.0:
+                continue
+            if float(self.hand_weight) > 0.0:
+                lead_gap += float(self.hand_weight) * self._hand_potential(state, str(award.get("name", "") or ""))
+            if lead_gap < float(self.min_lead):
                 continue
             if lead_gap > best_lead:
                 best, best_lead = row, lead_gap

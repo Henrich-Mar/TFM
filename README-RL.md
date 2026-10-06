@@ -182,7 +182,9 @@ curl -X POST http://localhost:5000/play/human-vs-best -H "Content-Type: applicat
 
 ## Standalone Live Bot
 
-Attach the best saved checkpoint to an existing live player slot.
+Attach a trained checkpoint to an existing live player slot. For a table with
+three humans, create the 4-player game normally, let everyone join, then point
+the bot at the remaining player URL.
 
 Heroku example:
 
@@ -198,13 +200,41 @@ python rl-environment/standalone_bot.py --base-url "https://terraforming-mars.he
 
 Notes:
 - `--min-action-delay-ms` is clamped to at least `1000` to avoid overloading live servers.
-- If `--checkpoint` is not provided, the script auto-loads the highest-fitness saved checkpoint from `rl-models`.
+- `--no-random-fallback` is recommended for human games: a rejected policy action will not turn into an unrelated random move.
+- If `--checkpoint` is not provided, the best ranked checkpoint is selected from `--search-root` (repeatable), else `--models`, else every checkpoint store in the repository.
+
+### Choosing the strongest checkpoint
+
+`checkpoint_catalog` ranks every checkpoint it can find (`rl-v2`, `rl-v3`,
+`rl-v4`, `rl-alphago`, `rl-models`, `rl-models-global`) using its strength
+evidence rather than its filename:
+
+1. Cross-coordinator tournament manifest (`champion_manifest.json`).
+2. `v2_benchmark` reports under `<store>/benchmarks`, preferring the hardest
+   baseline available (`teacher` > `award_teacher` > `champion` > `random`).
+3. Legacy `agent_*_config.json` Elo / eval fitness.
+4. Training decisions parsed from the filename.
+
+Only benchmark runs that completed and passed their gate count as verified, so a
+high win rate against a weak opponent never outranks a real result against the
+teacher.
+
+```bash
+python rl-environment/standalone_bot.py --list-checkpoints
+python rl-environment/checkpoint_catalog.py --top 20
+```
 
 Tkinter launcher (same options via GUI):
 
 ```bash
 python rl-environment/standalone_bot_tk.py
 ```
+
+Use **Pick Best...** next to the Checkpoint field to browse the ranked list, see
+the evidence behind each entry, and pre-select the strongest one. Add folders to
+**Search Folders** to scan stores outside the repository. The Docker runtime
+bind-mounts the selected checkpoint's directory, so checkpoints from any store
+work without editing compose files.
 
 Monitor:
 - `http://localhost:5000/dashboard`

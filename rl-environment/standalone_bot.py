@@ -8,7 +8,6 @@ Examples:
 import argparse
 import asyncio
 import copy
-import glob
 import json
 import logging
 import os
@@ -17,6 +16,11 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 import aiohttp
 
+from checkpoint_catalog import (
+    default_search_bases,
+    discover_checkpoints,
+    format_candidate_row,
+)
 from metadata_refresh import ensure_card_metadata
 from models.agent import RLAgent
 from models.state_encoder import StateEncoder
@@ -173,38 +177,15 @@ def _log_agent_metadata(agent: RLAgent):
     print("=" * 70 + "\n")
 
 
-def _default_models_root() -> str:
-    env_path = os.getenv("RL_MODELS_DIR")
-    if env_path:
-        return env_path
-    base_dir = os.path.abspath(os.path.dirname(__file__))
-    parent_dir = os.path.abspath(os.path.join(base_dir, ".."))
-    candidates = [
-        os.path.join(parent_dir, "rl-models"),
-        os.path.join(base_dir, "rl-models"),
-    ]
-    for candidate in candidates:
-        if os.path.isdir(candidate):
-            return candidate
-    if os.path.basename(base_dir).lower() == "rl-environment":
-        return os.path.join(parent_dir, "rl-models")
-    return candidates[0]
-
-
-def _fitness_from_name(path: str) -> float:
-    base = os.path.basename(path)
-    try:
-        return float(base.split("_fitness_")[-1].replace(".pth", ""))
-    except Exception:
-        return float("-inf")
-
-
-def _find_best_checkpoint(models_root: str) -> str:
-    pattern = os.path.join(models_root, "generation_*", "agent_*_fitness_*.pth")
-    matches = sorted(set(glob.glob(pattern)), key=_fitness_from_name, reverse=True)
-    if not matches:
-        raise FileNotFoundError(f"No checkpoints found under: {models_root}")
-    return matches[0]
+def _checkpoint_search_roots(args: argparse.Namespace) -> List[str]:
+    """Directories to scan for checkpoints, most specific choice first."""
+    roots = [str(item).strip() for item in (getattr(args, "search_root", None) or []) if str(item or "").strip()]
+    if roots:
+        return roots
+    models = str(getattr(args, "models", "") or "").strip()
+    if models:
+        return [models]
+    return default_search_bases()
 
 
 def _normalize_base_url(value: str) -> str:
@@ -385,7 +366,17 @@ async def _run(args: argparse.Namespace):
         # after a rejected neural action. The next poll may still select a
         # different policy action, but no random fallback is submitted.
         os.environ["MAX_FALLBACK_RANDOM_RETRIES_PER_PROMPT"] = "0"
-    checkpoint = str(args.checkpoint or "").strip() or _find_best_checkpoint(args.models)
+    search_roots = _checkpoint_search_roots(args)
+    if str(args.checkpoint or "").strip():
+        checkpoint = str(args.checkpoint).strip()
+    else:
+        candidates = discover_checkpoints(search_roots)
+        if not candidates:
+            raise FileNotFoundError(
+                "No checkpoints found. Pass --checkpoint <file.pth> or --search-root <dir>. "
+                f"Searched: {', '.join(search_roots) or '<repository stores>'}"
+            )
+        checkpoint = candidates[0].path
     if not os.path.isfile(checkpoint):
         raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint}")
 
@@ -449,6 +440,16 @@ async def _run(args: argparse.Namespace):
         await agent.play_game(game, resolved_player_name)
 
 
+def _list_checkpoints(search_roots: List[str]) -> None:
+    candidates = discover_checkpoints(search_roots)
+    if not candidates:
+        print("No checkpoints found.")
+        return
+    print(f"Found {len(candidates)} checkpoints, ranked best first ([v] = strength verified):")
+    for index, candidate in enumerate(candidates, start=1):
+        print(format_candidate_row(candidate, index))
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Attach the best trained agent checkpoint to an existing TM player URL."
@@ -493,13 +494,28 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--checkpoint",
         type=str,
         default="",
-        help="Explicit checkpoint path (.pth). If omitted, best checkpoint is auto-selected.",
+        help="Explicit checkpoint path (.pth). If omitted, the best ranked checkpoint is auto-selected.",
     )
     parser.add_argument(
         "--models",
         type=str,
-        default=_default_models_root(),
-        help="Models root used when --checkpoint is not provided.",
+        default="",
+        help=(
+            "Single models root used when --checkpoint and --search-root are not provided. "
+            "Defaults to every checkpoint store in the repository."
+        ),
+    )
+    parser.add_argument(
+        "--search-root",
+        type=str,
+        action="append",
+        default=[],
+        help="Directory to scan for checkpoints. Repeatable. Overrides --models when given.",
+    )
+    parser.add_argument(
+        "--list-checkpoints",
+        action="store_true",
+        help="Print every discovered checkpoint ranked best first, then exit.",
     )
     parser.add_argument(
         "--min-action-delay-ms",
@@ -545,6 +561,9 @@ def main():
     )
 
     try:
+        if args.list_checkpoints:
+            _list_checkpoints(_checkpoint_search_roots(args))
+            return
         asyncio.run(_run(args))
     except KeyboardInterrupt:
         print("Stopped by user.")

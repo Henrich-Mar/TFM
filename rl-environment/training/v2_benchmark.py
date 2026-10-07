@@ -165,6 +165,7 @@ async def benchmark(
     stochastic: bool = False,
     candidate_stochastic: bool = False,
     award_override: Optional[str] = None,
+    random_ma: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the seat-rotated benchmark.
 
@@ -174,6 +175,8 @@ async def benchmark(
     candidate training against a deterministic heuristic teacher.
     ``award_override`` is an ``AwardOverrideRule`` spec applied to the
     candidate only, for hybrid "would funding help?" experiments.
+    ``random_ma`` ("Limited synergy" / "Full random") draws random awards and
+    milestones per game, as in the random-MA self-play cohort.
     """
     initialize_v2_runtime()
     is_v3 = str(os.getenv("TFM_RL_V3", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -282,6 +285,11 @@ async def benchmark(
                     tournament_id=f"{version}_benchmark_{baseline}_{seed}_{candidate_seat}",
                     game_seed=seed,
                     players_beginner=(int(stage) == 0),
+                    game_option_overrides=(
+                        {"randomMA": str(random_ma), "includeFanMA": False, "modularMA": False}
+                        if random_ma
+                        else None
+                    ),
                 )
                 if not bool(result.completed):
                     print(
@@ -412,6 +420,7 @@ async def benchmark(
             if getattr(candidate, "search_policy", None) is not None
             else {"enabled": False}
         ),
+        "random_ma": str(random_ma) if random_ma else None,
         "award_override": (
             override_rule.snapshot() if override_rule is not None else {"enabled": False}
         ),
@@ -467,6 +476,11 @@ def main() -> None:
             "'min_lead=1,min_generation=3,max_cost=8,reserve_mc=0,max_own_awards=1' or 'default'"
         ),
     )
+    parser.add_argument(
+        "--random-ma",
+        choices=("Limited synergy", "Full random"),
+        help="draw random awards/milestones for every benchmark game",
+    )
     parser.add_argument("--output", default=os.getenv("V2_BENCHMARK_DIR", "/app/v2/benchmarks"))
     args = parser.parse_args()
     if args.baseline == "champion" and not args.champion:
@@ -485,6 +499,7 @@ def main() -> None:
                     stochastic=args.stochastic,
                     candidate_stochastic=args.candidate_stochastic,
                     award_override=args.award_override,
+                    random_ma=args.random_ma,
                 )
             ),
             indent=2,

@@ -2599,7 +2599,10 @@ class RLAgent:
                 )
             if policy_action and self.award_override is not None and not self.train_from_self_play:
                 override = self.award_override.choose(
-                    player_state, filtered_action_descriptors, policy_action_idx
+                    player_state,
+                    filtered_action_descriptors,
+                    policy_action_idx,
+                    position_probs=(action_meta or {}).get("position_probs"),
                 )
                 decoded_override = (override or {}).get("decoded_action")
                 if isinstance(decoded_override, dict) and decoded_override:
@@ -4392,6 +4395,12 @@ class RLAgent:
                 "available_actions_raw": [int(a) for a in raw_available_actions],
                 "available_actions_filtered": [int(a) for a in available_actions],
                 "action_descriptors": list(action_descriptors),
+                # Startup steering in AwardOverrideRule ranks plans by these.
+                "position_probs": (
+                    [float(x) for x in sampled_distribution.reshape(-1).tolist()]
+                    if self.award_override is not None and hasattr(sampled_distribution, "reshape")
+                    else None
+                ),
                 "chosen_action_position": int(action_position),
                 "chosen_action_label": self._describe_action(int(action_index), player_state),
                 "sampled_from_policy": bool(sampled_from_policy),

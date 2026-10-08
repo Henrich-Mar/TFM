@@ -12,6 +12,7 @@ from statistics import mean, stdev
 from typing import Any, Dict, List, Optional
 
 from game_interface import GameServerCluster
+from models.action_decoder import card_subset_features_enabled
 from models.agent import RLAgent
 from models.award_override import parse_award_override
 from models.decision_policy import (
@@ -421,6 +422,7 @@ async def benchmark(
             else {"enabled": False}
         ),
         "random_ma": str(random_ma) if random_ma else None,
+        "card_subset_features": card_subset_features_enabled(),
         "award_override": (
             override_rule.snapshot() if override_rule is not None else {"enabled": False}
         ),

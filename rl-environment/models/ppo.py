@@ -72,7 +72,12 @@ def _is_cuda_oom(exc: BaseException) -> bool:
     # Depending on the CUDA/PyTorch/driver combination, allocation failures
     # are reported either as "CUDA out of memory" or as the driver-level
     # "CUDA driver error: out of memory".
-    return "out of memory" in message and ("cuda" in message or "cublas" in message)
+    if "out of memory" in message and ("cuda" in message or "cublas" in message):
+        return True
+    # With expandable_segments, an allocation under VRAM pressure that follows
+    # an earlier OOM can trip an internal assert in the caching allocator
+    # instead of raising OutOfMemoryError. Same cause, same CPU fallback.
+    return "cudacachingallocator" in message and "internal assert failed" in message
 
 
 def _move_network_and_optimizer_to(

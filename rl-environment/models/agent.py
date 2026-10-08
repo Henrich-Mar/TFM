@@ -9,12 +9,14 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import weakref
 import json
 import os
 import time
 import hashlib
 import re
 import copy
+import gc
 from typing import Dict, Any, List, Optional, Tuple
 import uuid
 from dataclasses import dataclass, asdict
@@ -272,6 +274,17 @@ def _get_ppo_executor() -> ThreadPoolExecutor:
         return _ppo_executor
 
 
+def _cpu_fallback_hparams(hparams: Any) -> Any:
+    """``hparams`` with the minibatch capped at PPO_CPU_FALLBACK_MINIBATCH_SIZE."""
+    try:
+        fallback_cap = max(1, int(os.getenv("PPO_CPU_FALLBACK_MINIBATCH_SIZE", "16")))
+    except (TypeError, ValueError):
+        fallback_cap = 16
+    fallback = copy.copy(hparams)
+    fallback.minibatch_size = min(max(1, int(getattr(hparams, "minibatch_size", fallback_cap))), fallback_cap)
+    return fallback
+
+
 def _run_ppo_update_sync(
     agent: "RLAgent",
     steps: List[PPORolloutStep],
@@ -282,16 +295,23 @@ def _run_ppo_update_sync(
     with agent._model_device_lock:
         agent.ppo_hparams.entropy_coef = float(current_entropy_coef)
         if torch.cuda.is_available():
-            # Inference runs on the same GPU between updates; hand its cached
+            # Dropped agents in reference cycles still hold CUDA tensors until
+            # the cyclic GC runs; collect them, then hand inference's cached
             # blocks back before the free-VRAM check and the PPO minibatches.
+            gc.collect()
             torch.cuda.empty_cache()
         requested_device = _select_ppo_device(agent.network)
+        ppo_hparams = agent.ppo_hparams
+        if requested_device.type == "cpu" and torch.cuda.is_available():
+            # Low VRAM routed this update to the emergency CPU path; the CUDA
+            # minibatch size there exhausts system RAM (Docker/WSL OOM).
+            ppo_hparams = _cpu_fallback_hparams(agent.ppo_hparams)
         try:
             metrics = optimize_ppo_policy(
                 network=agent.network,
                 optimizer=agent.optimizer,
                 steps=steps,
-                ppo=agent.ppo_hparams,
+                ppo=ppo_hparams,
                 policy_temperature=policy_temp,
                 ppo_device_override=requested_device,
             )
@@ -302,19 +322,8 @@ def _run_ppo_update_sync(
                 # optimizer to system RAM; otherwise a CUDA OOM can turn into
                 # a Docker/host OOM during the fallback itself.
                 exc.__traceback__ = None
-                fallback_hparams = copy.copy(agent.ppo_hparams)
-                try:
-                    fallback_cap = max(
-                        1,
-                        int(os.getenv("PPO_CPU_FALLBACK_MINIBATCH_SIZE", "16")),
-                    )
-                except (TypeError, ValueError):
-                    fallback_cap = 16
-                original_minibatch = max(
-                    1,
-                    int(getattr(agent.ppo_hparams, "minibatch_size", fallback_cap)),
-                )
-                fallback_hparams.minibatch_size = min(original_minibatch, fallback_cap)
+                fallback_hparams = _cpu_fallback_hparams(agent.ppo_hparams)
+                original_minibatch = max(1, int(getattr(agent.ppo_hparams, "minibatch_size", 1)))
                 logger.warning(
                     "CUDA OOM during PPO update for agent %s; retrying on CPU "
                     "with minibatch_size=%d (CUDA minibatch_size=%d).",
@@ -387,7 +396,11 @@ class InferenceBatcher:
         max_batch: int = 32,
         deadline_ms: float = 3.0,
     ):
-        self._agent = agent
+        # Weak, because the worker thread is a GC root: a strong reference
+        # pinned every dropped agent (benchmark candidates, champion leaders,
+        # rotated-out history snapshots) and its CUDA weights for the life of
+        # the process, until VRAM ran out and PPO fell back to the CPU.
+        self._agent_ref = weakref.ref(agent)
         self._max_batch = max(1, max_batch)
         self._deadline_sec = max(0.0005, deadline_ms / 1000.0)
         self._pending: List[_InferenceRequest] = []
@@ -400,6 +413,14 @@ class InferenceBatcher:
             name=f"infer_batch_{agent.id[:8]}",
         )
         self._worker.start()
+        weakref.finalize(agent, self._signal_stop)
+
+    @property
+    def _agent(self) -> "RLAgent":
+        agent = self._agent_ref()
+        if agent is None:
+            raise RuntimeError("InferenceBatcher used after its agent was released")
+        return agent
 
     # -- public async API ----------------------------------------------------
 
@@ -542,11 +563,17 @@ class InferenceBatcher:
                 if not fut.done():
                     loop.call_soon_threadsafe(fut.set_exception, exc)
 
-    def shutdown(self) -> None:
+    def _signal_stop(self) -> None:
+        # Also the agent's finalizer, which can run on the worker thread
+        # itself, so it must not join.
         self._alive = False
         self._has_items.set()
         self._batch_ready.set()
-        self._worker.join(timeout=5.0)
+
+    def shutdown(self) -> None:
+        self._signal_stop()
+        if self._worker is not threading.current_thread():
+            self._worker.join(timeout=5.0)
 
 
 @dataclass

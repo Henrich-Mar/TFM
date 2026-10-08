@@ -106,3 +106,55 @@ def test_cuda_oom_cpu_fallback_caps_minibatch(monkeypatch) -> None:
     assert calls[1]["ppo_device_override"] == torch.device("cpu")
     assert calls[1]["ppo"].minibatch_size == 16
     assert agent.ppo_hparams.minibatch_size == 512
+
+
+def test_low_vram_cpu_route_caps_minibatch(monkeypatch) -> None:
+    network = _TinyNet()
+    optimizer = torch.optim.Adam(network.parameters(), lr=1e-3)
+    hparams = SimpleNamespace(entropy_coef=0.0, target_kl=0.02, minibatch_size=128)
+    agent = SimpleNamespace(
+        id="agent-test",
+        network=network,
+        optimizer=optimizer,
+        ppo_hparams=hparams,
+        _model_device_lock=threading.RLock(),
+        _inference_device=torch.device("cpu"),
+        _adapt_ppo_learning_rate=lambda approx_kl: {},
+        _try_reclaim_cuda=lambda: None,
+    )
+    seen = []
+
+    def _fake_optimize(**kwargs):
+        seen.append(int(kwargs["ppo"].minibatch_size))
+        return {"ppo/approx_kl": 0.0}
+
+    monkeypatch.setenv("PPO_CPU_FALLBACK_MINIBATCH_SIZE", "16")
+    monkeypatch.setattr(agent_module.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(agent_module.torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(agent_module, "optimize_ppo_policy", _fake_optimize)
+    monkeypatch.setattr(agent_module, "_select_ppo_device", lambda network: torch.device("cpu"))
+
+    agent_module._run_ppo_update_sync(agent, steps=[], current_entropy_coef=0.01, policy_temp=1.0)
+
+    assert seen == [16]
+    assert hparams.minibatch_size == 128
+
+
+def test_inference_batcher_does_not_pin_its_agent() -> None:
+    import gc
+    import weakref
+
+    class _Owner:
+        id = "batcher-owner"
+
+    owner = _Owner()
+    batcher = agent_module.InferenceBatcher(owner)
+    worker = batcher._worker
+    owner_ref = weakref.ref(owner)
+
+    del owner
+    gc.collect()
+    worker.join(timeout=5.0)
+
+    assert owner_ref() is None
+    assert not worker.is_alive()

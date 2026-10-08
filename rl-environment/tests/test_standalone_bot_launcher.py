@@ -9,7 +9,7 @@ if "rl-environment" not in sys.path:
 
 pytest.importorskip("tkinter")
 
-from standalone_bot import _build_arg_parser, _checkpoint_search_roots  # noqa: E402
+from standalone_bot import _build_arg_parser, _checkpoint_search_roots, _configure_action_selection  # noqa: E402
 from standalone_bot_tk import StandaloneBotLauncher  # noqa: E402
 
 
@@ -64,3 +64,26 @@ def test_docker_mount_of_a_missing_file_falls_back_to_its_parent(tmp_path):
 
     assert mounts[1].endswith(":ro")
     assert container_path.endswith("/gone/champion.pth") or container_path.endswith("/store/champion.pth")
+
+
+def test_action_selection_defaults_to_argmax():
+    assert _args().action_selection == "argmax"
+
+
+@pytest.mark.parametrize("mode", ["argmax", "sample"])
+def test_action_selection_configures_the_agent_like_the_benchmark(mode):
+    from types import SimpleNamespace
+
+    agent = SimpleNamespace(
+        config=SimpleNamespace(train_from_self_play=True, epsilon=0.05, temperature=1.2),
+        ppo_enable=True,
+        deterministic_actions=False,
+        policy_temperature_cap=1.0,
+        policy_temperature_floor=0.75,
+    )
+    _configure_action_selection(agent, mode)
+    assert agent.deterministic_actions is (mode == "argmax")
+    assert agent.ppo_enable is (mode == "sample")
+    if mode == "sample":
+        assert agent.config.epsilon == 0.0
+        assert agent.policy_temperature_floor == 1.0

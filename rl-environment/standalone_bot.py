@@ -359,6 +359,19 @@ def _resolve_target(
     return _normalize_base_url(final_base), final_player
 
 
+def _configure_action_selection(agent: RLAgent, mode: str) -> None:
+    """Mirror training.v2_benchmark._frozen_neural so live play matches a benchmarked agent."""
+    sample = mode == "sample"
+    agent.config.train_from_self_play = False
+    agent.ppo_enable = sample
+    agent.deterministic_actions = not sample
+    if sample:
+        agent.config.epsilon = 0.0
+        agent.config.temperature = 1.0
+        agent.policy_temperature_cap = 1.0
+        agent.policy_temperature_floor = 1.0
+
+
 async def _run(args: argparse.Namespace):
     ensure_card_metadata(quiet=True)
     if args.no_random_fallback:
@@ -402,6 +415,7 @@ async def _run(args: argparse.Namespace):
     print(f"Poll interval: {int(poll_interval_sec * 1000)} ms")
     if args.no_random_fallback:
         print("Random fallback actions: disabled")
+    print(f"Action selection: {args.action_selection}")
 
     timeout = aiohttp.ClientTimeout(total=max(5.0, float(args.request_timeout_sec)))
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -416,6 +430,7 @@ async def _run(args: argparse.Namespace):
         agent = RLAgent()
         agent.load_model(checkpoint)
         agent.train_from_self_play = False
+        _configure_action_selection(agent, args.action_selection)
         agent.post_move_sleep_sec = max(float(agent.post_move_sleep_sec), min_action_interval_sec)
         agent.failure_pause_sec = max(float(agent.failure_pause_sec), min_action_interval_sec)
         agent.poll_interval_sec = max(float(agent.poll_interval_sec), poll_interval_sec)
@@ -545,6 +560,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--no-random-fallback",
         action="store_true",
         help="Do not submit random fallback actions after a rejected policy action (recommended for human games).",
+    )
+    parser.add_argument(
+        "--action-selection",
+        choices=("argmax", "sample"),
+        default="argmax",
+        help=(
+            "argmax plays the policy's most likely action (strongest; matches the deterministic "
+            "benchmark agent). sample draws from the policy at temperature 1.0, as in self-play."
+        ),
     )
     return parser
 

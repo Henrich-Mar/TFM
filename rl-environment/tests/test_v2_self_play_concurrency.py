@@ -446,6 +446,17 @@ def test_incompatible_teacher_baseline_is_recalibrated(monkeypatch, tmp_path: Pa
     assert runner.champion_teacher_report is report
 
 
+def test_baseline_from_before_the_card_subset_fix_is_stale(monkeypatch) -> None:
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.benchmark_candidate_stochastic = True
+    monkeypatch.delenv("V2_CARD_SUBSET_FEATURES", raising=False)
+
+    assert not runner._teacher_baseline_is_compatible({"action_selection": "candidate_sample"})
+    assert runner._teacher_baseline_is_compatible(
+        {"action_selection": "candidate_sample", "card_subset_features": True}
+    )
+
+
 def test_failed_screen_skips_both_full_promotion_benchmarks(monkeypatch, tmp_path: Path) -> None:
     runner = object.__new__(V2SelfPlayRunner)
     runner.learner = _CheckpointLearner()
@@ -463,6 +474,7 @@ def test_failed_screen_skips_both_full_promotion_benchmarks(monkeypatch, tmp_pat
     runner.benchmark_candidate_stochastic = True
     runner.champion_teacher_report = {
         "action_selection": "candidate_sample",
+        "card_subset_features": True,
         "pairwise_score": 0.70,
     }
     calls: list[tuple[str, str | None]] = []
@@ -507,6 +519,7 @@ def test_failed_full_teacher_gate_skips_full_champion_gate(monkeypatch, tmp_path
     runner.benchmark_candidate_stochastic = True
     runner.champion_teacher_report = {
         "action_selection": "candidate_sample",
+        "card_subset_features": True,
         "pairwise_score": 0.70,
     }
     calls: list[tuple[str, str | None]] = []
@@ -552,6 +565,7 @@ def _promotion_runner(tmp_path: Path) -> V2SelfPlayRunner:
     runner.benchmark_candidate_stochastic = True
     runner.champion_teacher_report = {
         "action_selection": "candidate_sample",
+        "card_subset_features": True,
         "pairwise_score": 0.70,
         "seeds": [1, 2, 3],
     }
@@ -584,6 +598,7 @@ def test_candidate_worse_than_champion_against_teacher_is_not_promoted(monkeypat
     runner = _promotion_runner(tmp_path)
     runner.champion_teacher_report = {
         "action_selection": "candidate_sample",
+        "card_subset_features": True,
         "pairwise_score": 0.708,
         "seeds": [1, 2, 3],
     }
@@ -604,6 +619,7 @@ def test_promotion_records_new_champion_teacher_baseline(monkeypatch, tmp_path: 
     runner = _promotion_runner(tmp_path)
     runner.champion_teacher_report = {
         "action_selection": "candidate_sample",
+        "card_subset_features": True,
         "pairwise_score": 0.70,
         "seeds": [1, 2, 3],
     }
@@ -917,3 +933,77 @@ def test_award_exploit_report_is_informational_without_threshold(monkeypatch, tm
 
     assert report["award_exploit"]["pairwise_score"] == pytest.approx(0.80)
     assert report["promoted"] is True
+
+
+@pytest.mark.parametrize("fraction,expected", [(1.0, True), (0.0, False)])
+def test_award_exploiter_games_can_be_routed_to_random_ma(monkeypatch, fraction, expected) -> None:
+    monkeypatch.setattr("training.v2_self_play.random.Random", _ExploiterDraw)
+    runner = _exploiter_runner(1.0)
+    runner.game_count = 0
+    runner.seed_cursor = 9
+    runner.reserved_benchmark_seeds = set()
+    runner.stage = 1
+    runner.random_ma_selfplay_fraction = 0.0
+    runner.random_ma_mode = "Limited synergy"
+    runner.award_exploiter_random_ma_fraction = fraction
+
+    game = runner._reserve_selfplay_game()
+
+    assert game.lineup_kind == "champion" and game.award_exploiter is True
+    assert game.random_ma_training is expected
+    assert game.random_ma_mode == ("Limited synergy" if expected else None)
+
+
+def test_award_exploit_benchmark_uses_configured_random_ma(monkeypatch, tmp_path: Path) -> None:
+    runner = _promotion_runner(tmp_path)
+    seen: dict = {}
+
+    async def fake_benchmark(checkpoint, baseline, stage, output, **kwargs):
+        seen.update(kwargs)
+        return {"pairwise_score": 0.5}
+
+    monkeypatch.setattr(v2_self_play, "benchmark", fake_benchmark)
+    monkeypatch.setenv("BENCHMARK_AWARD_EXPLOITER_RULE", "min_lead=3")
+    monkeypatch.setenv("BENCHMARK_AWARD_EXPLOIT_RANDOM_MA", "Limited synergy")
+
+    report = asyncio.run(runner._award_exploit_benchmark(tmp_path / "candidate.pth"))
+
+    assert seen["random_ma"] == "Limited synergy"
+    assert seen["award_override"] == "min_lead=3"
+    assert report["award_exploit_gate_passed"] is True
+
+
+def test_history_networks_leave_vram_for_ppo_and_return(monkeypatch):
+    moved = []
+    monkeypatch.setattr(
+        v2_self_play,
+        "_move_network_and_optimizer_to",
+        lambda network, optimizer, device: moved.append((network, device.type)),
+    )
+    restored = []
+
+    def _leader(name, device):
+        leader = SimpleNamespace(
+            network=name,
+            optimizer=None,
+            _inference_device=torch.device(device),
+            _model_device_lock=__import__("threading").RLock(),
+        )
+        leader._move_network_to_inference_device = lambda: restored.append(name)
+        return leader
+
+    gpu_a, gpu_b, cpu_c = _leader("a", "cuda"), _leader("b", "cuda"), _leader("c", "cpu")
+    runner = object.__new__(V2SelfPlayRunner)
+    runner.historical_seats_by_snapshot = [[gpu_a, object()], [gpu_b], [cpu_c], []]
+
+    offloaded = runner._offload_history_networks()
+    runner._restore_history_networks(offloaded)
+
+    assert moved == [("a", "cpu"), ("b", "cpu")]
+    assert restored == ["a", "b"]
+    assert gpu_a._inference_device.type == "cuda"
+
+    moved.clear()
+    monkeypatch.setenv("SELFPLAY_OFFLOAD_HISTORY_DURING_PPO", "0")
+    assert runner._offload_history_networks() == []
+    assert moved == []

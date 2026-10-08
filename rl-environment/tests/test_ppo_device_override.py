@@ -57,6 +57,12 @@ class _WideAuxNet(_TinyNet):
 def test_cuda_driver_oom_message_is_recognized() -> None:
     assert _is_cuda_oom(RuntimeError("CUDA driver error: out of memory"))
     assert _is_cuda_oom(RuntimeError("CUDA out of memory"))
+    assert _is_cuda_oom(
+        RuntimeError(
+            '!handles_.at(i) INTERNAL ASSERT FAILED at "../c10/cuda/CUDACachingAllocator.cpp":393, '
+            "please report a bug to PyTorch."
+        )
+    )
     assert not _is_cuda_oom(RuntimeError("ordinary CPU failure"))
 
 

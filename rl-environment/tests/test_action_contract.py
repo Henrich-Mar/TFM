@@ -152,6 +152,57 @@ def test_card_selection_uses_identity_catalog_beyond_legacy_80_slots() -> None:
         assert decoder.decode_action(action.action_id, state) == action.payload
 
 
+def test_optional_single_card_buy_offers_both_buy_and_skip() -> None:
+    # Inventors' Guild / Business Network: "buy up to 1 of 1 card".  The only
+    # legal action used to decode to an empty pick, so the card was never bought.
+    state = {
+        "thisPlayer": {"megaCredits": 30, "cardCost": 3},
+        "waitingFor": {
+            "type": "card",
+            "title": "Select card(s) to buy",
+            "buttonLabel": "Buy",
+            "min": 0,
+            "max": 1,
+            "cards": [{"name": "Birds", "calculatedCost": 10}],
+        },
+    }
+    decoder = ActionDecoder()
+
+    legal = decoder.enumerate_legal_actions(state)
+    picks = sorted(tuple(action.payload["cards"]) for action in legal.actions)
+
+    assert legal.status == "active"
+    assert picks == [(), ("Birds",)]
+    for action in legal.actions:
+        assert decoder.decode_action(action.action_id, state) == action.payload
+
+
+def test_exactly_one_card_prompt_still_selects_by_card_index() -> None:
+    state = {
+        "waitingFor": {
+            "type": "card",
+            "title": "Select card",
+            "min": 1,
+            "max": 1,
+            "cards": [{"name": "A"}, {"name": "B"}],
+        },
+    }
+    decoder = ActionDecoder()
+
+    legal = decoder.enumerate_legal_actions(state)
+
+    assert [action.payload["cards"] for action in legal.actions] == [["A"], ["B"]]
+    assert decoder.decode_action(1, state) == {"type": "card", "cards": ["B"]}
+
+
+def test_legacy_index_on_optional_single_card_prompt_selects_the_card() -> None:
+    from models.action_decoder import build_response_for_input
+
+    waiting_for = {"type": "card", "title": "Select card(s) to buy", "min": 0, "max": 1, "cards": [{"name": "Birds"}]}
+
+    assert build_response_for_input(waiting_for, 0, {}) == {"type": "card", "cards": ["Birds"]}
+
+
 def test_card_selection_catalog_rejects_explicit_capacity_overflow(monkeypatch) -> None:
     monkeypatch.setenv("AGENT_CARD_SELECTION_CATALOG_LIMIT", "10")
     cards = [{"name": f"Card {index}"} for index in range(6)]

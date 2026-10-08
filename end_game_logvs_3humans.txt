@@ -1,0 +1,780 @@
+First player this generation is A
+Good luck A!
+Good luck M!
+Good luck P!
+Good luck H_(Bot)!
+Generation 1
+A played PhoboLog
+A gained 10 titanium
+A kept 7 project cards
+M played Inventrix
+M kept 6 project cards
+P played Teractor
+P kept 10 project cards
+H_(Bot) played United Nations Mars Initiative
+H_(Bot) kept 2 project cards
+A played Large Convoy
+A drew 2 card(s)
+You drew Small Animals,Optimal Aerobraking
+A gained 5 plants
+A placed ocean tile at 13
+A drew 2 card(s)
+You drew Giant Space Mirror,Mass Converter
+A passed
+M took the first action of Inventrix corporation
+M drew 3 card(s)
+You drew Insects,Ice Asteroid,Adaptation Technology
+M played Callisto Penal Mines
+M gained 3 M€ production
+P played Nuclear Power
+P lost 2 M€ production
+P gained 3 energy production
+P played Noctis City
+P gained 3 M€ production
+P placed city tile at 31
+P gained 2 plants
+P lost 1 energy production
+H_(Bot) used Greenery standard project
+H_(Bot) placed greenery tile at 29
+H_(Bot) gained 2 plants
+H_(Bot) ended turn
+M passed
+P played Invention Contest
+P drew 1 card(s)
+You drew Trees
+P passed
+H_(Bot) used United Nations Mars Initiative action
+H_(Bot) passed
+Generation 2
+First player this generation is M
+H_(Bot) bought 0 card(s)
+P bought 2 card(s)
+You bought Deimos Down,Farming
+A bought 2 card(s)
+You bought Eos Chasma National Park,Protected Valley
+M bought 2 card(s)
+You bought Artificial Photosynthesis,Nitrite Reducing Bacteria
+M played Nitrite Reducing Bacteria
+M added 3 Microbe(s) to Nitrite Reducing Bacteria
+M played Inventors' Guild
+P played Corporate Stronghold
+P gained 3 M€ production
+P lost 1 energy production
+P placed city tile at 21
+P gained 1 plant
+P gained 1 titanium
+P played Space Mirrors
+H_(Bot) used Greenery standard project
+H_(Bot) placed greenery tile at 30
+H_(Bot) gained 2 plants
+H_(Bot) ended turn
+A played Giant Space Mirror
+A gained 3 energy production
+A passed
+M used Nitrite Reducing Bacteria action
+M removed 3 resource(s) from M's Nitrite Reducing Bacteria
+M passed
+P passed
+H_(Bot) used United Nations Mars Initiative action
+H_(Bot) passed
+Generation 3
+First player this generation is P
+H_(Bot) bought 0 card(s)
+P bought 3 card(s)
+You bought Bushes,Greenhouses,Nitrogen-Rich Asteroid
+M bought 2 card(s)
+You bought Ganymede Colony,Regolith Eaters
+A bought 2 card(s)
+You bought Ants,Imported GHG
+P played Electro Catapult
+P lost 1 energy production
+P used Electro Catapult action
+P gained 7 M€
+H_(Bot) used Greenery standard project
+H_(Bot) placed greenery tile at 38
+H_(Bot) gained 1 plant
+H_(Bot) ended turn
+A played Cupola City
+A gained 3 M€ production
+A lost 1 energy production
+A placed city tile at 25
+A gained 2 plants
+A passed
+M played Regolith Eaters
+M used Inventors' Guild action
+M bought 1 card(s)
+You bought Search For Life
+P used Space Mirrors action
+P gained 1 energy production
+P passed
+H_(Bot) used United Nations Mars Initiative action
+H_(Bot) ended turn
+M used Nitrite Reducing Bacteria action
+M added 1 Microbe to Nitrite Reducing Bacteria
+M used Regolith Eaters action
+M added 1 Microbe to Regolith Eaters
+H_(Bot) passed
+M passed
+Generation 4
+First player this generation is H_(Bot)
+H_(Bot) bought 0 card(s)
+P bought 3 card(s)
+You bought Solar Power,Adapted Lichen,Ice Cap Melting
+M bought 1 card(s)
+You bought Asteroid Mining
+A bought 1 card(s)
+You bought Mining Rights
+H_(Bot) used Greenery standard project
+H_(Bot) placed greenery tile at 39
+H_(Bot) gained 2 plants
+H_(Bot) ended turn
+A played Mining Rights
+A gained 1 titanium production
+A placed Mining Rights tile at 58
+A gained 1 titanium
+A played Titanium Mine
+A gained 1 titanium production
+M used Nitrite Reducing Bacteria action
+M added 1 Microbe to Nitrite Reducing Bacteria
+M played Search For Life
+P used Electro Catapult action
+P gained 7 M€
+P played Commercial District
+P gained 4 M€ production
+P lost 1 energy production
+P placed Commercial District tile at 24
+P gained 1 plant
+H_(Bot) used United Nations Mars Initiative action
+H_(Bot) ended turn
+A played Optimal Aerobraking
+A used Sell Patents standard project
+A sold 2 patents
+M played Lightning Harvest
+M gained 1 M€ production
+M gained 1 energy production
+M played Artificial Photosynthesis
+M gained 1 plant production
+P used Space Mirrors action
+P gained 1 energy production
+P passed
+H_(Bot) passed
+A played Imported GHG
+A gained 1 heat production
+A gained 3 heat
+A gained 3 M€ because of Optimal Aerobraking
+A gained 3 heat because of Optimal Aerobraking
+A used Convert Heat standard action
+M used Regolith Eaters action
+M added 1 Microbe to Regolith Eaters
+M passed
+A passed
+Generation 5
+First player this generation is A
+H_(Bot) bought 1 card(s)
+You bought Mineral Deposit
+A bought 1 card(s)
+You bought Domed Crater
+P bought 2 card(s)
+You bought Imported Hydrogen,Kelp Farming
+M bought 1 card(s)
+You bought Methane From Titan
+A played Domed Crater
+A gained 3 M€ production
+A lost 1 energy production
+A gained 3 plants
+A placed city tile at 19
+A gained 2 M€ from 1 ocean(s)
+A used Convert Plants standard action
+A placed greenery tile at 26
+A gained 1 plant
+M played Ganymede Colony
+M used Search For Life action
+M revealed and discarded Plantation
+P used Electro Catapult action
+P gained 7 M€
+P used City standard project
+P placed city tile at 16
+H_(Bot) played Mineral Deposit
+H_(Bot) gained 5 steel
+H_(Bot) used Aquifer standard project
+H_(Bot) placed ocean tile at 32
+H_(Bot) gained 2 plants
+A played Shuttles
+A gained 2 M€ production
+A lost 1 energy production
+A passed
+M used Regolith Eaters action
+M removed 2 resource(s) from M's Regolith Eaters
+M used Nitrite Reducing Bacteria action
+M added 1 Microbe to Nitrite Reducing Bacteria
+P passed
+H_(Bot) used Convert Plants standard action
+H_(Bot) placed greenery tile at 40
+H_(Bot) gained 1 plant
+H_(Bot) gained 2 M€ from 1 ocean(s)
+H_(Bot) ended turn
+M passed
+H_(Bot) used United Nations Mars Initiative action
+H_(Bot) passed
+Generation 6
+First player this generation is M
+H_(Bot) bought 0 card(s)
+P bought 3 card(s)
+You bought Livestock,Industrial Center,Mars University
+A bought 1 card(s)
+You bought Restricted Area
+M bought 1 card(s)
+You bought Lagrange Observatory
+M played Ice Asteroid
+M placed ocean tile at 06
+M drew 1 card(s)
+You drew Imported Nitrogen
+M placed ocean tile at 63
+M gained 2 titanium
+M used Search For Life action
+M revealed and discarded Lunar Beam
+P claimed Mayor milestone
+P played Imported Hydrogen
+P gained 3 plants
+P placed ocean tile at 33
+P gained 2 plants
+P gained 2 M€ from 1 ocean(s)
+H_(Bot) used Greenery standard project
+H_(Bot) placed greenery tile at 41
+H_(Bot) gained 1 plant
+H_(Bot) gained 4 M€ from 2 ocean(s)
+H_(Bot) ended turn
+A played Mining Area
+A gained 1 steel production
+A placed Mining Area tile at 20
+A gained 1 steel
+A gained 2 M€ from 1 ocean(s)
+A played Protected Valley
+A gained 2 M€ production
+A placed greenery tile at 34
+A gained 2 plants
+A gained 2 M€ from 1 ocean(s)
+M used Nitrite Reducing Bacteria action
+M removed 3 resource(s) from M's Nitrite Reducing Bacteria
+M used Regolith Eaters action
+M added 1 Microbe to Regolith Eaters
+P played Industrial Center
+P placed Industrial Center tile at 18
+P used Electro Catapult action
+P gained 7 M€
+H_(Bot) used Asteroid:SP standard project
+H_(Bot) gained 1 heat production
+H_(Bot) ended turn
+A passed
+M passed
+P played Greenhouses
+P gained 6 plants
+P used Convert Plants standard action
+P placed greenery tile at 23
+P gained 1 plant
+P gained 2 M€ from 1 ocean(s)
+H_(Bot) passed
+P passed
+Generation 7
+First player this generation is P
+H_(Bot) bought 0 card(s)
+P bought 2 card(s)
+You bought Towing A Comet,Windmills
+A bought 2 card(s)
+You bought Technology Demonstration,Heather
+M bought 1 card(s)
+You bought Immigration Shuttles
+P played Windmills
+P gained 1 energy production
+P claimed Builder milestone
+H_(Bot) used Greenery standard project
+H_(Bot) placed greenery tile at 42
+H_(Bot) gained 1 plant
+H_(Bot) gained 2 M€ from 1 ocean(s)
+H_(Bot) ended turn
+A used Convert Heat standard action
+A played Technology Demonstration
+A drew 2 card(s)
+You drew Space Station,Immigrant City
+A gained 3 M€ because of Optimal Aerobraking
+A gained 3 heat because of Optimal Aerobraking
+M played Immigration Shuttles
+M gained 5 M€ production
+M used Search For Life action
+M revealed and discarded Vesta Shipyard
+P used Electro Catapult action
+P gained 7 M€
+P played Towing A Comet
+P gained 2 plants
+P placed ocean tile at 28
+P gained 2 plants
+H_(Bot) used Asteroid:SP standard project
+H_(Bot) gained 1 heat production
+H_(Bot) ended turn
+A played Space Station
+A played Restricted Area
+A placed Restricted Area tile at 22
+A gained 1 plant
+M used Nitrite Reducing Bacteria action
+M added 1 Microbe to Nitrite Reducing Bacteria
+M used Regolith Eaters action
+M added 1 Microbe to Regolith Eaters
+P passed
+H_(Bot) passed
+A used Restricted Area action
+A drew 1 card(s)
+You drew Grass
+A played Ants
+M passed
+A used Ants action
+A removed 1 resource(s) from M's Nitrite Reducing Bacteria
+A added 1 Microbe to Ants
+A used Power Plant:SP standard project
+A passed
+Generation 8
+First player this generation is H_(Bot)
+H_(Bot) bought 0 card(s)
+A bought 3 card(s)
+You bought Advanced Alloys,Research Outpost,Underground City
+P bought 2 card(s)
+You bought Media Archives,Permafrost Extraction
+M bought 1 card(s)
+You bought Trans-Neptune Probe
+H_(Bot) used City standard project
+H_(Bot) placed city tile at 46
+H_(Bot) ended turn
+A played Advanced Alloys
+A played Immigrant City
+A placed city tile at 35
+A gained 2 plants
+A gained 1 M€ production
+M played Imported Nitrogen
+M gained 4 plants
+M added 3 Microbe(s) to Nitrite Reducing Bacteria
+M used Nitrite Reducing Bacteria action
+M removed 3 resource(s) from M's Nitrite Reducing Bacteria
+P played Strip Mine
+P gained 2 steel production
+P gained 1 titanium production
+P lost 2 energy production
+P used Electro Catapult action
+P gained 7 M€
+H_(Bot) used Power Plant:SP standard project
+H_(Bot) ended turn
+A used Convert Plants standard action
+A placed greenery tile at 27
+A gained 1 plant
+A gained 2 M€ from 1 ocean(s)
+A used Power Plant:SP standard project
+M played Trans-Neptune Probe
+M used Search For Life action
+M revealed and discarded Tectonic Stress Power
+P played Adapted Lichen
+P gained 1 plant production
+P passed
+H_(Bot) passed
+A used Restricted Area action
+A drew 1 card(s)
+You drew Aquifer Pumping
+A used Ants action
+A removed 1 resource(s) from M's Regolith Eaters
+A added 1 Microbe to Ants
+M used Regolith Eaters action
+M added 1 Microbe to Regolith Eaters
+M passed
+A passed
+Generation 9
+First player this generation is A
+H_(Bot) bought 0 card(s)
+A bought 4 card(s)
+You bought Anti-Gravity Technology,Gene Repair,Zeppelins,Asteroid
+M bought 0 card(s)
+P bought 3 card(s)
+You bought Acquired Company,Breathing Filters,Research
+A played Research Outpost
+A placed city tile at 54
+A gained 1 M€ production
+A played Asteroid
+A gained 2 titanium
+A gained 3 M€ because of Optimal Aerobraking
+A gained 3 heat because of Optimal Aerobraking
+P lost 3 plants because of A
+M played Asteroid Mining
+M gained 2 titanium production
+M used Search For Life action
+M revealed and discarded Great Escarpment Consortium
+P used Electro Catapult action
+P gained 7 M€
+P played Deimos Down
+P gained 4 steel
+M lost 8 plants because of P
+H_(Bot) used City standard project
+H_(Bot) placed city tile at 49
+A gained 1 M€ production
+H_(Bot) ended turn
+A used Convert Heat standard action
+A played Heather
+A gained 1 plant production
+A gained 1 plant
+M used Nitrite Reducing Bacteria action
+M added 1 Microbe to Nitrite Reducing Bacteria
+M used Regolith Eaters action
+M added 1 Microbe to Regolith Eaters
+P played Media Archives
+P gained 11 M€
+P played Food Factory
+P gained 4 M€ production
+P lost 1 plant production
+H_(Bot) used Power Plant:SP standard project
+H_(Bot) ended turn
+A used Restricted Area action
+A drew 1 card(s)
+You drew Water Splitting Plant
+A used Ants action
+A removed 1 resource(s) from M's Nitrite Reducing Bacteria
+A added 1 Microbe to Ants
+M passed
+P used Convert Heat standard action
+P played Acquired Company
+P gained 3 M€ production
+H_(Bot) passed
+A used Sell Patents standard project
+A sold 2 patents
+A passed
+P passed
+Generation 10
+First player this generation is M
+H_(Bot) bought 0 card(s)
+A bought 2 card(s)
+You bought Mine,Business Contacts
+P bought 1 card(s)
+You bought AI Central
+M bought 1 card(s)
+You bought Phobos Space Haven
+M played Phobos Space Haven
+M gained 1 titanium production
+A gained 1 M€ production
+M played Lagrange Observatory
+M drew 1 card(s)
+You drew Asteroid Mining Consortium
+P played Kelp Farming
+P gained 2 M€ production
+P gained 3 plant production
+P gained 2 plants
+P played Nitrogen-Rich Asteroid
+P gained 4 plant production
+H_(Bot) used City standard project
+H_(Bot) placed city tile at 62
+H_(Bot) gained 2 M€ from 1 ocean(s)
+A gained 1 M€ production
+H_(Bot) used Convert Heat standard action
+A claimed Tactician milestone
+A played Business Contacts
+The project discard pile has been shuffled to form a new deck.
+A drew 2 card(s)
+You drew Interstellar Colony Ship,Cloud Seeding
+M used Sell Patents standard project
+M sold 2 patents
+M played Toll Station
+M gained 6 M€ production
+P used Electro Catapult action
+P gained 7 M€
+P played Permafrost Extraction
+P placed ocean tile at 07
+P gained 4 M€ from 2 ocean(s)
+H_(Bot) used Asteroid:SP standard project
+H_(Bot) ended turn
+A played Zeppelins
+A gained 10 M€ production
+A played Mine
+A gained 1 steel production
+M used Search For Life action
+M revealed and discarded Investment Loan
+M used Nitrite Reducing Bacteria action
+M added 1 Microbe to Nitrite Reducing Bacteria
+P passed
+H_(Bot) passed
+A funded Banker award
+A used Ants action
+A removed 1 resource(s) from M's Nitrite Reducing Bacteria
+A added 1 Microbe to Ants
+M passed
+A passed
+Generation 11
+First player this generation is P
+H_(Bot) bought 0 card(s)
+M bought 1 card(s)
+You bought Io Mining Industries
+A bought 1 card(s)
+You bought Martian Rails
+P bought 2 card(s)
+You bought Solar Wind Power,Power Supply Consortium
+P used Convert Plants standard action
+P placed greenery tile at 14
+P drew 1 card(s)
+You drew Rad-Chem Factory
+P played Herbivores
+P added 1 Animal to Herbivores
+A lost 1 plant production because of P
+H_(Bot) used City standard project
+H_(Bot) placed city tile at 37
+H_(Bot) gained 2 plants
+H_(Bot) gained 2 M€ from 1 ocean(s)
+A gained 1 M€ production
+H_(Bot) used Aquifer standard project
+H_(Bot) placed ocean tile at 04
+H_(Bot) gained 2 steel
+A played Martian Rails
+A played Grass
+A gained 1 plant production
+A gained 3 plants
+M played Io Mining Industries
+M gained 2 M€ production
+M gained 2 titanium production
+M used Search For Life action
+M revealed and discarded Space Elevator
+P played Trees
+P gained 3 plant production
+P gained 1 plant
+P used City standard project
+P placed city tile at 08
+A gained 1 M€ production
+H_(Bot) passed
+A used Martian Rails action
+A gained 12 M€
+A played Eos Chasma National Park
+A gained 2 M€ production
+A gained 3 plants
+M used Inventors' Guild action
+M bought 0 card(s)
+M passed
+P used Electro Catapult action
+P gained 7 M€
+P played Mars University
+P is using their Mars University effect to draw a card by discarding a card.
+P discarded Power Supply Consortium
+P drew 1 card(s)
+You drew Fish
+A used Convert Plants standard action
+A placed greenery tile at 55
+A drew 1 card(s)
+You drew Physics Complex
+A played Gene Repair
+A gained 2 M€ production
+P passed
+A used Ants action
+A removed 1 resource(s) from M's Regolith Eaters
+A added 1 Microbe to Ants
+A used Restricted Area action
+A drew 1 card(s)
+You drew Mangrove
+A played Physics Complex
+A played Interstellar Colony Ship
+A gained 3 M€ because of Optimal Aerobraking
+A gained 3 heat because of Optimal Aerobraking
+A used Convert Heat standard action
+A placed ocean tile at 43
+A gained 1 plant
+A passed
+Generation 12
+First player this generation is H_(Bot)
+H_(Bot) bought 0 card(s)
+M bought 0 card(s)
+A bought 0 card(s)
+P bought 1 card(s)
+You bought Sponsors
+H_(Bot) used City standard project
+H_(Bot) placed city tile at 05
+H_(Bot) gained 4 M€ from 2 ocean(s)
+A gained 1 M€ production
+H_(Bot) used Greenery standard project
+H_(Bot) placed greenery tile at 56
+H_(Bot) drew 1 card(s)
+You drew Security Fleet
+A played Mass Converter
+A gained 6 energy production
+A played Underground City
+A gained 2 steel production
+A lost 2 energy production
+A placed city tile at 51
+A gained 1 plant
+A gained 2 M€ from 1 ocean(s)
+A gained 1 M€ production
+M played Methane From Titan
+M gained 2 plant production
+M gained 2 heat production
+M used Asteroid:SP standard project
+P used Convert Plants standard action
+P placed greenery tile at 10
+P gained 2 M€ from 1 ocean(s)
+P added 1 Animal to Herbivores
+P played Livestock
+P gained 2 M€ production
+P lost 1 plant production
+H_(Bot) used Convert Heat standard action
+H_(Bot) ended turn
+A played Mangrove
+A placed greenery tile at 44
+A gained 1 plant
+A gained 2 M€ from 1 ocean(s)
+A used Restricted Area action
+A drew 1 card(s)
+You drew Import of Advanced GHG
+M played Asteroid Mining Consortium
+M stole 1 titanium production from A
+M played Cartel
+M gained 2 M€ production
+P played Farming
+P gained 2 M€ production
+P gained 2 plant production
+P gained 2 plants
+P used Convert Plants standard action
+P placed greenery tile at 17
+P added 1 Animal to Herbivores
+H_(Bot) passed
+A played Lake Marineris
+A used Martian Rails action
+A gained 14 M€
+M used Search For Life action
+M revealed and discarded Lava Flows
+M used Inventors' Guild action
+M bought 0 card(s)
+P played Fish
+A lost 1 plant production because of P
+P played Breathing Filters
+P is using their Mars University effect to draw a card by discarding a card.
+P discarded Ice Cap Melting
+P drew 1 card(s)
+You drew Pets
+A played Cloud Seeding
+A lost 1 M€ production
+A gained 2 plant production
+H_(Bot) lost 1 heat production because of A
+A used Ants action
+A removed 1 resource(s) from M's Regolith Eaters
+A added 1 Microbe to Ants
+M passed
+P used Electro Catapult action
+P gained 7 M€
+P played Research
+P drew 2 card(s)
+You drew Aquifer Pumping,Insulation
+P is using their Mars University effect to draw a card by discarding a card.
+P discarded Insulation
+P drew 1 card(s)
+You drew Symbiotic Fungus
+P is using their Mars University effect to draw a card by discarding a card.
+P discarded Aquifer Pumping
+P drew 1 card(s)
+You drew Water Splitting Plant
+A used Asteroid:SP standard project
+A passed
+P used Livestock action
+P added 1 Animal to Livestock
+P used Fish action
+P added 1 Animal to Fish
+P played Solar Wind Power
+P gained 1 energy production
+P gained 2 titanium
+P is using their Mars University effect to draw a card by discarding a card.
+P discarded Water Splitting Plant
+P drew 1 card(s)
+You drew Rover Construction
+P passed
+Generation 13
+First player this generation is A
+H_(Bot) bought 0 card(s)
+P bought 3 card(s)
+You bought Hired Raiders,Standard Technology,Virus
+A bought 2 card(s)
+You bought Moss,Tundra Farming
+M bought 0 card(s)
+A used Convert Plants standard action
+A placed greenery tile at 60
+A gained 2 steel
+A used Restricted Area action
+A drew 1 card(s)
+You drew Water Import From Europa
+M used Convert Heat standard action
+M played Adaptation Technology
+P used Convert Plants standard action
+P placed greenery tile at 09
+P gained 1 steel
+P gained 2 M€ from 1 ocean(s)
+P added 1 Animal to Herbivores
+P played Hired Raiders
+P stole 2 steel from A
+H_(Bot) played Security Fleet
+H_(Bot) used Greenery standard project
+H_(Bot) placed greenery tile at 36
+H_(Bot) gained 2 plants
+H_(Bot) gained 2 M€ from 1 ocean(s)
+A funded Miner award
+A funded Excentric award
+M used Greenery standard project
+M placed greenery tile at 61
+M used Search For Life action
+M revealed and discarded Tropical Resort
+P used Electro Catapult action
+P gained 7 M€
+P played AI Central
+P lost 1 energy production
+P is using their Mars University effect to draw a card by discarding a card.
+P discarded Standard Technology
+P drew 1 card(s)
+You drew Tardigrades
+H_(Bot) used Convert Plants standard action
+H_(Bot) placed greenery tile at 53
+H_(Bot) gained 2 steel
+H_(Bot) ended turn
+A used Martian Rails action
+A gained 14 M€
+A used Ants action
+A removed 1 resource(s) from M's Regolith Eaters
+A added 1 Microbe to Ants
+M passed
+P used Fish action
+P added 1 Animal to Fish
+P used Livestock action
+P added 1 Animal to Livestock
+H_(Bot) used Power Plant:SP standard project
+H_(Bot) ended turn
+A played Tundra Farming
+A gained 2 M€ production
+A gained 1 plant production
+A gained 1 plant
+A played Moss
+A gained 1 plant production
+P used AI Central action
+P drew 2 card(s)
+You drew Lichen,Hackers
+P played Virus
+M lost 5 plants because of P
+H_(Bot) passed
+A played Water Import From Europa
+A passed
+P played Bushes
+P gained 2 plant production
+P gained 2 plants
+P played Rover Construction
+P played Solar Power
+P gained 1 energy production
+P played Rad-Chem Factory
+P lost 1 energy production
+P played Tardigrades
+P used Sell Patents standard project
+P sold 4 patents
+P used Tardigrades action
+P added 1 Microbe to Tardigrades
+P played Symbiotic Fungus
+P used Symbiotic Fungus action
+P added 1 Microbe to Tardigrades
+P passed
+Final greenery placement
+P placed greenery tile at 03
+P gained 2 steel
+P gained 2 M€ from 1 ocean(s)
+P added 1 Animal to Herbivores
+P placed greenery tile at 15
+P added 1 Animal to Herbivores
+This game id was gb2ea55703d4f

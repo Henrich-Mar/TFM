@@ -17,8 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import torch
+
 from game_interface import GameServerCluster
 from models.agent import RLAgent
+from models.ppo import _move_network_and_optimizer_to
 from models.award_override import parse_award_override
 from models.decision_policy import AwardFundingTeacherPolicy, HeuristicTeacherPolicy
 from search.config import SearchConfig
@@ -40,6 +43,9 @@ def _pretrain_report_allows_ppo(report_path: Path) -> bool:
 def _frozen_checkpoint_agent(path: str, agent_id: str) -> RLAgent:
     agent = RLAgent(agent_id=agent_id)
     agent.load_model(path)
+    # Never trained, so the checkpoint's Adam moments (2x the weights, ~104 MB
+    # of VRAM per network) would only crowd out the learner's PPO update.
+    agent.optimizer.state.clear()
     agent.train_from_self_play = False
     agent.config.train_from_self_play = False
     agent.ppo_enable = False
@@ -264,6 +270,12 @@ class V2SelfPlayRunner:
             if self.award_exploiter_fraction > 0.0
             else None
         )
+        # The champion is measurably exploitable on random award/milestone
+        # boards (it sees them only against the teacher), so exploiter games
+        # can be routed there.
+        self.award_exploiter_random_ma_fraction = self._fraction_env(
+            "SELFPLAY_AWARD_EXPLOITER_RANDOM_MA", 0.0
+        )
         self.random_ma_selfplay_fraction = self._fraction_env(
             "ALPHAGO_RANDOM_MA_SELFPLAY_FRACTION", 0.0
         )
@@ -459,6 +471,7 @@ class V2SelfPlayRunner:
             f"random_ma_force_award_teacher={self.random_ma_force_award_teacher} "
             f"award_exploiter_fraction={self.award_exploiter_fraction:.3f} "
             f"award_exploiter_seats={self.award_exploiter_seats} "
+            f"award_exploiter_random_ma={self.award_exploiter_random_ma_fraction:.2f} "
             f"award_exploiter_rule={self.award_exploiter_rule.config() if self.award_exploiter_rule else None} "
             f"history_snapshots={len(self.historical_snapshot_paths)} "
             f"eval_candidate={'sample' if self.benchmark_candidate_stochastic else 'argmax'}",
@@ -527,6 +540,37 @@ class V2SelfPlayRunner:
             self._reset_seat_memory(seat)
             picked.append(seat)
         return picked
+
+    def _history_leaders(self) -> List[RLAgent]:
+        """One agent per snapshot: its seats share that leader's network."""
+        return [
+            seats[0]
+            for seats in (getattr(self, "historical_seats_by_snapshot", []) or [])
+            if seats
+        ]
+
+    def _offload_history_networks(self) -> List[RLAgent]:
+        """Park frozen history weights in RAM so the PPO update gets their VRAM.
+
+        Batches finish before PPO starts, so no history seat is mid-inference.
+        ``_inference_device`` is left alone: it is where the weights go back.
+        """
+        if not self._bool_env("SELFPLAY_OFFLOAD_HISTORY_DURING_PPO", True):
+            return []
+        cpu = torch.device("cpu")
+        offloaded: List[RLAgent] = []
+        for leader in self._history_leaders():
+            if leader._inference_device.type == "cpu":
+                continue
+            with leader._model_device_lock:
+                _move_network_and_optimizer_to(leader.network, leader.optimizer, cpu)
+            offloaded.append(leader)
+        return offloaded
+
+    def _restore_history_networks(self, offloaded: List[RLAgent]) -> None:
+        for leader in offloaded:
+            # Falls back to CPU inference for this snapshot if VRAM is short.
+            leader._move_network_to_inference_device()
 
     def _history_lineup_available(self) -> bool:
         return len(getattr(self, "historical_seats_by_snapshot", []) or []) >= 3
@@ -900,7 +944,12 @@ class V2SelfPlayRunner:
             if bool(getattr(self, "benchmark_candidate_stochastic", False))
             else "argmax"
         )
-        return report.get("action_selection") == expected
+        # Reports from before the card-subset fix lack the key; their champion
+        # played blind at buy prompts, so the baseline must be re-measured.
+        from models.action_decoder import card_subset_features_enabled
+
+        features_match = bool(report.get("card_subset_features", False)) == card_subset_features_enabled()
+        return report.get("action_selection") == expected and features_match
 
     async def _ensure_champion_teacher_baseline(self) -> Dict[str, Any]:
         """Rebuild teacher strength for the champion under the current eval policy."""
@@ -1090,6 +1139,14 @@ class V2SelfPlayRunner:
             lineup_kind,
             search_training=search_training,
         )
+        award_exploiter = (not search_training) and self._is_award_exploiter_game(seed, lineup_kind)
+        if (
+            award_exploiter
+            and not random_ma_training
+            and random.Random(int(seed) ^ 0x52414D41).random()
+            < float(getattr(self, "award_exploiter_random_ma_fraction", 0.0))
+        ):
+            random_ma_training = True
         lineup = self._take_learning_seats(4) if search_training else self._lineup(seed)
         teacher_replay_store = getattr(self, "teacher_replay_store", None)
         if teacher_replay_store is not None and not search_training:
@@ -1148,7 +1205,7 @@ class V2SelfPlayRunner:
             lineup=lineup,
             search_training=search_training,
             lineup_kind=lineup_kind,
-            award_exploiter=(not search_training) and self._is_award_exploiter_game(seed, lineup_kind),
+            award_exploiter=award_exploiter,
             random_ma_training=random_ma_training,
             random_ma_mode=(
                 str(getattr(self, "random_ma_mode", "Limited synergy"))
@@ -1192,6 +1249,7 @@ class V2SelfPlayRunner:
                 f"stage={game.stage} lineup={game.lineup_kind} "
                 f"search_training={game.search_training} "
                 f"random_ma={game.random_ma_training} "
+                f"award_exploiter={game.award_exploiter} "
                 f"decisions={self._total_decisions()}",
                 flush=True,
             )
@@ -1229,6 +1287,7 @@ class V2SelfPlayRunner:
             champion=str(checkpoint),
             report_label="award_exploit",
             award_override=spec,
+            random_ma=str(os.getenv("BENCHMARK_AWARD_EXPLOIT_RANDOM_MA", "") or "").strip() or None,
         )
         max_pairwise = self._float_env("BENCHMARK_AWARD_EXPLOIT_MAX_PAIRWISE", 1.0)
         exploit_pairwise = float(report.get("pairwise_score", 0.0) or 0.0)
@@ -1414,9 +1473,13 @@ class V2SelfPlayRunner:
                         f"[selfplay] optimizing rollout steps={rollout_size} decisions={decisions}",
                         flush=True,
                     )
-                    ppo_metrics = await self.learner.optimize_from_rollout_buffer(
-                        self.learner.ppo_rollout_steps
-                    )
+                    offloaded = self._offload_history_networks()
+                    try:
+                        ppo_metrics = await self.learner.optimize_from_rollout_buffer(
+                            self.learner.ppo_rollout_steps
+                        )
+                    finally:
+                        self._restore_history_networks(offloaded)
                     self._maybe_archive_history_snapshot(decisions)
                     optimize_elapsed = time.monotonic() - optimize_started_at
                     self._append_ppo_metrics(ppo_metrics, decisions, optimize_elapsed)

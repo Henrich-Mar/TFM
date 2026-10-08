@@ -51,6 +51,7 @@ python rl-environment/standalone_bot.py --list-checkpoints
 | --- | --- |
 | `--min-action-delay-ms` | Clamped to at least `1000`. |
 | `--no-random-fallback` | Recommended for human games (on by default in the GUI). |
+| `--action-selection` | `argmax` (default, GUI "Strongest play") picks the top policy action; `sample` draws from the policy as in self-play. |
 | `--checkpoint <file.pth>` | Use an exact checkpoint. |
 | `--search-root <dir>` | Repeatable. Scans extra folders; overrides `--models`. |
 | `--models <dir>` | Single models folder. Defaults to every store in the repo. |

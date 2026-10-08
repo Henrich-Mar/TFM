@@ -337,6 +337,44 @@ def test_card_subset_descriptors_name_the_exact_cards_to_buy(monkeypatch) -> Non
     }
 
 
+def _buy_prompt_state() -> dict:
+    return {
+        "thisPlayer": {"megaCredits": 20, "cardCost": 3},
+        "waitingFor": {
+            "type": "card",
+            "title": "Select card(s) to buy",
+            "min": 0,
+            "max": 2,
+            "cards": [
+                {"name": "Power Grid", "calculatedCost": 18, "tags": ["power"]},
+                {"name": "Trees", "calculatedCost": 13, "tags": ["plant"], "victoryPoints": 1},
+            ],
+        },
+    }
+
+
+def test_card_subset_tokens_tell_the_policy_which_cards_are_bought(monkeypatch) -> None:
+    monkeypatch.delenv("V2_CARD_SUBSET_FEATURES", raising=False)
+    monkeypatch.setenv("TFM_RL_V4", "0")
+    descriptors = ActionDecoder().get_legal_action_descriptors(_buy_prompt_state())
+    tokens = {row["label"]: tuple(float(x) for x in row["token_features"]) for row in descriptors}
+
+    assert len(set(tokens.values())) == len(tokens) == 4
+    # The 14 slots after the 49 base features (token index 50..63) carry the subset.
+    assert tokens["Buy: Power Grid"][50:64] != tokens["Buy: Trees"][50:64]
+    assert tokens["Buy: no cards"][50] == 0.0
+    assert tokens["Buy: Power Grid + Trees"][50] == 0.5
+
+
+def test_card_subset_features_can_be_disabled_for_old_checkpoints(monkeypatch) -> None:
+    monkeypatch.setenv("V2_CARD_SUBSET_FEATURES", "0")
+    monkeypatch.setenv("TFM_RL_V4", "0")
+    descriptors = ActionDecoder().get_legal_action_descriptors(_buy_prompt_state())
+    tokens = {tuple(float(x) for x in row["token_features"]) for row in descriptors}
+
+    assert len(tokens) == 1
+
+
 def test_guided_annotation_targets_only_the_configured_agent(monkeypatch) -> None:
     agent = RLAgent.__new__(RLAgent)
     agent.id = "teacher-v1-seat-0"

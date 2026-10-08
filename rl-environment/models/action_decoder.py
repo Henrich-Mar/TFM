@@ -978,6 +978,19 @@ def _enumerate_card_selection_catalog(
     return catalog
 
 
+def _uses_card_selection_catalog(prompt: Dict[str, Any]) -> bool:
+    """Whether a card prompt's legal actions come from the selection catalog.
+
+    Exactly-one prompts keep one PLAY_CARD action per card.  Optional
+    "up to one" prompts (Inventors' Guild, Business Network) need the catalog:
+    it is the only path that offers both the empty pick and the card itself.
+    """
+    cards = prompt.get('cards', []) or []
+    min_cards = _safe_int(prompt.get('min', 1), 1)
+    max_cards = _safe_int(prompt.get('max', len(cards)), len(cards))
+    return max_cards != 1 or min_cards == 0
+
+
 def _card_selection_catalog_for_prompt(
     waiting_for: Dict[str, Any],
     player_state: Optional[Dict[str, Any]],
@@ -2114,13 +2127,11 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 for i, option in enumerate(options):
                     option_type = option.get('type', '')
                     option_title_l = _title_text(option.get('title', '')).lower()
-                    option_cards = option.get('cards', []) or []
-                    option_max = _safe_int(option.get('max', len(option_cards)), len(option_cards))
                     if (
                         option_type in ['selectCard', 'card']
                         and not _is_special_card_prompt_title(option_title_l)
                         and _is_card_selection_prompt(option)
-                        and option_max != 1
+                        and _uses_card_selection_catalog(option)
                     ):
                         selected_idx = i
                         matched = True
@@ -2515,24 +2526,25 @@ def build_response_for_input(waiting_for, action_index=None, player_state=None):
                 return {'type': 'card', 'cards': selected_names}
 
             # Compatibility path for pre-catalog snapshots using bitmask IDs.
-            if min_cards == 1 and max_cards == 1:
-                if action_index is not None and 0 <= action_index < n:
-                    card_names = [cards[action_index]['name']]
+            if max_cards == 1 and action_index is not None and 0 <= action_index < n:
+                # Legacy PLAY_CARD index on an at-most-one prompt picks that card;
+                # the empty pick of an optional prompt is a catalog action.
+                card_names = [cards[action_index]['name']]
+            elif min_cards == 1 and max_cards == 1:
+                # Heuristic: for prompts like "remove X from any card", pick the card with the most resources
+                keywords = ['remove', 'from any card', 'floater', 'floaters', 'microbe', 'microbes', 'animal', 'animals']
+                if any(k in title for k in keywords):
+                    best_idx = 0
+                    best_val = -1
+                    for i, c in enumerate(cards):
+                        # SerializedCard may use resourceCount; some UIs expose 'resources'
+                        val = int(c.get('resourceCount', c.get('resources', 0)) or 0)
+                        if val > best_val:
+                            best_val = val
+                            best_idx = i
+                    card_names = [cards[best_idx]['name']] if cards else []
                 else:
-                    # Heuristic: for prompts like "remove X from any card", pick the card with the most resources
-                    keywords = ['remove', 'from any card', 'floater', 'floaters', 'microbe', 'microbes', 'animal', 'animals']
-                    if any(k in title for k in keywords):
-                        best_idx = 0
-                        best_val = -1
-                        for i, c in enumerate(cards):
-                            # SerializedCard may use resourceCount; some UIs expose 'resources'
-                            val = int(c.get('resourceCount', c.get('resources', 0)) or 0)
-                            if val > best_val:
-                                best_val = val
-                                best_idx = i
-                        card_names = [cards[best_idx]['name']] if cards else []
-                    else:
-                        card_names = [cards[0]['name']] if cards else []
+                    card_names = [cards[0]['name']] if cards else []
             elif n > 0 and max_cards > 1:
                 if action_index is not None:
                     normalized_action = _safe_int(action_index, 0)
@@ -3271,12 +3283,19 @@ def _can_afford_card(player: Dict[str, Any], card: Dict[str, Any]) -> bool:
     }
     return bool(_can_afford_cards_batch(player, [payload_card])[0])
 
+def card_subset_features_enabled() -> bool:
+    return str(os.getenv("V2_CARD_SUBSET_FEATURES", "1")).strip().lower() not in {"0", "false", "no", "off"}
+
+
 class ActionDecoder:
     def __init__(self, planner_config: Optional[PlannerConfig] = None):
         self.planner_config = planner_config or PlannerConfig()
         from .v4_flags import v3_enabled, v4_enabled
         self.v4_enabled = v4_enabled()
         self.v3_enabled = v3_enabled()
+        # Without this, every card-subset (buy/keep) action token is identical
+        # outside V4, so the policy cannot tell which cards a subset contains.
+        self.card_subset_features = card_subset_features_enabled()
         self.last_canonical_aliases: List[Dict[str, int]] = []
         try:
             configured_scale = float(os.getenv("V3_FEATURE_SCALE", "1"))
@@ -3853,6 +3872,12 @@ class ActionDecoder:
             features.extend(self._v3_named_action_features(player_state, family, named_concept))
             if family == 'startup_plan':
                 features.extend(startup_identity)
+            if family == 'card_subset' and self.card_subset_features:
+                # Same 14-slot layout V4 uses after the 49 base features; the
+                # base card slots stay zero because a subset has no card_name.
+                if len(features) != 49:
+                    raise RuntimeError(f"card subset token expects 49 base features, got {len(features)}")
+                features.extend(self._v4_card_subset_tail(player_state, decoded_action))
             if family == 'select_space':
                 space = space_features or {}
                 features.extend([
@@ -4345,7 +4370,7 @@ class ActionDecoder:
                         option_cards = option.get('cards', []) or []
                         min_cards = _safe_int(option.get('min', 1), 1)
                         max_cards = _safe_int(option.get('max', len(option_cards)), len(option_cards))
-                        if _is_card_selection_prompt(option) and max_cards != 1:
+                        if _is_card_selection_prompt(option) and _uses_card_selection_catalog(option):
                             catalog = _card_selection_catalog_for_prompt(
                                 option,
                                 player_state,
@@ -4427,7 +4452,7 @@ class ActionDecoder:
                             available_actions.append(self.action_types['PASS'])
                 elif not available_actions:
                     # For selection scenarios, support multi-card subset actions.
-                    if is_selection and max_cards != 1:
+                    if is_selection and _uses_card_selection_catalog(waiting_for):
                         catalog = _card_selection_catalog_for_prompt(
                             waiting_for,
                             player_state,
@@ -4466,7 +4491,7 @@ class ActionDecoder:
                     if _has_selectable_patents(cards):
                         available_actions.append(702)
                 else:
-                    if _is_card_selection_prompt(waiting_for) and max_cards != 1:
+                    if _is_card_selection_prompt(waiting_for) and _uses_card_selection_catalog(waiting_for):
                         catalog = _card_selection_catalog_for_prompt(
                             waiting_for,
                             player_state,

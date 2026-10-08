@@ -49,6 +49,7 @@ class StandaloneBotLauncher(tk.Tk):
         self.timeout_var = tk.StringVar(value="60")
         self.log_level_var = tk.StringVar(value="INFO")
         self.no_random_fallback_var = tk.BooleanVar(value=True)
+        self.argmax_var = tk.BooleanVar(value=True)
 
         self._build_ui()
         self._set_running_state(False)
@@ -104,6 +105,13 @@ class StandaloneBotLauncher(tk.Tk):
             text="Safe live mode: do not submit random fallback actions after a rejection",
             variable=self.no_random_fallback_var,
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        row += 1
+
+        ttk.Checkbutton(
+            top,
+            text="Strongest play (argmax): always pick the policy's top action instead of sampling",
+            variable=self.argmax_var,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 0))
         row += 1
 
         ttk.Label(top, text="Log Level").grid(row=row, column=0, sticky="w", pady=(6, 0))
@@ -308,6 +316,7 @@ class StandaloneBotLauncher(tk.Tk):
         bot_args.extend(["--log-level", level])
         if self.no_random_fallback_var.get():
             bot_args.append("--no-random-fallback")
+        bot_args.extend(["--action-selection", "argmax" if self.argmax_var.get() else "sample"])
 
         if self.runtime_var.get() == "Host Python (local)":
             try:

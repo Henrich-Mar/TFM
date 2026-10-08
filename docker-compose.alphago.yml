@@ -21,7 +21,9 @@ services:
       - postgres_data_alphago:/var/lib/postgresql/data
 
   rl-coordinator:
-    restart: "no"
+    # Resumes from latest_learner.pth after a crash (e.g. a CUDA failure the
+    # CPU fallback cannot catch); a clean finish exits 0 and stays down.
+    restart: on-failure
     command:
       - python
       - -m
@@ -134,13 +136,21 @@ services:
       # swapped into this share of champion/history 1v3 games (never trained).
       - SELFPLAY_AWARD_EXPLOITER_FRACTION=${ALPHAGO_SELFPLAY_AWARD_EXPLOITER_FRACTION:-0.50}
       - SELFPLAY_AWARD_EXPLOITER_SEATS=${ALPHAGO_SELFPLAY_AWARD_EXPLOITER_SEATS:-1}
-      - SELFPLAY_AWARD_EXPLOITER_RULE=${ALPHAGO_SELFPLAY_AWARD_EXPLOITER_RULE:-min_lead=3,min_generation=8,max_cost=20,max_own_awards=3,hand_weight=0.5}
+      - SELFPLAY_AWARD_EXPLOITER_RULE=${ALPHAGO_SELFPLAY_AWARD_EXPLOITER_RULE:-min_lead=3,min_generation=8,max_cost=20,max_own_awards=3,hand_weight=0.5,init_focus_weight=2.5,init_top_k=8}
+      # Share of exploiter games played on random awards/milestones, where the
+      # champion is exploitable (+0.04 pairwise on two seed sets, 2026-10-07).
+      - SELFPLAY_AWARD_EXPLOITER_RANDOM_MA=${ALPHAGO_SELFPLAY_AWARD_EXPLOITER_RANDOM_MA:-0.50}
       # Exploitability check on promotion candidates (1 exploiter + 3 candidates).
-      # Pairwise near 0.50 = funding against the policy gains nothing. The
-      # champion baseline with this rule: 0.522 (2026-10-06); threshold 1.0 = report only.
-      - BENCHMARK_AWARD_EXPLOITER_RULE=${ALPHAGO_BENCHMARK_AWARD_EXPLOITER_RULE:-min_lead=3,min_generation=8,max_cost=20,max_own_awards=3,hand_weight=0.5}
+      # Pairwise near 0.50 = funding against the policy gains nothing.
+      # Measured on random MA. Champion baseline (S2+E3 rule, random MA): 0.571 / 0.533
+      # on two seed sets vs plain-champion controls 0.529 / 0.489. Threshold 1.0 = report only.
+      - BENCHMARK_AWARD_EXPLOITER_RULE=${ALPHAGO_BENCHMARK_AWARD_EXPLOITER_RULE:-min_lead=3,min_generation=8,max_cost=20,max_own_awards=3,hand_weight=0.5,init_focus_weight=2.5,init_top_k=8}
       - BENCHMARK_AWARD_EXPLOIT_MAX_PAIRWISE=${ALPHAGO_BENCHMARK_AWARD_EXPLOIT_MAX_PAIRWISE:-1.0}
-      - PROMOTION_TEACHER_PAIRWISE_MARGIN=${ALPHAGO_PROMOTION_TEACHER_PAIRWISE_MARGIN:-0.0}
+      - BENCHMARK_AWARD_EXPLOIT_RANDOM_MA=${ALPHAGO_BENCHMARK_AWARD_EXPLOIT_RANDOM_MA:-Limited synergy}
+      # Slack vs the champion's own full teacher score. At 0.0 a lucky champion
+      # baseline (0.725, while full teacher runs land 0.650-0.689) blocked every
+      # candidate from the full champion benchmark for 17 candidates (2026-10-08).
+      - PROMOTION_TEACHER_PAIRWISE_MARGIN=${ALPHAGO_PROMOTION_TEACHER_PAIRWISE_MARGIN:-0.06}
       - PPO_ROLLBACK_PAIRWISE_FLOOR=${ALPHAGO_ROLLBACK_PAIRWISE_FLOOR:-0.35}
       - PPO_ROLLBACK_FAILURE_LIMIT=${ALPHAGO_ROLLBACK_FAILURE_LIMIT:-2}
       - PPO_ROLLBACK_CONFIRM_FULL=${ALPHAGO_ROLLBACK_CONFIRM_FULL:-1}
@@ -200,7 +210,12 @@ services:
       - LEAGUE_ENABLE=0
       - EVOLUTION_IMMIGRANT_RATIO=0.0
       - FIXED_BENCHMARK_ENABLED=0
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # Not expandable_segments: under WSL its first OOM left the allocator in a
+      # broken state (CUDACachingAllocator "handles_" assert), and every later
+      # move to CUDA failed, which pinned PPO on CPU for the rest of the run
+      # (2026-10-07). The classic allocator raises a plain OOM, which the CPU
+      # fallback handles and recovers from.
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128,garbage_collection_threshold:0.8
 
 volumes:
   postgres_data_alphago:

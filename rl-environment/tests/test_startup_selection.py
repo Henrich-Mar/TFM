@@ -331,3 +331,55 @@ def test_startup_keep_roi_does_not_prefer_filling_the_cash_cap(monkeypatch) -> N
     start_mc, keep_cost = (unmi_start_mc, unmi_keep_cost) if corp == "United Nations Mars Initiative" else (mining_start_mc, mining_keep_cost)
     legal_cap = start_mc // keep_cost
     assert len(top_keeps) < legal_cap
+
+
+def test_server_spelled_corporations_keep_their_starting_megacredits() -> None:
+    # The server sends "Ecoline"/"ThorGate"; the metadata says "EcoLine"/"Thorgate".
+    # Missing the match capped every startup plan for these corps at zero kept cards.
+    assert _card_starting_megacredits({"name": "Ecoline"}, default=0) == 36
+    assert _card_starting_megacredits({"name": "ThorGate"}, default=0) == 48
+
+    projects = ["Birds", "Trees", "Space Station", "Solar Power", "Steelworks",
+                "Insects", "Mine", "Research", "Lichen", "Comet"]
+    waiting_for = {
+        "type": "initialCards",
+        "options": [
+            {"type": "card", "title": "Select corporation", "min": 1, "max": 1,
+             "cards": [{"name": "Ecoline", "calculatedCost": 0}, {"name": "ThorGate", "calculatedCost": 0}]},
+            {"type": "card", "title": "Select initial cards to buy", "min": 0, "max": 10,
+             "cards": [{"name": name, "calculatedCost": 10} for name in projects]},
+        ],
+    }
+    plans = _enumerate_startup_plan_payloads(
+        waiting_for, {"waitingFor": waiting_for, "thisPlayer": {"megaCredits": 0, "cardCost": 3}}, max_plans=32,
+    )
+
+    kept_by_corp: Dict[str, List[int]] = {}
+    for payload in plans:
+        kept_by_corp.setdefault(_response_cards(payload, 0)[0], []).append(len(_response_cards(payload, 1)))
+    assert set(kept_by_corp) == {"Ecoline", "ThorGate"}
+    assert all(max(counts) > 0 for counts in kept_by_corp.values())
+
+
+def test_every_corporation_offers_small_keeps() -> None:
+    projects = ["Birds", "Trees", "Space Station", "Solar Power", "Steelworks",
+                "Insects", "Mine", "Research", "Lichen", "Comet"]
+    waiting_for = {
+        "type": "initialCards",
+        "options": [
+            {"type": "card", "title": "Select corporation", "min": 1, "max": 1,
+             "cards": [{"name": "Ecoline", "calculatedCost": 0}, {"name": "Teractor", "calculatedCost": 0}]},
+            {"type": "card", "title": "Select initial cards to buy", "min": 0, "max": 10,
+             "cards": [{"name": name, "calculatedCost": 10} for name in projects]},
+        ],
+    }
+    plans = _enumerate_startup_plan_payloads(
+        waiting_for, {"waitingFor": waiting_for, "thisPlayer": {"megaCredits": 0, "cardCost": 3}}, max_plans=32,
+    )
+
+    sizes_by_corp: Dict[str, set] = {}
+    for payload in plans:
+        sizes_by_corp.setdefault(_response_cards(payload, 0)[0], set()).add(len(_response_cards(payload, 1)))
+    assert len(plans) <= 32
+    for corp, sizes in sizes_by_corp.items():
+        assert {0, 1, 2, 3} <= sizes, (corp, sorted(sizes))

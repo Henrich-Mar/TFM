@@ -532,7 +532,7 @@ def _card_cost(card: Dict[str, Any]) -> int:
 def _card_vp(card: Dict[str, Any]) -> int:
     # Prefer metadata VP (card payload often omits it).
     name = str(card.get('name', '') or '')
-    meta = _CARD_META_CACHE.get(name, {}) if isinstance(_CARD_META_CACHE, dict) else {}
+    meta = _lookup_card_metadata(name)
     try:
         return int(meta.get('victoryPoints', card.get('victoryPoints', 0)) or 0)
     except Exception:
@@ -543,10 +543,7 @@ def _metadata_for_card(card_or_name: Any) -> Dict[str, Any]:
         card_name = str(card_or_name.get('name', '') or '')
     else:
         card_name = str(card_or_name or '')
-    if not card_name or not isinstance(_CARD_META_CACHE, dict):
-        return {}
-    meta = _CARD_META_CACHE.get(card_name, {})
-    return meta if isinstance(meta, dict) else {}
+    return _lookup_card_metadata(card_name)
 
 def _card_starting_megacredits(card: Dict[str, Any], default: int = 0) -> int:
     raw_direct = card.get('startingMegaCredits', card.get('startingMegacredits', None))
@@ -1309,6 +1306,9 @@ def _count_tags(cards: List[Dict[str, Any]]) -> Dict[str, int]:
             counts[tag_name] = int(counts.get(tag_name, 0)) + 1
     return counts
 
+_STARTUP_SMALL_KEEP_SIZES = (0, 1, 2, 3)
+
+
 def _startup_project_subset_scores(
     project_cards: List[Dict[str, Any]],
     min_cards: int,
@@ -1398,6 +1398,13 @@ def _startup_project_subset_scores(
     top_scored.sort(key=lambda item: (item[0], len(item[1]), item[2]), reverse=True)
     dedup_seen: Set[str] = set()
     out: List[Tuple[float, List[str]]] = []
+    # The best subset of each small size is always offered, so the policy
+    # rather than this heuristic decides whether to keep few cards or many.
+    for keep_size in _STARTUP_SMALL_KEEP_SIZES:
+        best = next((item for item in top_scored if len(item[1]) == keep_size), None)
+        if best is not None and best[2] not in dedup_seen:
+            dedup_seen.add(best[2])
+            out.append((float(best[0]), list(best[1])))
     for score, names, signature in top_scored:
         if signature in dedup_seen:
             continue
@@ -1491,6 +1498,7 @@ def _enumerate_startup_plan_payloads(
     per_corp_project_limit = max(4, int(_STARTUP_PLAN_LIMIT // combo_slots))
 
     top_candidates: List[Tuple[float, Dict[str, Any], Tuple[Any, ...], Dict[str, Any]]] = []
+    reserved_indices: Set[int] = set()
     for corp_card in corp_cards:
         corp_name = str(corp_card.get('name', '') or '')
         corp_score = _score_initial_card(corp_card, 'corporation', project_tag_counts)
@@ -1511,7 +1519,7 @@ def _enumerate_startup_plan_payloads(
             else:
                 continue
 
-        for prelude_score, prelude_names, prelude_tags in prelude_choices:
+        for prelude_rank, (prelude_score, prelude_names, prelude_tags) in enumerate(prelude_choices):
             project_choices = _startup_project_subset_scores(
                 project_cards=project_cards,
                 min_cards=project_min,
@@ -1525,7 +1533,12 @@ def _enumerate_startup_plan_payloads(
             )
             if not project_choices:
                 continue
-            for ceo_score, ceo_names, ceo_tags in ceo_choices:
+            small_keeps: Set[Tuple[str, ...]] = set()
+            for keep_size in _STARTUP_SMALL_KEEP_SIZES:
+                best_names = next((names for _, names in project_choices if len(names) == keep_size), None)
+                if best_names is not None:
+                    small_keeps.add(tuple(sorted(best_names)))
+            for ceo_rank, (ceo_score, ceo_names, ceo_tags) in enumerate(ceo_choices):
                 ceo_tag_bonus = 0.0
                 for tag_name, count in ceo_tags.items():
                     ceo_tag_bonus += 0.05 * float(count) * (1.0 + 0.1 * float(project_tag_counts.get(tag_name, 0)))
@@ -1559,7 +1572,9 @@ def _enumerate_startup_plan_payloads(
                     sig_ceo = tuple(sorted(ceo_names))
                     sig_project = tuple(sorted(project_names))
                     signature = (corp_name, sig_prelude, sig_ceo, sig_project)
-                    
+                    if prelude_rank == 0 and ceo_rank == 0 and sig_project in small_keeps:
+                        reserved_indices.add(len(top_candidates))
+
                     top_candidates.append(
                         (
                             float(total_score + ceo_tag_bonus),
@@ -1588,15 +1603,18 @@ def _enumerate_startup_plan_payloads(
                 max(1, int(max_plans)),
             )
             ranked = json.loads(str(ranked_json or "[]"))
-            ranked_payloads: List[Dict[str, Any]] = []
+            ranked_indices: List[int] = []
             for row in ranked:
                 idx = _safe_int((row or {}).get('index', -1), -1)
                 if 0 <= idx < len(top_candidates):
-                    ranked_payloads.append(top_candidates[idx][1])
-                if len(ranked_payloads) >= max(1, int(max_plans)):
+                    ranked_indices.append(idx)
+                if len(ranked_indices) >= max(1, int(max_plans)):
                     break
-            if ranked_payloads:
-                return ranked_payloads
+            if ranked_indices:
+                return [
+                    top_candidates[idx][1]
+                    for idx in _with_reserved_startup_plans(ranked_indices, reserved_indices, max_plans)
+                ]
         except Exception as exc:
             logger.warning(
                 "Rust startup-plan ranking failed; falling back to Python ranking: %s",
@@ -1605,17 +1623,45 @@ def _enumerate_startup_plan_payloads(
 
     # Strict Rust cutover should always return ranked payloads, but keep this guard
     # in case malformed ranking data is produced.
-    top_candidates.sort(key=lambda item: (item[0], item[2]), reverse=True)
+    order = sorted(
+        range(len(top_candidates)),
+        key=lambda idx: (top_candidates[idx][0], top_candidates[idx][2]),
+        reverse=True,
+    )
     dedup: Set[Tuple[Any, ...]] = set()
-    selected: List[Dict[str, Any]] = []
-    for _, payload, signature, _ in top_candidates:
+    selected: List[int] = []
+    for idx in order:
+        signature = top_candidates[idx][2]
         if signature in dedup:
             continue
         dedup.add(signature)
-        selected.append(payload)
+        selected.append(idx)
         if len(selected) >= max(1, int(max_plans)):
             break
-    return selected
+    return [top_candidates[idx][1] for idx in _with_reserved_startup_plans(selected, reserved_indices, max_plans)]
+
+
+def _with_reserved_startup_plans(ranked: List[int], reserved: Set[int], max_plans: int) -> List[int]:
+    """``ranked`` with every reserved small-keep plan included.
+
+    Missing reserved plans replace the lowest-ranked unreserved ones, so the
+    catalog size never grows past ``max_plans``.
+    """
+    limit = max(1, int(max_plans))
+    missing = [idx for idx in sorted(reserved) if idx not in set(ranked)]
+    if not missing:
+        return ranked
+    kept = list(ranked)
+    for idx in missing:
+        if len(kept) < limit:
+            kept.append(idx)
+            continue
+        drop = next((pos for pos in range(len(kept) - 1, -1, -1) if kept[pos] not in reserved), None)
+        if drop is None:
+            break
+        kept.pop(drop)
+        kept.append(idx)
+    return kept
 
 def _build_initial_setup_response_legacy(waiting_for: Dict[str, Any], player_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     options = waiting_for.get('options', []) or []
@@ -3247,11 +3293,24 @@ def _metadata_loader() -> Dict[str, Dict[str, Any]]:
     return {}
 
 _CARD_META_CACHE: Dict[str, Dict[str, Any]] = _metadata_loader()
+# The server spells a few corporations differently from the metadata
+# ("Ecoline"/"EcoLine", "ThorGate"/"Thorgate"); an exact-only lookup lost their
+# starting M€, which capped every startup plan for them at zero kept cards.
+_CARD_META_BY_FOLDED_NAME: Dict[str, Dict[str, Any]] = {
+    str(name).casefold(): meta for name, meta in _CARD_META_CACHE.items()
+}
 
-def _metadata_tags(card_name: str) -> Dict[str, int]:
-    if not card_name or not _CARD_META_CACHE:
+
+def _lookup_card_metadata(card_name: str) -> Dict[str, Any]:
+    if not card_name or not isinstance(_CARD_META_CACHE, dict):
         return {}
     meta = _CARD_META_CACHE.get(card_name)
+    if meta is None:
+        meta = _CARD_META_BY_FOLDED_NAME.get(str(card_name).casefold())
+    return meta if isinstance(meta, dict) else {}
+
+def _metadata_tags(card_name: str) -> Dict[str, int]:
+    meta = _lookup_card_metadata(card_name)
     if not meta:
         return {}
     out: Dict[str, int] = {}

@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 
 
@@ -264,6 +265,106 @@ def test_strongest_baseline_report_wins_when_checkpoint_has_several_reports(tmp_
     assert ranked[0].metrics["gate_passed"] is False
     assert ranked[0].baseline == "teacher"
     assert ranked[0].role == "champion"
+
+
+def test_runs_are_pooled_so_a_lucky_short_screen_does_not_win(tmp_path):
+    root = tmp_path / "repo"
+    checkpoints = root / "rl-alphago" / "checkpoints"
+    checkpoints.mkdir(parents=True)
+    lucky = checkpoints / "candidate_000000001.pth"
+    steady = checkpoints / "candidate_000000002.pth"
+    lucky.write_bytes(b"a")
+    steady.write_bytes(b"b")
+
+    benchmarks = root / "rl-alphago" / "benchmarks"
+    # Container paths never resolve locally, so matching goes through the stem.
+    _write_json(
+        benchmarks / "benchmark_candidate_000000001_stage1_teacher_screen.json",
+        _benchmark_report("/app/alphago/checkpoints/candidate_000000001.pth", first_place_rate=0.75, gate_passed=True, completed=32, planned=32),
+    )
+    _write_json(
+        benchmarks / "benchmark_candidate_000000001_stage1_teacher.json",
+        _benchmark_report("/app/alphago/checkpoints/candidate_000000001.pth", first_place_rate=0.40, gate_passed=True),
+    )
+    _write_json(
+        benchmarks / "benchmark_candidate_000000002_stage1_teacher.json",
+        _benchmark_report("/app/alphago/checkpoints/candidate_000000002.pth", first_place_rate=0.55, gate_passed=True),
+    )
+    _write_json(
+        benchmarks / "benchmark_candidate_000000002_stage1_teacher_verify.json",
+        _benchmark_report("/app/alphago/checkpoints/candidate_000000002.pth", first_place_rate=0.50, gate_passed=True),
+    )
+
+    ranked = discover_checkpoints([str(root / "rl-alphago")], root=str(root))
+    assert [item.name for item in ranked] == [steady.name, lucky.name]
+    lucky_entry = ranked[1]
+    assert lucky_entry.metrics["completed_games"] == 152
+    assert lucky_entry.metrics["benchmark_runs"] == 2
+    assert abs(lucky_entry.metrics["first_place_rate"] - (24 + 48) / 152) < 1e-9
+    assert lucky_entry.metrics["first_place_lower_95"] < lucky_entry.metrics["first_place_rate"]
+    assert "240 games/2 runs" in ranked[0].summary()
+
+
+def test_champion_role_does_not_outrank_a_stronger_candidate(tmp_path):
+    root = tmp_path / "repo"
+    checkpoints = root / "rl-alphago" / "checkpoints"
+    checkpoints.mkdir(parents=True)
+    champion = checkpoints / "champion.pth"
+    strong = checkpoints / "candidate_000000005.pth"
+    champion.write_bytes(b"champion")
+    strong.write_bytes(b"strong")
+    benchmarks = root / "rl-alphago" / "benchmarks"
+    _write_json(benchmarks / "benchmark_champion_stage1_teacher.json", _benchmark_report("/app/x/champion.pth", first_place_rate=0.40, gate_passed=True))
+    _write_json(benchmarks / "benchmark_candidate_000000005_stage1_teacher.json", _benchmark_report("/app/x/candidate_000000005.pth", first_place_rate=0.60, gate_passed=True))
+
+    ranked = discover_checkpoints([str(root / "rl-alphago")], root=str(root))
+    assert [item.name for item in ranked] == [strong.name, champion.name]
+
+
+def test_overwritten_champion_ignores_stale_reports_and_inherits_its_source(tmp_path):
+    root = tmp_path / "repo"
+    checkpoints = root / "rl-alphago" / "checkpoints"
+    benchmarks = root / "rl-alphago" / "benchmarks"
+    checkpoints.mkdir(parents=True)
+
+    stale_report = benchmarks / "benchmark_champion_stage1_teacher.json"
+    _write_json(stale_report, _benchmark_report("/app/x/champion.pth", first_place_rate=0.90, gate_passed=True))
+    os.utime(stale_report, (1_000_000, 1_000_000))
+
+    source = checkpoints / "candidate_000000007.pth"
+    source.write_bytes(b"promoted weights")
+    os.utime(source, (2_000_000, 2_000_000))
+    champion = checkpoints / "champion.pth"
+    shutil.copy2(source, champion)
+    _write_json(
+        benchmarks / "benchmark_candidate_000000007_stage1_teacher.json",
+        _benchmark_report("/app/x/candidate_000000007.pth", first_place_rate=0.35, gate_passed=True),
+    )
+
+    ranked = discover_checkpoints([str(root / "rl-alphago")], root=str(root))
+    by_name = {item.name: item for item in ranked}
+    promoted = by_name["champion.pth"]
+    assert promoted.metrics["first_place_rate"] == 0.35
+    assert any("stale benchmark" in note for note in promoted.evidence)
+    assert any("same weights as candidate_000000007.pth" in note for note in promoted.evidence)
+    # Equal evidence: the champion file wins the tie over its source copy.
+    assert ranked[0].name == "champion.pth"
+
+
+def test_stem_match_is_scoped_to_the_reports_store(tmp_path):
+    root = tmp_path / "repo"
+    for store in ("rl-v2", "rl-alphago"):
+        (root / store / "checkpoints").mkdir(parents=True)
+        (root / store / "checkpoints" / "champion.pth").write_bytes(store.encode())
+    _write_json(
+        root / "rl-alphago" / "benchmarks" / "benchmark_champion_stage1_teacher.json",
+        _benchmark_report("/app/alphago/checkpoints/champion.pth", first_place_rate=0.50, gate_passed=True),
+    )
+
+    ranked = discover_checkpoints([str(root / "rl-v2"), str(root / "rl-alphago")], root=str(root))
+    by_store = {item.store.replace("\\", "/").split("/")[0]: item for item in ranked}
+    assert by_store["rl-alphago"].verified is True
+    assert by_store["rl-v2"].verified is False
 
 
 def test_discovery_is_empty_without_checkpoints(tmp_path):

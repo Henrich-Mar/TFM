@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -104,6 +105,15 @@ _ROLE_FALLBACK = "checkpoint"
 # A benchmark report below this completion rate is a partial/aborted run and is
 # not treated as strength evidence.
 _MIN_BENCHMARK_COMPLETION_RATE = 0.5
+
+# Benchmarks are ranked by the lower bound of the 95% Wilson interval on the
+# pooled first-place rate, so a lucky 32-game screen cannot outrank a long run.
+_WILSON_Z = 1.96
+
+# Files replaced in place on promotion; reports older than the file are stale.
+_MUTABLE_ROLES = frozenset({_ROLE_CHAMPION, _ROLE_LATEST_LEARNER})
+_STALE_TOLERANCE_SECONDS = 60.0
+_IDENTITY_PROBE_BYTES = 1 << 20
 
 
 def repo_root() -> str:
@@ -223,19 +233,19 @@ class CheckpointCandidate:
         """Ranking key; larger is better.
 
         Order of trust: strength evidence, then how human-like the measured
-        opponent was, then the checkpoint's own role, then the measured result.
+        opponent was, then the measured result. The role only breaks ties, so a
+        stale or weak ``champion.pth`` cannot outrank a stronger candidate.
         """
         primary = _as_float(self.metrics.get("primary")) or 0.0
         secondary = _as_float(self.metrics.get("secondary")) or 0.0
-        # A checkpoint in an explicit champion role is a better default pick than
-        # an equally-scored intermediate candidate.
+        # Prefer the champion file over the identical candidate it was copied from.
         role_bonus = 1.0 if self.role == _ROLE_CHAMPION else 0.0
         return (
             float(self.tier),
             self.baseline_rank,
-            role_bonus,
             primary,
             secondary,
+            role_bonus,
             float(self.mtime),
         )
 
@@ -251,7 +261,16 @@ class CheckpointCandidate:
             parts.append(f"win rate {win_rate * 100:.0f}%")
         if first_place is not None:
             opponent = f" vs {self.baseline}" if self.baseline else ""
-            parts.append(f"1st place {first_place * 100:.0f}%{opponent}")
+            detail = []
+            lower = _as_float(self.metrics.get("first_place_lower_95"))
+            if lower is not None:
+                detail.append(f"95% low {lower * 100:.0f}%")
+            games = self.metrics.get("completed_games")
+            if games:
+                runs = self.metrics.get("benchmark_runs") or 1
+                detail.append(f"{games} games/{runs} run{'s' if runs != 1 else ''}")
+            suffix = f" ({', '.join(detail)})" if detail else ""
+            parts.append(f"1st place {first_place * 100:.0f}%{opponent}{suffix}")
         if elo is not None:
             parts.append(f"elo {elo:.0f}")
         gate = self.metrics.get("gate_passed")
@@ -303,8 +322,9 @@ def _store_label(path: str, root: str) -> str:
     return parts[0] if parts else relative
 
 
-def _iter_checkpoint_files(search_bases: Sequence[str]) -> List[str]:
-    found: List[str] = []
+def _iter_checkpoint_files(search_bases: Sequence[str]) -> List[Tuple[str, str]]:
+    """Return ``(store base, checkpoint path)`` pairs, de-duplicated."""
+    found: List[Tuple[str, str]] = []
     seen: set = set()
     for base in search_bases:
         for pattern in _CHECKPOINT_PATTERNS:
@@ -315,8 +335,8 @@ def _iter_checkpoint_files(search_bases: Sequence[str]) -> List[str]:
                 if key in seen:
                     continue
                 seen.add(key)
-                found.append(match)
-    return sorted(found)
+                found.append((base, match))
+    return sorted(found, key=lambda item: item[1])
 
 
 def _benchmark_entry(report_path: str) -> Optional[Dict[str, Any]]:
@@ -332,6 +352,7 @@ def _benchmark_entry(report_path: str) -> Optional[Dict[str, Any]]:
         completion_rate = completed / float(planned)
     return {
         "report_path": report_path,
+        "mtime": _mtime_of(report_path),
         "baseline": str(report.get("baseline", "")),
         "stage": report.get("stage"),
         "first_place_rate": _as_float(report.get("first_place_rate")),
@@ -345,88 +366,206 @@ def _benchmark_entry(report_path: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _collect_benchmarks(search_bases: Sequence[str]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
-    """Index benchmark reports by resolved checkpoint path and by checkpoint stem.
+def _report_stem(entry: Dict[str, Any]) -> str:
+    checkpoint = str(entry.get("checkpoint") or "").replace("\\", "/")
+    if checkpoint:
+        return os.path.splitext(checkpoint.rsplit("/", 1)[-1])[0]
+    # Fall back to the report filename: benchmark_<stem>_stage<N>_<baseline>.json
+    return os.path.basename(entry["report_path"])[len("benchmark_"):].split("_stage")[0]
 
-    A checkpoint can have several reports (one per baseline/stage/label); keep
-    the strongest completed, gate-passing one.
+
+def _collect_benchmarks(
+    search_bases: Sequence[str],
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[Tuple[str, str], List[Dict[str, Any]]]]:
+    """Index every benchmark report by resolved checkpoint path and by (store, stem).
+
+    Reports usually carry container paths (``/app/...``) that never resolve
+    locally, so the stem index is the common match. It is scoped to the store
+    the report lives in: a ``champion`` report from one store says nothing about
+    another store's ``champion.pth``.
     """
-    by_path: Dict[str, Dict[str, Any]] = {}
-    by_stem: Dict[str, Dict[str, Any]] = {}
+    by_path: Dict[str, List[Dict[str, Any]]] = {}
+    by_stem: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for base in search_bases:
         for report_path in glob.glob(os.path.join(base, _BENCHMARK_PATTERN)):
             entry = _benchmark_entry(report_path)
             if entry is None:
                 continue
             checkpoint = entry.get("checkpoint") or ""
-            stem = os.path.splitext(os.path.basename(checkpoint))[0] if checkpoint else ""
-            if not stem:
-                # Fall back to the report filename: benchmark_<stem>_stage<N>_<baseline>.json
-                stem = os.path.basename(report_path)[len("benchmark_"):].split("_stage")[0]
             if checkpoint:
-                key = _resolve(checkpoint)
-                existing = by_path.get(key)
-                if existing is None or _benchmark_sort_key(entry) > _benchmark_sort_key(existing):
-                    by_path[key] = dict(entry)
+                by_path.setdefault(_resolve(checkpoint), []).append(entry)
+            stem = _report_stem(entry)
             if stem:
-                existing_stem = by_stem.get(stem)
-                if existing_stem is None or _benchmark_sort_key(entry) > _benchmark_sort_key(existing_stem):
-                    by_stem[stem] = dict(entry)
+                by_stem.setdefault((base, stem), []).append(entry)
     return by_path, by_stem
 
 
-def _benchmark_sort_key(entry: Dict[str, Any]) -> Tuple[float, ...]:
-    """Pick the most trustworthy report for a checkpoint.
+def _reports_for(
+    candidate: "CheckpointCandidate",
+    base: str,
+    by_path: Dict[str, List[Dict[str, Any]]],
+    by_stem: Dict[Tuple[str, str], List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    seen: set = set()
+    reports: List[Dict[str, Any]] = []
+    for entry in by_path.get(candidate.path, []) + by_stem.get((base, candidate.stem), []):
+        if entry["report_path"] in seen:
+            continue
+        seen.add(entry["report_path"])
+        reports.append(entry)
+    return reports
 
-    A full, gate-passing run against the hardest baseline says more than a high
-    win rate against a weaker one.
+
+def _wilson_lower(successes: float, games: float, z: float = _WILSON_Z) -> float:
+    """Lower bound of the Wilson score interval; penalises small samples."""
+    if games <= 0:
+        return 0.0
+    rate = successes / games
+    denominator = 1.0 + z * z / games
+    centre = rate + z * z / (2.0 * games)
+    margin = z * math.sqrt(rate * (1.0 - rate) / games + z * z / (4.0 * games * games))
+    return max(0.0, (centre - margin) / denominator)
+
+
+def _is_complete(entry: Dict[str, Any]) -> bool:
+    return (_as_float(entry.get("completion_rate")) or 0.0) >= _MIN_BENCHMARK_COMPLETION_RATE
+
+
+def _drop_stale_reports(candidate: "CheckpointCandidate", reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ignore reports older than a checkpoint that is overwritten in place.
+
+    ``champion.pth`` and ``latest_learner.pth`` are replaced on promotion, so a
+    report written before the current file measured a different network.
+    ``candidate_*`` files are immutable, so their reports are always kept (this
+    also stops a fresh clone, where every mtime is "now", from discarding all
+    evidence).
     """
-    completion = _as_float(entry.get("completion_rate")) or 0.0
-    baseline = str(entry.get("baseline", ""))
-    return (
-        1.0 if completion >= _MIN_BENCHMARK_COMPLETION_RATE else 0.0,
-        float(_BASELINE_RANKS.get(baseline, _UNRANKED_BASELINE)),
-        1.0 if entry.get("gate_passed") else 0.0,
-        float(entry.get("planned_games") or 0),
-        _as_float(entry.get("first_place_rate")) or 0.0,
+    if candidate.role not in _MUTABLE_ROLES or not candidate.mtime:
+        return reports
+    fresh = [entry for entry in reports if entry["mtime"] + _STALE_TOLERANCE_SECONDS >= candidate.mtime]
+    stale = len(reports) - len(fresh)
+    if stale:
+        candidate.evidence.append(f"{stale} stale benchmark(s) ignored (file overwritten since)")
+    return fresh
+
+
+def _pool_benchmarks(reports: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Pool every completed report on the hardest baseline into one estimate.
+
+    Taking only the best single run rewards lucky screens. Pooling all runs on
+    the same baseline and ranking by the Wilson lower bound rewards checkpoints
+    that are strong *and* well measured.
+    """
+    complete = [entry for entry in reports if _is_complete(entry)]
+    if not complete:
+        return None
+    baseline = max(
+        (str(entry.get("baseline", "")) for entry in complete),
+        key=lambda name: _BASELINE_RANKS.get(name, _UNRANKED_BASELINE),
     )
+    group = [entry for entry in complete if str(entry.get("baseline", "")) == baseline]
+    games = 0
+    wins = 0.0
+    rank_games = 0
+    rank_total = 0.0
+    gate_games = 0
+    for entry in group:
+        played = int(entry.get("completed_games") or 0)
+        if played <= 0:
+            continue
+        mean_rank = _as_float(entry.get("mean_rank"))
+        games += played
+        wins += (_as_float(entry.get("first_place_rate")) or 0.0) * played
+        if mean_rank is not None:
+            rank_games += played
+            rank_total += mean_rank * played
+        if entry.get("gate_passed"):
+            gate_games += played
+    if games <= 0:
+        return None
+    return {
+        "baseline": baseline,
+        "stage": group[0].get("stage"),
+        "first_place_rate": wins / games,
+        "first_place_lower_95": _wilson_lower(wins, games),
+        "mean_rank": rank_total / rank_games if rank_games else None,
+        # The gate is judged on the majority of measured games, not the best run.
+        "gate_passed": gate_games * 2 >= games,
+        "completed_games": games,
+        "runs": len(group),
+        "report_paths": [entry["report_path"] for entry in group],
+    }
 
 
-def _benchmark_tier(entry: Dict[str, Any]) -> int:
-    completion = _as_float(entry.get("completion_rate")) or 0.0
-    if completion < _MIN_BENCHMARK_COMPLETION_RATE:
-        return TIER_UNRANKED
-    return TIER_GATE_PASS if entry.get("gate_passed") else TIER_BENCHMARK
-
-
-def _apply_benchmark(candidate: CheckpointCandidate, entry: Dict[str, Any]) -> None:
-    first_place = _as_float(entry.get("first_place_rate"))
-    mean_rank = _as_float(entry.get("mean_rank"))
-    pairwise = _as_float(entry.get("pairwise_score"))
+def _apply_benchmark(candidate: CheckpointCandidate, reports: Sequence[Dict[str, Any]]) -> None:
+    for entry in reports:
+        if not _is_complete(entry):
+            # A partially completed run says nothing about strength, so record it
+            # for context without letting it count as verification evidence.
+            candidate.evidence.append(
+                f"aborted benchmark vs {entry.get('baseline')} "
+                f"({entry.get('completed_games')}/{entry.get('planned_games')} games)"
+            )
+    pooled = _pool_benchmarks(reports)
+    if pooled is None:
+        return
+    mean_rank = pooled["mean_rank"]
     candidate.metrics.update(
         {
-            "first_place_rate": first_place,
+            "first_place_rate": pooled["first_place_rate"],
+            "first_place_lower_95": pooled["first_place_lower_95"],
             "mean_rank": mean_rank,
-            "pairwise_score": pairwise,
-            "gate_passed": bool(entry.get("gate_passed", False)),
-            "completed_games": entry.get("completed_games"),
-            "baseline": entry.get("baseline"),
-            "stage": entry.get("stage"),
-            "report_path": entry.get("report_path"),
+            "gate_passed": pooled["gate_passed"],
+            "completed_games": pooled["completed_games"],
+            "benchmark_runs": pooled["runs"],
+            "baseline": pooled["baseline"],
+            "stage": pooled["stage"],
+            "report_paths": pooled["report_paths"],
         }
     )
-    games = f"{entry.get('completed_games')}/{entry.get('planned_games')}"
-    if (_as_float(entry.get("completion_rate")) or 0.0) < _MIN_BENCHMARK_COMPLETION_RATE:
-        # A partially completed run says nothing about strength, so record it for
-        # context without letting it count as verification evidence.
-        candidate.evidence.append(f"aborted benchmark vs {entry.get('baseline')} ({games} games)")
-        return
-    candidate.metrics["primary"] = first_place if first_place is not None else 0.0
+    candidate.metrics["primary"] = pooled["first_place_lower_95"]
     # Lower mean rank is better, so invert it into a "higher is better" value.
     candidate.metrics["secondary"] = -mean_rank if mean_rank is not None else 0.0
+    candidate.tier = max(candidate.tier, TIER_GATE_PASS if pooled["gate_passed"] else TIER_BENCHMARK)
     candidate.evidence.append(
-        f"benchmark stage{entry.get('stage')} vs {entry.get('baseline')} ({games} games)"
+        f"benchmark stage{pooled['stage']} vs {pooled['baseline']} "
+        f"({pooled['completed_games']} games over {pooled['runs']} run(s))"
     )
+
+
+def _same_weights(left: str, right: str) -> bool:
+    """Cheap identity probe for two equally sized checkpoint files."""
+    try:
+        with open(left, "rb") as a, open(right, "rb") as b:
+            if a.read(_IDENTITY_PROBE_BYTES) != b.read(_IDENTITY_PROBE_BYTES):
+                return False
+            size = os.fstat(a.fileno()).st_size
+            offset = max(0, size - _IDENTITY_PROBE_BYTES)
+            a.seek(offset)
+            b.seek(offset)
+            return a.read() == b.read()
+    except OSError:
+        return False
+
+
+def _find_alias(
+    candidate: CheckpointCandidate,
+    base: str,
+    peers: Sequence[Tuple[str, CheckpointCandidate]],
+) -> Optional[CheckpointCandidate]:
+    """Find the immutable ``candidate_*`` file a promoted checkpoint was copied from.
+
+    Promotion uses ``shutil.copy2``, so the copy keeps the source's size and
+    mtime; the content probe rules out coincidences.
+    """
+    for peer_base, peer in peers:
+        if peer is candidate or peer_base != base or peer.role != _ROLE_CANDIDATE:
+            continue
+        if peer.size_bytes != candidate.size_bytes or abs(peer.mtime - candidate.mtime) > 2.0:
+            continue
+        if _same_weights(candidate.path, peer.path):
+            return peer
+    return None
 
 
 def _apply_manifest(candidate: CheckpointCandidate, metrics: Dict[str, Any], *, winner: bool) -> None:
@@ -564,19 +703,34 @@ def discover_checkpoints(
     benchmarks_by_path, benchmarks_by_stem = _collect_benchmarks(bases)
     manifest_entries = _collect_manifests(bases)
 
-    candidates: List[CheckpointCandidate] = []
-    for path in _iter_checkpoint_files(bases):
-        candidate = _build_candidate(path, base_root)
+    found = [(base, path, _build_candidate(path, base_root)) for base, path in _iter_checkpoint_files(bases)]
+    peers = [(base, candidate) for base, _, candidate in found]
 
+    candidates: List[CheckpointCandidate] = []
+    for base, path, candidate in found:
         manifest_entry = manifest_entries.get(candidate.path)
         if manifest_entry is not None:
             metrics, winner = manifest_entry
             _apply_manifest(candidate, metrics, winner=winner)
 
-        benchmark = benchmarks_by_path.get(candidate.path) or benchmarks_by_stem.get(candidate.stem)
-        if benchmark is not None and candidate.tier < TIER_TOURNAMENT_CANDIDATE:
-            _apply_benchmark(candidate, benchmark)
-            candidate.tier = max(candidate.tier, _benchmark_tier(benchmark))
+        if candidate.tier < TIER_TOURNAMENT_CANDIDATE:
+            reports = _drop_stale_reports(
+                candidate, _reports_for(candidate, base, benchmarks_by_path, benchmarks_by_stem)
+            )
+            if candidate.role in _MUTABLE_ROLES:
+                # A promoted champion is a byte copy of a measured candidate;
+                # inherit that candidate's (always current) evidence.
+                alias = _find_alias(candidate, base, peers)
+                if alias is not None:
+                    candidate.evidence.append(f"same weights as {alias.name}")
+                    known = {entry["report_path"] for entry in reports}
+                    reports = reports + [
+                        entry
+                        for entry in _reports_for(alias, base, benchmarks_by_path, benchmarks_by_stem)
+                        if entry["report_path"] not in known
+                    ]
+            if reports:
+                _apply_benchmark(candidate, reports)
 
         sidecar = _sidecar_for(path)
         if sidecar is not None and candidate.tier < TIER_GATE_PASS:

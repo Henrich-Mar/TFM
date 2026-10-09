@@ -937,7 +937,7 @@ def _enumerate_card_selection_catalog(
     a heuristic score.
     """
     del player_state, purchase_card_cost
-    if not isinstance(cards, list) or not cards:
+    if not isinstance(cards, list):
         return []
 
     enabled_indices = [
@@ -945,7 +945,9 @@ def _enumerate_card_selection_catalog(
         if isinstance(card, dict) and not bool(card.get("isDisabled", False))
     ]
     if not enabled_indices:
-        return []
+        # An exhausted deck deals an empty research hand ("You cannot afford
+        # any cards", min=max=0); the empty pick is the only legal reply.
+        return [[]] if _safe_int(min_cards, 0) <= 0 else []
 
     min_pick = _safe_int(min_cards, 0)
     max_pick = _safe_int(max_cards, len(enabled_indices))

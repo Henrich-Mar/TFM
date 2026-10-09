@@ -177,6 +177,29 @@ def test_optional_single_card_buy_offers_both_buy_and_skip() -> None:
         assert decoder.decode_action(action.action_id, state) == action.payload
 
 
+def test_empty_research_deal_offers_the_empty_pick() -> None:
+    # Deck and discard exhausted late game: the server deals zero research
+    # cards and sends min=max=0 with no canPass.  This used to have no legal
+    # actions and crashed the whole game.
+    state = {
+        "thisPlayer": {"megaCredits": 76, "cardCost": 3},
+        "waitingFor": {
+            "type": "card",
+            "title": "You cannot afford any cards",
+            "buttonLabel": "Ok",
+            "min": 0,
+            "max": 0,
+        },
+    }
+    decoder = ActionDecoder()
+
+    legal = decoder.enumerate_legal_actions(state)
+
+    assert legal.status == "active"
+    assert [action.payload for action in legal.actions] == [{"type": "card", "cards": []}]
+    assert decoder.decode_action(legal.actions[0].action_id, state) == {"type": "card", "cards": []}
+
+
 def test_exactly_one_card_prompt_still_selects_by_card_index() -> None:
     state = {
         "waitingFor": {
